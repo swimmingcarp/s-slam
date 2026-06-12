@@ -1,0 +1,15 @@
+---
+launch:
+  - arg: { name: replay_id, default: "acl_jackal2", description: "Replay namespace used by slam_in_kimera_multi.launch.yaml" }
+  - arg: { name: output_dir, default: "/tmp/s_slam_replay_results", description: "Directory where KISS-Matcher writes replay results" }
+
+  - node:
+      pkg: s_slam_replay
+      exec: publish_save_dir.py
+      name: publish_save_dir
+      output: screen
+      param:
+        - name: replay_id
+          value: "$(var replay_id)"
+        - name: output_dir
+          value: "$(var output_dir)"

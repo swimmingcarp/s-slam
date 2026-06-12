@@ -1,0 +1,50 @@
+---
+launch:
+  # In arg, all the default value should be string
+  - arg: {name: namespace,  default: "", description: KISS-Matcher-SAM (KM-SAM)}
+
+  - arg: {name: config_path,   default: $(find-pkg-share kiss_matcher_ros)/config/slam_config.yaml}
+
+  - arg: {name: map_frame , default: 'map' , description: Global map frame ID}
+  - arg: {name: base_frame, default: 'base', description: Robot's base frame ID}
+
+  - arg: {name: odom_topic, default: "/odometry"}
+  - arg: {name: scan_topic, default: "/cloud_registered"}
+
+  - arg: {name: save_map_pcd, default: "false", description: "Save accumulated map PCD when save_dir is triggered"}
+  - arg: {name: save_map_bag, default: "false", description: "Reserved; rosbag2 saving is not implemented in KISS-Matcher"}
+  - arg: {name: save_in_kitti_format, default: "false", description: "Save keyframe scans plus poses_tum.txt and poses_kitti.txt when save_dir is triggered"}
+  - arg: {name: result_seq_name, default: "sequence", description: "Result directory name under the requested save_dir"}
+  - arg: {name: save_voxel_resolution, default: "0.3", description: "Voxel resolution used for saved map PCD"}
+
+  - node:
+      namespace: $(var namespace)
+      pkg: kiss_matcher_ros
+      exec: kiss_matcher_sam
+      name: kiss_matcher_sam
+      output: screen
+      on_exit: shutdown
+
+      remap:
+        # Subscriber topics
+        - { from: '/cloud', to: $(var scan_topic) }
+        - { from: '/odom',   to: $(var odom_topic) }
+
+      param:
+        - name: "map_frame"
+          value: "$(var map_frame)"
+        - name: "base_frame"
+          value: "$(var base_frame)"
+
+        - name: "result.save_map_pcd"
+          value: $(var save_map_pcd)
+        - name: "result.save_map_bag"
+          value: $(var save_map_bag)
+        - name: "result.save_in_kitti_format"
+          value: $(var save_in_kitti_format)
+        - name: "result.seq_name"
+          value: "$(var result_seq_name)"
+        - name: "save_voxel_resolution"
+          value: $(var save_voxel_resolution)
+
+        - from: $(var config_path)
