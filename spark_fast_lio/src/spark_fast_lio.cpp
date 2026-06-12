@@ -403,15 +403,24 @@ void SPARKFastLIO2::standardLiDARCallback(const sensor_msgs::msg::PointCloud2 &m
     scan_count_++;
     rclcpp::Time msg_time = msg.header.stamp;
 
+    PointCloudXYZI::Ptr ptr(new PointCloudXYZI());
+    preprocessor_->process(msg, ptr);
+
+    if (preprocessor_->lidar_type == RS)
+    {
+        if (!preprocessor_->has_scan_time() || ptr->empty())
+        {
+            return;
+        }
+        msg_time = rclcpp::Time(preprocessor_->scan_start_time() * 1e9);
+    }
+
     if (msg_time < last_lidar_timestamp_)
     {
         RCLCPP_ERROR(get_logger(), "Lidar loopback detected, clearing buffers");
         lidar_buffer_.clear();
     }
     last_lidar_timestamp_ = msg_time;
-
-    PointCloudXYZI::Ptr ptr(new PointCloudXYZI());
-    preprocessor_->process(msg, ptr);
 
     lidar_buffer_.push_back(ptr);
     time_buffer_.push_back(msg_time.seconds());

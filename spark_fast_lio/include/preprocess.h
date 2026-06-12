@@ -23,8 +23,9 @@ enum LID_TYPE
     AVIA     = 1,
     VELO16   = 2,
     OUST64   = 3,
-    KMOUST64 = 4
-};  // {1, 2, 3, 4}
+    KMOUST64 = 4,
+    RS       = 5   // RoboSense (rslidar_sdk XYZIRT, e.g. Airy)
+};  // {1, 2, 3, 4, 5}
 enum TIME_UNIT
 {
     SEC = 0,
@@ -119,6 +120,28 @@ POINT_CLOUD_REGISTER_POINT_STRUCT(ouster_ros::Point,
                                     (std::uint16_t, ambient, ambient)
                                     (std::uint32_t, range, range)
 )
+// clang-format on
+
+namespace rslidar_ros
+{
+// Point layout published by rslidar_sdk when built with POINT_TYPE=XYZIRT.
+// NOTE: `timestamp` is an ABSOLUTE time (seconds), unlike velodyne(.time) /
+// ouster(.t) which are per-scan relative offsets. rs_handler() relativizes it.
+// rslidar_sdk publishes `intensity` as FLOAT32 in the ROS PointCloud2 layout.
+struct EIGEN_ALIGN16 Point
+{
+    PCL_ADD_POINT4D;
+    float intensity;
+    uint16_t ring;
+    double timestamp;
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+};
+}  // namespace rslidar_ros
+POINT_CLOUD_REGISTER_POINT_STRUCT(rslidar_ros::Point,
+                                  (float, x, x)(float, y, y)(float, z, z)(
+                                      float,
+                                      intensity,
+                                      intensity)(std::uint16_t, ring, ring)(double, timestamp, timestamp))
 
 class Preprocess {
  public:
@@ -130,6 +153,10 @@ class Preprocess {
 #endif
   void process(const sensor_msgs::msg::PointCloud2 &msg, PointCloudXYZI::Ptr &pcl_out);
   void set(bool feat_en, int lid_type, double bld, int pfilt_num);
+
+  bool has_scan_time() const { return scan_start_time_ > 0.0 && scan_end_time_ >= scan_start_time_; }
+  double scan_start_time() const { return scan_start_time_; }
+  double scan_end_time() const { return scan_end_time_; }
 
   // sensor_msgs::PointCloud2::ConstPtr pointcloud;
   PointCloudXYZI  pl_full, pl_corn, pl_surf, pl_from_pilots;
@@ -148,6 +175,7 @@ class Preprocess {
   void oust64_handler(const sensor_msgs::msg::PointCloud2 &msg);
   void kmoust64_handler(const sensor_msgs::msg::PointCloud2 &msg);
   void velodyne_handler(const sensor_msgs::msg::PointCloud2 &msg);
+  void rs_handler(const sensor_msgs::msg::PointCloud2 &msg);
   void give_feature(PointCloudXYZI &pl, std::vector<orgtype> &types);
   void pub_func(PointCloudXYZI &pl, const rclcpp::Time &ct);
   int plane_judge(const PointCloudXYZI &pl, std::vector<orgtype> &types, uint i, uint &i_nex, Eigen::Vector3d &curr_direct);
@@ -167,4 +195,5 @@ class Preprocess {
   double edgea, edgeb;
   double smallp_intersect, smallp_ratio;
   double vx, vy, vz;
+  double scan_start_time_, scan_end_time_;
 };

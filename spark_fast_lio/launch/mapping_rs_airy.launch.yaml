@@ -1,0 +1,48 @@
+---
+# Bring-up for a RoboSense Airy (96-line) with its built-in IMU, on Jetson Orin NX.
+#
+# Run the RoboSense driver (rslidar_sdk) separately, built with:
+#   set(POINT_TYPE XYZIRT)   and   ENABLE_IMU_DATA_PARSE = ON
+# TODO(device-bringup): mirror these values in the real rslidar_sdk config.yaml on the Jetson.
+# and config: lidar_type RSAIRY, imu_port 6688, use_lidar_clock true,
+#   ts_first_point true, dense_points false.
+# It publishes:  /rslidar_points (PointXYZIRT)  +  /rslidar_imu_data (sensor_msgs/Imu)
+#
+# Bench test: just wave the sensor by hand and watch /odometry + /cloud_registered.
+# Visualize:  ros2 launch visualization rviz.launch.yaml
+launch:
+  - arg: {name: config_path, default: $(find-pkg-share spark_fast_lio)/config/rs_airy.yaml}
+
+  - node:
+      pkg: spark_fast_lio
+      exec: spark_lio_mapping
+      name: lio_mapping
+      output: screen
+      on_exit: shutdown
+
+      remap:
+        - { from: 'lidar', to: '/rslidar_points' }
+        - { from: 'imu',   to: '/rslidar_imu_data' }
+
+      param:
+        - name: "common.lidar_frame"
+          value: "rslidar"
+        - name: "common.imu_frame"
+          value: "rslidar_imu"
+        - name: "common.map_frame"
+          value: "odom"
+        - name: "common.base_frame"
+          value: "base_link"
+        - name: "common.visualization_frame"
+          value: "base"
+        # Bench: publish odometry immediately (don't block until movement is detected).
+        - name: "gravity_alignment.enable_gravity_alignment"
+          value: false
+
+        - from: $(var config_path)
+
+  # TODO(device-bringup): replace with the REAL base_link -> rslidar mounting transform once the
+  # drone is built (depends on dome orientation: up/down/tilt). Identity is fine for a bench test.
+  #   args order: x y z  yaw pitch roll  parent child
+  - executable:
+      cmd: "ros2 run tf2_ros static_transform_publisher 0 0 0 0 0 0 base_link rslidar"

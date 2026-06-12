@@ -1,14 +1,82 @@
 #include "preprocess.h"
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <sstream>
+#include <utility>
+
 #define RETURN0 0x00
 #define RETURN0AND1 0x10
+
+namespace
+{
+bool hasPointField(const sensor_msgs::msg::PointCloud2 &msg,
+                   const std::string &name,
+                   const uint8_t datatype)
+{
+    return std::any_of(msg.fields.begin(), msg.fields.end(), [&](const auto &field) {
+        return field.name == name && field.datatype == datatype && field.count == 1;
+    });
+}
+
+bool validateRoboSenseXYZIRT(const sensor_msgs::msg::PointCloud2 &msg)
+{
+    using sensor_msgs::msg::PointField;
+    const std::pair<const char *, uint8_t> required_fields[] = {
+        {"x", PointField::FLOAT32},
+        {"y", PointField::FLOAT32},
+        {"z", PointField::FLOAT32},
+        {"intensity", PointField::FLOAT32},
+        {"ring", PointField::UINT16},
+        {"timestamp", PointField::FLOAT64},
+    };
+
+    std::ostringstream missing;
+    bool ok = true;
+    for (const auto &[name, datatype] : required_fields)
+    {
+        if (!hasPointField(msg, name, datatype))
+        {
+            if (!ok)
+            {
+                missing << ", ";
+            }
+            missing << name;
+            ok = false;
+        }
+    }
+
+    if (!ok)
+    {
+        RCLCPP_ERROR(
+            rclcpp::get_logger("Preprocess"),
+            "RoboSense point cloud must be rslidar_sdk POINT_TYPE=XYZIRT "
+            "(missing/wrong fields: %s). Drop this scan.",
+            missing.str().c_str());
+    }
+    return ok;
+}
+
+bool hasFiniteXYZ(const rslidar_ros::Point &point)
+{
+    return std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z);
+}
+
+bool hasValidTimestamp(const rslidar_ros::Point &point)
+{
+    return std::isfinite(point.timestamp) && point.timestamp > 0.0;
+}
+}  // namespace
 
 Preprocess::Preprocess()
     : lidar_type(AVIA),
       point_filter_num(1),
       blind(0.01),
       blind_for_human_pilots(1.5),
-      feature_enabled(0)
+      feature_enabled(0),
+      scan_start_time_(-1.0),
+      scan_end_time_(-1.0)
 {
     inf_bound         = 10;
     N_SCANS           = 6;
@@ -55,6 +123,9 @@ void Preprocess::process(const livox_ros_driver2::msg::CustomMsg &msg, PointClou
 
 void Preprocess::process(const sensor_msgs::msg::PointCloud2 &msg, PointCloudXYZI::Ptr &pcl_out)
 {
+    scan_start_time_ = -1.0;
+    scan_end_time_   = -1.0;
+
     switch (time_unit)
     {
         case SEC:
@@ -82,11 +153,12 @@ void Preprocess::process(const sensor_msgs::msg::PointCloud2 &msg, PointCloudXYZ
         case KMOUST64:
             kmoust64_handler(msg);
             break;
-
         case VELO16:
             velodyne_handler(msg);
             break;
-
+        case RS:
+            rs_handler(msg);
+            break;
         default:
             RCLCPP_FATAL(rclcpp::get_logger("Preprocess"), "Error LiDAR Type");
             break;
@@ -627,6 +699,147 @@ void Preprocess::velodyne_handler(const sensor_msgs::msg::PointCloud2 &msg)
                     }
                     pl_surf.points.push_back(added_pt);
                 }
+            }
+        }
+    }
+}
+
+void Preprocess::rs_handler(const sensor_msgs::msg::PointCloud2 &msg)
+{
+    pl_surf.clear();
+    pl_corn.clear();
+    pl_full.clear();
+    pl_from_pilots.clear();
+
+    if (!validateRoboSenseXYZIRT(msg))
+    {
+        return;
+    }
+
+    pcl::PointCloud<rslidar_ros::Point> pl_orig;
+    pcl::fromROSMsg(msg, pl_orig);
+    int plsize = pl_orig.points.size();
+    if (plsize == 0)
+    {
+        return;
+    }
+    pl_surf.reserve(plsize);
+
+    // RoboSense per-point `timestamp` is ABSOLUTE (seconds). Convert it to a
+    // per-scan RELATIVE offset (ms) stored in `curvature`, matching what the
+    // EKF de-skew expects. Use the minimum valid timestamp as scan start so
+    // this node does not depend on rslidar_sdk's `ts_first_point` setting.
+    // (`time_unit` from the config is ignored for RoboSense.)
+    double t0 = std::numeric_limits<double>::max();
+    double t1 = -std::numeric_limits<double>::max();
+    for (const auto &point : pl_orig.points)
+    {
+        if (!hasValidTimestamp(point))
+        {
+            continue;
+        }
+        t0 = std::min(t0, point.timestamp);
+        t1 = std::max(t1, point.timestamp);
+    }
+
+    if (t0 == std::numeric_limits<double>::max())
+    {
+        RCLCPP_ERROR(rclcpp::get_logger("Preprocess"),
+                     "RoboSense XYZIRT point cloud has no valid per-point timestamp. Drop this scan.");
+        return;
+    }
+
+    scan_start_time_ = t0;
+    scan_end_time_   = t1;
+
+    const auto fillPoint = [t0](const rslidar_ros::Point &src, PointType &dst) {
+        dst.normal_x  = 0;
+        dst.normal_y  = 0;
+        dst.normal_z  = 0;
+        dst.x         = src.x;
+        dst.y         = src.y;
+        dst.z         = src.z;
+        dst.intensity = src.intensity;
+        dst.curvature = static_cast<float>((src.timestamp - t0) * 1000.0);  // units: ms
+    };
+
+    const auto usablePoint = [](const rslidar_ros::Point &point) {
+        return hasValidTimestamp(point) && hasFiniteXYZ(point);
+    };
+
+    const auto inConfiguredScan = [this](const rslidar_ros::Point &point) {
+        return point.ring < static_cast<uint16_t>(N_SCANS);
+    };
+
+    if (feature_enabled)
+    {
+        for (int i = 0; i < N_SCANS; ++i)
+        {
+            pl_buff[i].clear();
+            pl_buff[i].reserve(plsize);
+        }
+
+        for (int i = 0; i < plsize; ++i)
+        {
+            const auto &src = pl_orig.points[i];
+            if (!usablePoint(src) || !inConfiguredScan(src))
+            {
+                continue;
+            }
+            PointType added_pt;
+            fillPoint(src, added_pt);
+            pl_buff[src.ring].points.push_back(added_pt);
+        }
+
+        for (int j = 0; j < N_SCANS; ++j)
+        {
+            PointCloudXYZI &pl = pl_buff[j];
+            auto linesize      = pl.size();
+            if (linesize < 2)
+            {
+                continue;
+            }
+            std::vector<orgtype> &types = typess[j];
+            types.clear();
+            types.resize(linesize);
+            linesize--;
+            for (uint i = 0; i < linesize; ++i)
+            {
+                types[i].range = sqrt(pl[i].x * pl[i].x + pl[i].y * pl[i].y);
+                vx             = pl[i].x - pl[i + 1].x;
+                vy             = pl[i].y - pl[i + 1].y;
+                vz             = pl[i].z - pl[i + 1].z;
+                types[i].dista = vx * vx + vy * vy + vz * vz;
+            }
+            types[linesize].range =
+                sqrt(pl[linesize].x * pl[linesize].x + pl[linesize].y * pl[linesize].y);
+            give_feature(pl, types);
+        }
+    }
+    else
+    {
+        for (int i = 0; i < plsize; ++i)
+        {
+            if (i % point_filter_num != 0)
+            {
+                continue;
+            }
+            const auto &src = pl_orig.points[i];
+            if (!usablePoint(src) || !inConfiguredScan(src))
+            {
+                continue;
+            }
+
+            PointType added_pt;
+            fillPoint(src, added_pt);
+
+            double dist2 =
+                added_pt.x * added_pt.x + added_pt.y * added_pt.y + added_pt.z * added_pt.z;
+            if (dist2 > (blind * blind))
+            {
+                // NOTE: no human-pilot-zone rejection for a UAV (drone has no
+                // operator carrying the sensor); `blind` handles self-returns.
+                pl_surf.points.push_back(added_pt);
             }
         }
     }
