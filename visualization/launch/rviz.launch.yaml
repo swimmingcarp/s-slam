@@ -1,0 +1,14 @@
+---
+# Visualization for the whole s-slam system (front end + back end).
+# Run alongside the processing nodes:
+#   ros2 launch visualization rviz.launch.yaml
+launch:
+  - arg: {name: rviz_config, default: $(find-pkg-share visualization)/rviz/system.rviz}
+
+  - node:
+      pkg: rviz2
+      exec: rviz2
+      name: rviz2
+      output: screen
+      args: >
+        -d $(var rviz_config)

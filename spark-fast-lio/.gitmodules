@@ -1,3 +1,0 @@
-[submodule "spark_fast_lio/third_party/ikd-Tree"]
-	path = spark_fast_lio/third_party/ikd-Tree
-	url = https://github.com/hku-mars/ikd-Tree

@@ -1,0 +1,77 @@
+ci:
+  autofix: true
+
+# =============================================================================
+# s-slam workspace pre-commit config
+# Merged from KISS-Matcher/.pre-commit-config.yaml and
+# spark-fast-lio/.pre-commit-config.yaml.
+# NOTE: pre-commit only reads the config at the git repository root, so this
+# single file governs both packages. Per-package .clang-format files are kept
+# (clang-format automatically picks the nearest one).
+# =============================================================================
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.4.0
+    hooks:
+      - id: check-yaml
+        exclude: \.clang-format$
+      - id: check-json
+      - id: check-xml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-added-large-files
+      - id: check-merge-conflict
+
+  ######################################################################
+  # Python Formatting
+  ######################################################################
+  # For Python import sorting
+  - repo: https://github.com/pycqa/isort
+    rev: "5.12.0"
+    hooks:
+      - id: isort
+
+  # NOTE(hlim): yapf is no longer supported on Python 3.12 (Ubuntu 24.04),
+  # so we standardize on black for the whole workspace.
+  - repo: https://github.com/psf/black
+    rev: 23.12.1
+    hooks:
+      - id: black
+
+  - repo: https://github.com/PyCQA/flake8
+    rev: 5.0.4
+    hooks:
+      - id: flake8
+        exclude: 'python/utils/download_datasets'
+        # To avoid conflict between flake8 and black
+        args: ["--ignore=E501"]
+
+  ######################################################################
+  # Markdown Formatting
+  ######################################################################
+  - repo: https://github.com/executablebooks/mdformat
+    rev: 0.7.9
+    hooks:
+      - id: mdformat
+        exclude: 'github/'
+
+  ######################################################################
+  # C++ Formatting
+  ######################################################################
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: "v16.0.6"
+    hooks:
+      - id: clang-format
+        exclude: '.*\.py$'
+
+  - repo: https://github.com/cpplint/cpplint
+    rev: "1.6.1"
+    hooks:
+      - id: cpplint
+        args:
+          [
+            # TODO(hlim): Remove `-runtime/string` and `-build/include`
+            "--filter=-whitespace/line_length,-legal/copyright,-build/include_order,-runtime/references,-build/c++11,-build/namespaces,-build/header_guard,-runtime/string,-build/include",
+          ]
+        exclude: 'kiss_matcher/include/kdtree|kiss_matcher/include/tsl|kiss_matcher/include/points|spark_fast_lio/LOG|spark_fast_lio/PCD|third_party/|spark_fast_lio/include/matplotlibcpp.h'

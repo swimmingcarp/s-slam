@@ -1,0 +1,200 @@
+# =============================================================================
+# s-slam workspace .gitignore
+# Merged from KISS-Matcher/.gitignore and spark-fast-lio/.gitignore
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Build / install / logs (ROS2 colcon + CMake)
+# -----------------------------------------------------------------------------
+build/
+*/build/
+install/
+*/install/
+log/
+logs/
+Log/
+LOG/
+PCD/
+results/
+wheelhouse/
+_skbuild/
+
+cmake-build-debug*/
+cmake-build-release*/
+CMakeFiles/
+CMakeCache.txt
+CMakeScripts/
+cmake_install.cmake
+CMakeLists.txt.user
+CTestTestfile.cmake
+install_manifest.txt
+Testing/
+_deps/
+# CMake ExternalProject prefixes
+*-prefix/
+
+compile_commands.json
+*/compile_commands.json
+
+# -----------------------------------------------------------------------------
+# Editors / IDEs
+# -----------------------------------------------------------------------------
+.idea/
+.idea*
+.vscode/
+.clangd
+.cache/
+.gitlab-ci-local/
+.polyscope.ini
+imgui.ini
+
+# -----------------------------------------------------------------------------
+# Datasets / generated artifacts
+# -----------------------------------------------------------------------------
+*/data/
+*/zip_files/
+
+# -----------------------------------------------------------------------------
+# C / C++
+# -----------------------------------------------------------------------------
+# Prerequisites
+*.d
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+# Precompiled Headers
+*.gch
+*.pch
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+# Fortran module files
+*.mod
+*.smod
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+# Executables
+*.exe
+*.out
+*.app
+
+# -----------------------------------------------------------------------------
+# Python
+# -----------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Translations
+*.mo
+*.pot
+
+# Sphinx documentation
+docs/_build/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Type checkers / linters caches
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+cython_debug/
+
+# Project settings (Spyder / Rope)
+.spyderproject
+.spyproject
+.ropeproject
+
+# -----------------------------------------------------------------------------
+# Eclipse / CDT (from spark-fast-lio)
+# -----------------------------------------------------------------------------
+.metadata
+bin/
+tmp/
+*.tmp
+*.bak
+*.swp
+*~.nib
+local.properties
+.settings/
+.loadpath
+.recommenders
+.externalToolBuilders/
+*.pydevproject
+.cproject
+.autotools
+.factorypath
+.buildpath
+.target
+.tern-project
+.texlipse
+.springBeans
+.recommenders/
+.apt_generated/
+.cache-main
+.scala_dependencies
+.worksheet
+.project
+.classpath
+.apt_generated
+.sts4-cache/

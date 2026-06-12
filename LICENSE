@@ -1,0 +1,32 @@
+s-slam — Licensing Overview
+===========================
+
+This repository is a monorepo that aggregates two independently-licensed
+components. There is NO single license covering the whole repository; each
+component is governed by its own license. When redistributing this repository
+as a whole, the most restrictive applicable terms (GPL, from spark_fast_lio)
+apply to the combined/aggregate work.
+
+Components
+----------
+
+1. kiss_matcher/        — MIT License
+   See: kiss_matcher/LICENSE
+   Global point-cloud registration library + ROS 2 SLAM backend
+   (kiss_matcher_ros). Upstream: https://github.com/MIT-SPARK/KISS-Matcher
+
+2. spark_fast_lio/      — GNU General Public License (GPL)
+   See: spark_fast_lio/LICENSE
+   LiDAR-inertial odometry frontend (modified Fast-LIO2).
+   Upstream: https://github.com/MIT-SPARK/spark-fast-lio
+
+3. third_party/         — see each subdirectory for its own license
+   Vendored / fetched dependencies (ikd-Tree, IKFoM_toolkit, and the
+   FetchContent helper scripts for Eigen, TBB, ROBIN, TEASER++, etc.).
+   These retain their respective upstream licenses.
+
+Note
+----
+Because spark_fast_lio is GPL-licensed, any distribution of a combined work
+built from both components must comply with the GPL. Keep each component's
+LICENSE file intact.
