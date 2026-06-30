@@ -31,12 +31,12 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     lidar_T_wrt_base_ = Zero3d;
     lidar_R_wrt_base_ = Eye3d;
 
-    path_en_           = declare_parameter<bool>("publish.path_en", true);
-    scan_pub_en_       = declare_parameter<bool>("publish.scan_publish_en", false);
-    dense_pub_en_      = declare_parameter<bool>("publish.dense_publish_en", false);
-    scan_lidar_pub_en_ = declare_parameter<bool>("publish.scan_lidarframe_pub_en", false);
-    scan_body_pub_en_  = declare_parameter<bool>("publish.scan_bodyframe_pub_en", false);
-    scan_base_pub_en_  = declare_parameter<bool>("publish.scan_baseframe_pub_en", false);
+    path_enabled_                     = declare_parameter<bool>("publish.path_enabled", true);
+    scan_publish_enabled_             = declare_parameter<bool>("publish.scan_publish_enabled", false);
+    dense_publish_enabled_            = declare_parameter<bool>("publish.dense_publish_enabled", false);
+    scan_lidar_frame_publish_enabled_ = declare_parameter<bool>("publish.scan_lidar_frame_publish_enabled", false);
+    scan_body_frame_publish_enabled_  = declare_parameter<bool>("publish.scan_body_frame_publish_enabled", false);
+    scan_base_frame_publish_enabled_  = declare_parameter<bool>("publish.scan_base_frame_publish_enabled", false);
 
     NUM_MAX_ITERATIONS_ = declare_parameter<int>("max_iteration", 4);
 
@@ -48,7 +48,7 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     base_frame_    = declare_parameter<std::string>("common.base_frame", "");
     imu_frame_     = declare_parameter<std::string>("common.imu_frame", "imu");
     viz_frame_     = declare_parameter<std::string>("common.visualization_frame", "imu");
-    time_sync_en_  = declare_parameter<bool>("common.time_sync_en", false);
+    time_sync_enabled_ = declare_parameter<bool>("common.time_sync_enabled", false);
 
     filter_size_map_min_ = declare_parameter<double>("filter_size_map", 0.5);
     cube_len_            = declare_parameter<double>("cube_side_length", 200.0);
@@ -73,11 +73,11 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
         pcl::console::setVerbosityLevel(pcl::console::L_ERROR);
     }
 
-    runtime_pos_log_      = declare_parameter<bool>("runtime_pos_log_enable", false);
-    extrinsic_est_en_     = declare_parameter<bool>("mapping.extrinsic_est_en", false);
-    extrinsics_timeout_s_ = declare_parameter<double>("extrinsics_timeout_s", 10.0);
-    pcd_save_en_          = declare_parameter<bool>("pcd_save.pcd_save_en", false);
-    pcd_save_interval_    = declare_parameter<int>("pcd_save.interval", -1);
+    runtime_pos_log_       = declare_parameter<bool>("runtime_pos_log_enabled", false);
+    extrinsic_est_enabled_ = declare_parameter<bool>("mapping.extrinsic_est_enabled", false);
+    extrinsics_timeout_s_  = declare_parameter<double>("extrinsics_timeout_s", 10.0);
+    pcd_save_enabled_      = declare_parameter<bool>("pcd_save.pcd_save_enabled", false);
+    pcd_save_interval_     = declare_parameter<int>("pcd_save.interval", -1);
 
     point_filter_num_ = declare_parameter<int>("point_filter_num", 4);
 
@@ -445,7 +445,7 @@ void SPARKFastLIO2::livoxLiDARCallback(const livox_ros_driver2::msg::CustomMsg::
     last_lidar_timestamp_ = msg_time;
 
     const auto diff_s = std::abs((last_imu_timestamp_ - last_lidar_timestamp_).seconds());
-    if (!time_sync_en_ && diff_s > 10.0 && !imu_buffer_.empty() && !lidar_buffer_.empty())
+    if (!time_sync_enabled_ && diff_s > 10.0 && !imu_buffer_.empty() && !lidar_buffer_.empty())
     {
         RCLCPP_WARN_STREAM(this->get_logger(),
                            "IMU and LiDAR not Synced, IMU time: "
@@ -453,7 +453,7 @@ void SPARKFastLIO2::livoxLiDARCallback(const livox_ros_driver2::msg::CustomMsg::
                                << ", lidar header time: " << last_lidar_timestamp_.nanoseconds());
     }
 
-    if (time_sync_en_ && !timediff_set_flg && diff_s > 1.0 && !imu_buffer_.empty())
+    if (time_sync_enabled_ && !timediff_set_flg && diff_s > 1.0 && !imu_buffer_.empty())
     {
         timediff_set_flg        = true;
         timediff_lidar_wrt_imu_ = last_lidar_timestamp_.nanoseconds() + static_cast<int64_t>(1.0e8) -
@@ -481,7 +481,7 @@ void SPARKFastLIO2::imuCallback(const sensor_msgs::msg::Imu::ConstSharedPtr msg)
     std::lock_guard<std::mutex> lk(buffer_mutex_);
 
     auto imu_input = std::make_shared<sensor_msgs::msg::Imu>(*msg);
-    if (time_sync_en_ && std::abs(timediff_lidar_wrt_imu_) > static_cast<int64_t>(1.0e8))
+    if (time_sync_enabled_ && std::abs(timediff_lidar_wrt_imu_) > static_cast<int64_t>(1.0e8))
     {
         stamp += rclcpp::Duration::from_nanoseconds(timediff_lidar_wrt_imu_);
         imu_input->header.stamp = stamp;
@@ -550,7 +550,7 @@ void SPARKFastLIO2::calcHModel(state_ikfom &s, esekfom::dyn_share_datastruct<dou
     total_residual_ = 0.0;
 
     /** closest surface search and residual computation **/
-#ifdef MP_EN
+#ifdef MP_ENABLED
     omp_set_num_threads(MP_PROC_NUM);
 #pragma omp parallel for
 #endif
@@ -648,7 +648,7 @@ void SPARKFastLIO2::calcHModel(state_ikfom &s, esekfom::dyn_share_datastruct<dou
         /*** calculate the Measuremnt Jacobian matrix H ***/
         V3D C(s.rot.conjugate() * norm_vec);
         V3D A(point_crossmat * C);
-        if (extrinsic_est_en_)
+        if (extrinsic_est_enabled_)
         {
             V3D B(point_be_crossmat * s.offset_R_L_I.conjugate() *
                   C);  // s.rot.conjugate()*norm_vec);
@@ -874,13 +874,13 @@ void SPARKFastLIO2::publishPath(const state_ikfom &state)
 void SPARKFastLIO2::publishFrameWorld(
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubCloud)
 {
-    if (!scan_pub_en_)
+    if (!scan_publish_enabled_)
     {
         return;
     }
 
     // choose which cloud to publish
-    PointCloudXYZI::Ptr laserCloudFullRes(dense_pub_en_ ? cloud_undistort_ : feats_down_body_);
+    PointCloudXYZI::Ptr laserCloudFullRes(dense_publish_enabled_ ? cloud_undistort_ : feats_down_body_);
 
     int size = laserCloudFullRes->points.size();
     // allocate world frames
@@ -918,8 +918,8 @@ void SPARKFastLIO2::publishFrameWorld(
     pubCloud->publish(cloud_msg);
     publish_count_ -= PUBFRAME_PERIOD;
 
-    // Optionally do the pcd_save_en_ part
-    if (pcd_save_en_)
+    // Optionally save accumulated point clouds.
+    if (pcd_save_enabled_)
     {
         int nsize = cloud_undistort_->points.size();
         PointCloudXYZI::Ptr laserCloudWorld2(new PointCloudXYZI(nsize, 1));
@@ -1305,18 +1305,18 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
     publishOdometry(latest_state_, stamp);
     mapIncremental();
 
-    if (path_en_)
+    if (path_enabled_)
     {
         publishPath(latest_state_);
     }
-    if (scan_pub_en_)
+    if (scan_publish_enabled_)
     {
         publishFrameWorld(pub_cloud_full_);
-        if (scan_lidar_pub_en_)
+        if (scan_lidar_frame_publish_enabled_)
             publishFrame(pub_cloud_lidar_, "lidar");
-        if (scan_body_pub_en_)
+        if (scan_body_frame_publish_enabled_)
             publishFrame(pub_cloud_body_, "imu");
-        if (scan_base_pub_en_)
+        if (scan_base_frame_publish_enabled_)
             publishFrame(pub_cloud_base_, "base");
     }
 }

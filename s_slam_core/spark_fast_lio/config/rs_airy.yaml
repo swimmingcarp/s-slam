@@ -17,7 +17,7 @@
       b_gyr_cov: 0.0001
       fov_degree: 360.0           # Airy: 360 deg horizontal FOV
       det_range: 60.0             # Airy max range 60 m (30 m @10% NIST)
-      extrinsic_est_en: false      # Airy's built-in IMU has a fixed factory extrinsic; replace the placeholder below before flight.
+      extrinsic_est_enabled: false      # Airy's built-in IMU has a fixed factory extrinsic; replace the placeholder below before flight.
 
       # ===== IMU <-> LiDAR extrinsic (LiDAR w.r.t. IMU) =====
       # The Airy IMU is INTERNAL: this is a FIXED factory value, NOT flight/airframe dependent.
@@ -32,19 +32,19 @@
     filter_size_map: 0.4          # [m] map voxel size (a bit coarse for Jetson Orin NX real-time)
 
     publish:
-      path_en: true
-      scan_publish_en: true
-      dense_publish_en: true
-      scan_lidarframe_pub_en: true
-      scan_bodyframe_pub_en: true
-      scan_baseframe_pub_en: false
+      path_enabled: true
+      scan_publish_enabled: true
+      dense_publish_enabled: true
+      scan_lidar_frame_publish_enabled: true
+      scan_body_frame_publish_enabled: true
+      scan_base_frame_publish_enabled: false
 
     pcd_save:
-      pcd_save_en: false
+      pcd_save_enabled: false
       interval: -1
 
     verbose: true
-    runtime_pos_log_enable: false
+    runtime_pos_log_enabled: false
     point_filter_num_for_preprocessing: 1
     # TODO(device-bringup): start with 1 for baseline quality, then raise only if Jetson load requires it.
     point_filter_num: 3           # every 3rd point for pose estimation (Orin NX load; 856k pts/s raw)

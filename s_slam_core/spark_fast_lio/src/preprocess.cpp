@@ -74,7 +74,7 @@ Preprocess::Preprocess()
       point_filter_num(1),
       blind(0.01),
       blind_for_human_pilots(1.5),
-      feature_enabled(0),
+      feature_enabled(false),
       scan_start_time_(-1.0),
       scan_end_time_(-1.0)
 {
@@ -107,9 +107,9 @@ Preprocess::~Preprocess()
 {
 }
 
-void Preprocess::set(bool feat_en, int lid_type, double bld, int pfilt_num)
+void Preprocess::set(bool feature_enabled_input, int lid_type, double bld, int pfilt_num)
 {
-    feature_enabled  = feat_en;
+    feature_enabled  = feature_enabled_input;
     lidar_type       = lid_type;
     blind            = bld;
     point_filter_num = pfilt_num;

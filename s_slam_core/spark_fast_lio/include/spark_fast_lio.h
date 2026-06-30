@@ -213,15 +213,15 @@ private:
     int add_point_size_        = 0;
     int kdtree_delete_counter_ = 0;
 
-    bool pcd_save_en_       = false;
-    bool time_sync_en_      = false;
-    bool extrinsic_est_en_  = false;
-    bool path_en_           = true;
-    bool scan_pub_en_       = false;
-    bool dense_pub_en_      = false;
-    bool scan_lidar_pub_en_ = false;
-    bool scan_body_pub_en_  = false;
-    bool scan_base_pub_en_  = false;
+    bool pcd_save_enabled_                 = false;
+    bool time_sync_enabled_                = false;
+    bool extrinsic_est_enabled_            = false;
+    bool path_enabled_                     = true;
+    bool scan_publish_enabled_             = false;
+    bool dense_publish_enabled_            = false;
+    bool scan_lidar_frame_publish_enabled_ = false;
+    bool scan_body_frame_publish_enabled_  = false;
+    bool scan_base_frame_publish_enabled_  = false;
 
     bool verbose_     = false;
     bool pcl_verbose_ = true;

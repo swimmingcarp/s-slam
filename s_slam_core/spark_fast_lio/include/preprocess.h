@@ -156,7 +156,7 @@ public:
     void process(const livox_ros_driver2::msg::CustomMsg &msg, PointCloudXYZI::Ptr &pcl_out);
 #endif
     void process(const sensor_msgs::msg::PointCloud2 &msg, PointCloudXYZI::Ptr &pcl_out);
-    void set(bool feat_en, int lid_type, double bld, int pfilt_num);
+    void set(bool feature_enabled_input, int lid_type, double bld, int pfilt_num);
 
     bool has_scan_time() const
     {
