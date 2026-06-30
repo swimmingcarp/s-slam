@@ -103,7 +103,9 @@ Preprocess::Preprocess()
     smallp_intersect = std::cos(smallp_intersect / 180 * M_PI);
 }
 
-Preprocess::~Preprocess() {}
+Preprocess::~Preprocess()
+{
+}
 
 void Preprocess::set(bool feat_en, int lid_type, double bld, int pfilt_num)
 {

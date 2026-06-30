@@ -35,12 +35,12 @@ private:
     Eigen::Matrix4f estimated_transform_ = Eigen::Matrix4f::Identity();
 
     pcl::PointCloud<pcl::PointXYZ>::Ptr source_cloud_ =
-        std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
+        std::make_shared<pcl::PointCloud<pcl::PointXYZ> >();
     pcl::PointCloud<pcl::PointXYZ>::Ptr target_cloud_ =
-        std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
+        std::make_shared<pcl::PointCloud<pcl::PointXYZ> >();
 
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr source_publisher_,
-        target_publisher_;
+                                                                target_publisher_;
 
     void declareAndGetParameters()
     {
@@ -102,7 +102,7 @@ private:
         const std::vector<Eigen::Vector3f>& points)
     {
         pcl::PointCloud<pcl::PointXYZ>::Ptr cloud =
-            std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
+            std::make_shared<pcl::PointCloud<pcl::PointXYZ> >();
         cloud->reserve(points.size());
         for (const auto& point : points)
         {
@@ -169,7 +169,7 @@ private:
         for (double step = 0; step <= num_total_steps; ++step)
         {
             pcl::PointCloud<pcl::PointXYZ>::Ptr animated_cloud =
-                std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
+                std::make_shared<pcl::PointCloud<pcl::PointXYZ> >();
             Eigen::Matrix4f frame_transform = Eigen::Matrix4f::Identity();
 
             if (step <= num_total_steps / 2)

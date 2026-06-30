@@ -113,7 +113,9 @@ ImuProcess::ImuProcess() : start_timestamp_(-1), b_first_frame_(true), imu_need_
     last_imu_.reset(new sensor_msgs::msg::Imu());
 }
 
-ImuProcess::~ImuProcess() {}
+ImuProcess::~ImuProcess()
+{
+}
 
 void ImuProcess::Reset()
 {

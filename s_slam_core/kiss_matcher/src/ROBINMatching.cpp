@@ -29,7 +29,7 @@ ROBINMatching::ROBINMatching(const float noise_bound,
 // NOTE(hlim): I don't recommend you using `use_ratio_test` in most cases,
 // because setting `use_ratio_test` to `true` sometimes significantly reduces the number of
 // correspondences
-std::vector<std::pair<int, int>> ROBINMatching::establishCorrespondences(
+std::vector<std::pair<int, int> > ROBINMatching::establishCorrespondences(
     std::vector<Eigen::Vector3f>& source_points,
     std::vector<Eigen::Vector3f>& target_points,
     Feature& source_features,
@@ -67,20 +67,20 @@ void ROBINMatching::match(const std::string& robin_mode, float tuple_scale, bool
 
     // NOTE(hlim): `2` indicates that we save the two distances between the two closest descriptors.
     int num_candidates = use_ratio_test ? 2 : 1;
-    std::vector<std::array<int, 2>> corres_K(nPtj_, {0, 0});
-    std::vector<std::array<int, 2>> corres_K2(nPti_, {0, 0});
-    std::vector<std::array<float, 2>> dis_j(nPtj_, {0.0, 0.0});
-    std::vector<std::array<float, 2>> dis_i(nPti_, {0.0, 0.0});
+    std::vector<std::array<int, 2> > corres_K(nPtj_, {0, 0});
+    std::vector<std::array<int, 2> > corres_K2(nPti_, {0, 0});
+    std::vector<std::array<float, 2> > dis_j(nPtj_, {0.0, 0.0});
+    std::vector<std::array<float, 2> > dis_i(nPti_, {0.0, 0.0});
 
-    std::vector<std::pair<int, int>> corres_ij;
-    std::vector<std::pair<int, int>> corres_ji;
+    std::vector<std::pair<int, int> > corres_ij;
+    std::vector<std::pair<int, int> > corres_ji;
 
     std::vector<int> i_to_j_multi_flann(nPti_, -1);
     std::vector<int> j_to_i_multi_flann(nPtj_, -1);
 
     corres_cross_checked_.clear();
 
-    std::vector<std::tuple<int, int, float>> matched_pairs;  // (ji, j, ratio)
+    std::vector<std::tuple<int, int, float> > matched_pairs; // (ji, j, ratio)
 
     tbb::parallel_for(
         tbb::blocked_range<size_t>(0, nPtj_),
@@ -133,7 +133,9 @@ void ROBINMatching::match(const std::string& robin_mode, float tuple_scale, bool
         {
             std::sort(matched_pairs.begin(),
                       matched_pairs.end(),
-                      [](const auto& a, const auto& b) { return std::get<2>(a) < std::get<2>(b); });
+                      [](const auto& a, const auto& b) {
+                    return std::get<2>(a) < std::get<2>(b);
+                });
             matched_pairs.resize(num_max_corr_);
         }
         else
@@ -174,9 +176,9 @@ void ROBINMatching::match(const std::string& robin_mode, float tuple_scale, bool
         std::invalid_argument("Wrong ROBIN mode has come.");
     }
     auto t_rejection_end = std::chrono::high_resolution_clock::now();
-    rejection_time_ = std::chrono::duration_cast<std::chrono::duration<double>>(t_rejection_end -
-                                                                                t_rejection_init)
-                          .count();
+    rejection_time_ = std::chrono::duration_cast<std::chrono::duration<double> >(t_rejection_end -
+                                                                                 t_rejection_init)
+                      .count();
 }
 
 void ROBINMatching::setStatuses()
@@ -198,8 +200,8 @@ void ROBINMatching::setStatuses()
     nPtj_ = pointcloud_[fj_].size();
 }
 
-void ROBINMatching::runTupleTest(const std::vector<std::pair<int, int>>& corres,
-                                 std::vector<std::pair<int, int>>& corres_out,
+void ROBINMatching::runTupleTest(const std::vector<std::pair<int, int> >& corres,
+                                 std::vector<std::pair<int, int> >& corres_out,
                                  const float /*tuple_scale*/)
 {
     if (!corres.empty())
@@ -209,7 +211,7 @@ void ROBINMatching::runTupleTest(const std::vector<std::pair<int, int>>& corres,
         size_t idj0, idj1, idj2;
         size_t ncorr           = corres.size();
         size_t number_of_trial = ncorr * 100;
-        std::vector<std::pair<int, int>> corres_tuple;
+        std::vector<std::pair<int, int> > corres_tuple;
         corres_tuple.reserve(ncorr);
 
         std::random_device rd;
@@ -329,8 +331,8 @@ void ROBINMatching::runTupleTest(const std::vector<std::pair<int, int>>& corres,
     }
 }
 
-void ROBINMatching::applyOutlierPruning(const std::vector<std::pair<int, int>>& corres,
-                                        std::vector<std::pair<int, int>>& corres_out,
+void ROBINMatching::applyOutlierPruning(const std::vector<std::pair<int, int> >& corres,
+                                        std::vector<std::pair<int, int> >& corres_out,
                                         const std::string& robin_mode)
 {
     if (!corres.empty())
@@ -352,22 +354,22 @@ void ROBINMatching::applyOutlierPruning(const std::vector<std::pair<int, int>>& 
         auto* g = robin::Make3dRegInvGraph(src_robin, tgt_robin, noise_bound_);
 
         const auto& filtered_indices = [&]()
-        {
-            // NOTE(hlim): Just use max core mode.
-            // `max_clique` not only took more time but also showed slightly worse performance.
-            if (robin_mode == "max_core")
-            {
-                return robin::FindInlierStructure(g, robin::InlierGraphStructure::MAX_CORE);
-            }
-            else if (robin_mode == "max_clique")
-            {
-                return robin::FindInlierStructure(g, robin::InlierGraphStructure::MAX_CLIQUE);
-            }
-            else
-            {
-                throw std::runtime_error("Something's wrong!");
-            }
-        }();
+                                       {
+                                           // NOTE(hlim): Just use max core mode.
+                                           // `max_clique` not only took more time but also showed slightly worse performance.
+                                           if (robin_mode == "max_core")
+                                           {
+                                               return robin::FindInlierStructure(g, robin::InlierGraphStructure::MAX_CORE);
+                                           }
+                                           else if (robin_mode == "max_clique")
+                                           {
+                                               return robin::FindInlierStructure(g, robin::InlierGraphStructure::MAX_CLIQUE);
+                                           }
+                                           else
+                                           {
+                                               throw std::runtime_error("Something's wrong!");
+                                           }
+                                       }();
 
         for (size_t i = 0; i < filtered_indices.size(); ++i)
         {
@@ -419,22 +421,22 @@ std::vector<size_t> ROBINMatching::applyOutlierPruning(
     auto* g = robin::Make3dRegInvGraph(src_robin, tgt_robin, noise_bound_);
 
     const auto& filtered_indices = [&]()
-    {
-        // NOTE(hlim): Just use max core mode.
-        // `max_clique` not only took more time but also showed slightly worse performance.
-        if (robin_mode == "max_core")
-        {
-            return robin::FindInlierStructure(g, robin::InlierGraphStructure::MAX_CORE);
-        }
-        else if (robin_mode == "max_clique")
-        {
-            return robin::FindInlierStructure(g, robin::InlierGraphStructure::MAX_CLIQUE);
-        }
-        else
-        {
-            throw std::runtime_error("Something's wrong!");
-        }
-    }();
+                                   {
+                                       // NOTE(hlim): Just use max core mode.
+                                       // `max_clique` not only took more time but also showed slightly worse performance.
+                                       if (robin_mode == "max_core")
+                                       {
+                                           return robin::FindInlierStructure(g, robin::InlierGraphStructure::MAX_CORE);
+                                       }
+                                       else if (robin_mode == "max_clique")
+                                       {
+                                           return robin::FindInlierStructure(g, robin::InlierGraphStructure::MAX_CLIQUE);
+                                       }
+                                       else
+                                       {
+                                           throw std::runtime_error("Something's wrong!");
+                                       }
+                                   }();
 
     num_pruned_corr_ = filtered_indices.size();
     return filtered_indices;

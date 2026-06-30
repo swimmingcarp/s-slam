@@ -17,7 +17,7 @@ LoopClosure::LoopClosure(const LoopClosureConfig &config, const rclcpp::Logger &
     debug_cloud_.reset(new pcl::PointCloud<PointType>());
 
     global_reg_handler_ = std::make_shared<kiss_matcher::KISSMatcher>(config_.matcher_config_);
-    local_reg_handler_  = std::make_shared<small_gicp::RegistrationPCL<PointType, PointType>>();
+    local_reg_handler_  = std::make_shared<small_gicp::RegistrationPCL<PointType, PointType> >();
 
     local_reg_handler_->setNumThreads(gc.num_threads_);
     local_reg_handler_->setCorrespondenceRandomness(gc.correspondence_randomness_);
@@ -26,7 +26,9 @@ LoopClosure::LoopClosure(const LoopClosureConfig &config, const rclcpp::Logger &
     local_reg_handler_->setRegistrationType("VGICP");  // "VGICP" or "GICP"
 }
 
-LoopClosure::~LoopClosure() {}
+LoopClosure::~LoopClosure()
+{
+}
 
 // NOTE(hlim): In outdoor scenes, loop closure sometimes fails due to Z-axis drift.
 // To address this, we use the is_multilayer_env_ parameter.
@@ -84,7 +86,9 @@ LoopCandidate LoopClosure::getClosestCandidate(const LoopCandidates &candidates)
     return *std::min_element(candidates.begin(),
                              candidates.end(),
                              [](const LoopCandidate &a, const LoopCandidate &b)
-                             { return a.distance_ < b.distance_; });
+    {
+        return a.distance_ < b.distance_;
+    });
 }
 
 LoopIdxPairs LoopClosure::fetchClosestLoopCandidate(const PoseGraphNode &query_frame,
@@ -169,14 +173,14 @@ NodePair LoopClosure::setSrcAndTgtCloud(const std::vector<PoseGraphNode> &keyfra
     const bool build_submap = (num_submap_keyframes > 1);
 
     auto accumulateSubmap = [&](size_t center_idx, pcl::PointCloud<PointType> &accum)
-    {
-        const size_t start = (center_idx < submap_range) ? 0 : center_idx - submap_range;
-        const size_t end   = std::min(center_idx + submap_range + 1, keyframes.size());
-        for (size_t i = start; i < end; ++i)
-        {
-            accum += transformPcd(keyframes[i].scan_, keyframes[i].pose_corrected_);
-        }
-    };
+                            {
+                                const size_t start = (center_idx < submap_range) ? 0 : center_idx - submap_range;
+                                const size_t end   = std::min(center_idx + submap_range + 1, keyframes.size());
+                                for (size_t i = start; i < end; ++i)
+                                {
+                                    accum += transformPcd(keyframes[i].scan_, keyframes[i].pose_corrected_);
+                                }
+                            };
 
     if (build_submap)
     {

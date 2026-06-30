@@ -6,10 +6,10 @@
 
 #include <Eigen/Core>
 
-namespace kiss_matcher {
-
-namespace traits {
-
+namespace kiss_matcher
+{
+namespace traits
+{
 template <typename T>
 struct Traits;
 
@@ -25,17 +25,19 @@ size_t knn_search(const T& tree,
                   const Eigen::Vector4d& point,
                   size_t k,
                   size_t* k_indices,
-                  double* k_sq_dists) {
-  return Traits<T>::knn_search(tree, point, k, k_indices, k_sq_dists);
+                  double* k_sq_dists)
+{
+    return Traits<T>::knn_search(tree, point, k, k_indices, k_sq_dists);
 }
 
 template <typename T>
-struct has_nearest_neighbor_search {
-  template <typename U, int = (&Traits<U>::nearest_neighbor_search, 0)>
-  static std::true_type test(U*);
-  static std::false_type test(...);
+struct has_nearest_neighbor_search
+{
+    template <typename U, int = (&Traits<U>::nearest_neighbor_search, 0)>
+    static std::true_type test(U*);
+    static std::false_type test(...);
 
-  static constexpr bool value = decltype(test((T*)nullptr))::value;
+    static constexpr bool value = decltype(test((T*)nullptr))::value;
 };
 
 /// @brief Find the nearest neighbor.
@@ -48,8 +50,9 @@ template <typename T, std::enable_if_t<has_nearest_neighbor_search<T>::value, bo
 size_t nearest_neighbor_search(const T& tree,
                                const Eigen::Vector4d& point,
                                size_t* k_index,
-                               double* k_sq_dist) {
-  return Traits<T>::nearest_neighbor_search(tree, point, k_index, k_sq_dist);
+                               double* k_sq_dist)
+{
+    return Traits<T>::nearest_neighbor_search(tree, point, k_index, k_sq_dist);
 }
 
 /// @brief Find the nearest neighbor. If Traits<T>::nearest_neighbor_search is not defined, fallback
@@ -63,8 +66,9 @@ template <typename T, std::enable_if_t<!has_nearest_neighbor_search<T>::value, b
 size_t nearest_neighbor_search(const T& tree,
                                const Eigen::Vector4d& point,
                                size_t* k_index,
-                               double* k_sq_dist) {
-  return Traits<T>::knn_search(tree, point, 1, k_index, k_sq_dist);
+                               double* k_sq_dist)
+{
+    return Traits<T>::knn_search(tree, point, 1, k_index, k_sq_dist);
 }
 
 }  // namespace traits

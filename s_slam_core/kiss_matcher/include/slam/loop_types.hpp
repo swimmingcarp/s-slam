@@ -8,10 +8,11 @@
 #include <utility>
 #include <vector>
 
-struct LoopCandidate {
-  bool found_      = false;
-  size_t idx_      = std::numeric_limits<size_t>::max();
-  double distance_ = std::numeric_limits<double>::max();
+struct LoopCandidate
+{
+    bool found_      = false;
+    size_t idx_      = std::numeric_limits<size_t>::max();
+    double distance_ = std::numeric_limits<double>::max();
 };
 
 using LoopCandidates = std::vector<LoopCandidate>;

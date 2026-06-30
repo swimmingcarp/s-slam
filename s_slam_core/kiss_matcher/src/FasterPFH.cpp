@@ -319,12 +319,12 @@ void FasterPFH::ComputeSPFHSignatures(const tsl::robin_map<uint32_t, uint32_t> &
     tbb::parallel_for_each(spfh_hist_lookup.cbegin(),
                            spfh_hist_lookup.cend(),
                            [&](const auto &lookup)
-                           {
-                               const auto &p_idx = lookup.first;
-                               const auto &i     = lookup.second;
+        {
+            const auto &p_idx = lookup.first;
+            const auto &i     = lookup.second;
 
-                               ComputePointSPFHSignature(p_idx, hist_f1[i], hist_f2[i], hist_f3[i]);
-                           });
+            ComputePointSPFHSignature(p_idx, hist_f1[i], hist_f2[i], hist_f3[i]);
+        });
 }
 //
 //// From
@@ -566,7 +566,11 @@ void FasterPFH::WeightPointSPFHSignature(const std::vector<Eigen::VectorXf> &his
 
     // Adjust final FPFH values
     const auto denormalize_with = [](auto factor)
-    { return [=](const auto &data) { return data * factor; }; };
+                                  {
+                                      return [=](const auto &data) {
+                                                 return data * factor;
+                                      };
+                                  };
 
     auto last = fpfh_histogram.data();
     last      = std::transform(last, last + nr_bins_f1, last, denormalize_with(sum_f1));

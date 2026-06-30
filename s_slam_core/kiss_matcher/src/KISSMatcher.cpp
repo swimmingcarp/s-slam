@@ -58,13 +58,13 @@ kiss_matcher::KeypointPair KISSMatcher::match(const std::vector<Eigen::Vector3f>
 {
     clear();
     auto processInput = [&](const std::vector<Eigen::Vector3f> &input_cloud)
-    {
-        if (config_.use_voxel_sampling_)
-        {
-            return VoxelgridSampling(input_cloud, config_.voxel_size_);
-        }
-        return input_cloud;
-    };
+                        {
+                            if (config_.use_voxel_sampling_)
+                            {
+                                return VoxelgridSampling(input_cloud, config_.voxel_size_);
+                            }
+                            return input_cloud;
+                        };
 
     auto t_init = std::chrono::high_resolution_clock::now();
 
@@ -106,11 +106,11 @@ kiss_matcher::KeypointPair KISSMatcher::match(const std::vector<Eigen::Vector3f>
     auto t_end = std::chrono::high_resolution_clock::now();
 
     processing_time_ =
-        std::chrono::duration_cast<std::chrono::duration<double>>(t_process - t_init).count();
+        std::chrono::duration_cast<std::chrono::duration<double> >(t_process - t_init).count();
     extraction_time_ =
-        std::chrono::duration_cast<std::chrono::duration<double>>(t_mid - t_process).count();
+        std::chrono::duration_cast<std::chrono::duration<double> >(t_mid - t_process).count();
     matching_time_ =
-        std::chrono::duration_cast<std::chrono::duration<double>>(t_end - t_mid).count();
+        std::chrono::duration_cast<std::chrono::duration<double> >(t_end - t_mid).count();
 
     return {src_matched_, tgt_matched_};
 }
@@ -167,7 +167,7 @@ RegistrationSolution KISSMatcher::solve(const Eigen::Matrix<double, 3, Eigen::Dy
     solver_->solve(src_matched, tgt_matched);
     std::chrono::steady_clock::time_point t_end = std::chrono::steady_clock::now();
     solver_time_ =
-        std::chrono::duration_cast<std::chrono::duration<double>>(t_end - t_start).count();
+        std::chrono::duration_cast<std::chrono::duration<double> >(t_end - t_start).count();
 
     return solver_->getSolution();
 }
@@ -175,7 +175,7 @@ RegistrationSolution KISSMatcher::solve(const Eigen::Matrix<double, 3, Eigen::Dy
 RegistrationSolution KISSMatcher::pruneAndSolve(const std::vector<Eigen::Vector3f> &src_matched,
                                                 const std::vector<Eigen::Vector3f> &tgt_matched)
 {
-    std::vector<std::pair<int, int>> corres, corres_out;
+    std::vector<std::pair<int, int> > corres, corres_out;
     for (size_t i = 0; i < src_matched.size(); ++i)
     {
         corres.emplace_back(i, i);

@@ -99,14 +99,14 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
     debug_cloud_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("lc/debug_cloud", qos);
 
     sub_odom_ =
-        std::make_shared<message_filters::Subscriber<nav_msgs::msg::Odometry>>(this, "odom");
-    sub_scan_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::PointCloud2>>(
+        std::make_shared<message_filters::Subscriber<nav_msgs::msg::Odometry> >(this, "odom");
+    sub_scan_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::PointCloud2> >(
         this, "cloud");
 
-    sub_node_ = std::make_shared<message_filters::Synchronizer<NodeSyncPolicy>>(
+    sub_node_ = std::make_shared<message_filters::Synchronizer<NodeSyncPolicy> >(
         NodeSyncPolicy(10), *sub_odom_, *sub_scan_);
     sub_node_->registerCallback(std::bind(
-        &PoseGraphManager::callbackNode, this, std::placeholders::_1, std::placeholders::_2));
+                                    &PoseGraphManager::callbackNode, this, std::placeholders::_1, std::placeholders::_2));
 
     sub_save_flag_ = this->create_subscription<std_msgs::msg::String>(
         "save_dir", 1, std::bind(&PoseGraphManager::saveFlagCallback, this, std::placeholders::_1));
@@ -375,20 +375,20 @@ void PoseGraphManager::buildMap()
             for (size_t i = start_idx; i < keyframes_.size(); ++i)
             {
                 const auto &i_th_scan = [&]()
-                {
-                    // It's already voxelized
-                    if (store_voxelized_scan_)
-                    {
-                        return keyframes_[i].scan_;
-                    }
+                                        {
+                                            // It's already voxelized
+                                            if (store_voxelized_scan_)
+                                            {
+                                                return keyframes_[i].scan_;
+                                            }
 
-                    if (keyframes_[i].voxelized_scan_.empty())
-                    {
-                        keyframes_[i].voxelized_scan_ =
-                            *voxelize(keyframes_[i].scan_, scan_voxel_res_);
-                    }
-                    return keyframes_[i].voxelized_scan_;
-                }();
+                                            if (keyframes_[i].voxelized_scan_.empty())
+                                            {
+                                                keyframes_[i].voxelized_scan_ =
+                                                    *voxelize(keyframes_[i].scan_, scan_voxel_res_);
+                                            }
+                                            return keyframes_[i].voxelized_scan_;
+                                        }();
 
                 *map_cloud_ += transformPcd(i_th_scan, keyframes_[i].pose_corrected_);
             }
@@ -502,7 +502,7 @@ void PoseGraphManager::performRegistration()
         {
             std::lock_guard<std::mutex> lock(graph_mutex_);
             gtsam_graph_.add(gtsam::BetweenFactor<gtsam::Pose3>(
-                query_idx, match_idx, pose_from.between(pose_to), loop_noise));
+                                 query_idx, match_idx, pose_from.between(pose_to), loop_noise));
             loop_closure_added_.store(true);
         }
 
@@ -580,7 +580,7 @@ void PoseGraphManager::visualizeCurrentData(const Eigen::Matrix4d &current_odom,
     }
 
     scan_pub_->publish(toROSMsg(
-        transformPcd(current_frame_.scan_, current_frame_.pose_corrected_), map_frame_, timestamp));
+                           transformPcd(current_frame_.scan_, current_frame_.pose_corrected_), map_frame_, timestamp));
 
     bool has_latest_position = false;
     geometry_msgs::msg::Point latest_position;
@@ -747,7 +747,7 @@ bool PoseGraphManager::checkIfKeyframe(const PoseGraphNode &query_node,
 {
     return keyframe_thr_ < (latest_node.pose_corrected_.block<3, 1>(0, 3) -
                             query_node.pose_corrected_.block<3, 1>(0, 3))
-                               .norm();
+           .norm();
 }
 
 void PoseGraphManager::saveFlagCallback(const std_msgs::msg::String::ConstSharedPtr &msg)

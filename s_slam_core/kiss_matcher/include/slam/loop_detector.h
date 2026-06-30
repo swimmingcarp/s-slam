@@ -25,22 +25,24 @@
 
 #define LOOP_CANDIDATE_NOT_FOUND -1
 
-namespace kiss_matcher {
-
-struct LoopDetectorConfig {
-  bool verbose_ = false;
+namespace kiss_matcher
+{
+struct LoopDetectorConfig
+{
+    bool verbose_ = false;
 };
 
-class LoopDetector {
- private:
-  LoopDetectorConfig config_;
-  rclcpp::Logger logger_;
+class LoopDetector
+{
+private:
+    LoopDetectorConfig config_;
+    rclcpp::Logger logger_;
 
- public:
-  explicit LoopDetector(const LoopDetectorConfig &config, const rclcpp::Logger &logger);
-  ~LoopDetector();
-  LoopIdxPairs fetchLoopCandidates(const PoseGraphNode &query_frame,
-                                   const std::vector<PoseGraphNode> &keyframes);
+public:
+    explicit LoopDetector(const LoopDetectorConfig &config, const rclcpp::Logger &logger);
+    ~LoopDetector();
+    LoopIdxPairs fetchLoopCandidates(const PoseGraphNode &query_frame,
+                                     const std::vector<PoseGraphNode> &keyframes);
 };
 }  // namespace kiss_matcher
 #endif  // KISS_MATCHER_LOOP_DETECTOR_H

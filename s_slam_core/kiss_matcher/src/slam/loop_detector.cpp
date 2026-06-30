@@ -8,7 +8,9 @@ LoopDetector::LoopDetector(const LoopDetectorConfig &config, const rclcpp::Logge
     // Fill your declaration here
 }
 
-LoopDetector::~LoopDetector() {}
+LoopDetector::~LoopDetector()
+{
+}
 
 LoopIdxPairs LoopDetector::fetchLoopCandidates(const PoseGraphNode &query_frame,
                                                const std::vector<PoseGraphNode> &keyframes)

@@ -30,7 +30,7 @@ void ScalarTLSEstimator::estimate(const Eigen::RowVectorXd& X,
     assert(!only_one_element);  // TODO(jshi): admit a trivial solution
 
     size_t N = X.cols();
-    std::vector<std::pair<double, int>> h;
+    std::vector<std::pair<double, int> > h;
     for (size_t i = 0; i < N; ++i)
     {
         h.push_back(std::make_pair(X(i) - ranges(i), i + 1));
@@ -40,7 +40,9 @@ void ScalarTLSEstimator::estimate(const Eigen::RowVectorXd& X,
     // ascending order
     std::sort(h.begin(),
               h.end(),
-              [](std::pair<double, int> a, std::pair<double, int> b) { return a.first < b.first; });
+              [](std::pair<double, int> a, std::pair<double, int> b) {
+            return a.first < b.first;
+        });
 
     // calculate weights
     Eigen::RowVectorXd weights = ranges.array().square();
@@ -111,7 +113,9 @@ void ScalarTLSEstimator::estimate_tiled(const Eigen::RowVectorXd& X,
     Eigen::RowVectorXd h(N * 2);
     h << X - ranges, X + ranges;
     // ascending order
-    std::sort(h.data(), h.data() + h.cols(), [](double a, double b) { return a < b; });
+    std::sort(h.data(), h.data() + h.cols(), [](double a, double b) {
+            return a < b;
+        });
     // calculate interval centers
     Eigen::RowVectorXd h_centers = (h.head(h.cols() - 1) + h.tail(h.cols() - 1)) / 2;
     size_t nr_centers            = h_centers.cols();
@@ -125,69 +129,69 @@ void ScalarTLSEstimator::estimate_tiled(const Eigen::RowVectorXd& X,
 
     // loop tiling
     size_t ih_bound = ((nr_centers) & ~((s)-1));
-    size_t jh_bound = ((N) & ~((s)-1));
+    size_t jh_bound = ((N) &~((s)-1));
 
     std::vector<double> ranges_inverse_sum_vec(nr_centers, 0);
     std::vector<double> dot_X_weights_vec(nr_centers, 0);
     std::vector<double> dot_weights_consensus_vec(nr_centers, 0);
-    std::vector<std::vector<double>> X_consensus_table(nr_centers, std::vector<double>());
+    std::vector<std::vector<double> > X_consensus_table(nr_centers, std::vector<double>());
 
     auto inner_loop_f = [&](const size_t& i,
                             const size_t& jh,
                             const size_t& jl_lower_bound,
                             const size_t& jl_upper_bound)
-    {
-        double& ranges_inverse_sum           = ranges_inverse_sum_vec[i];
-        double& dot_X_weights                = dot_X_weights_vec[i];
-        double& dot_weights_consensus        = dot_weights_consensus_vec[i];
-        std::vector<double>& X_consensus_vec = X_consensus_table[i];
+                        {
+                            double& ranges_inverse_sum           = ranges_inverse_sum_vec[i];
+                            double& dot_X_weights                = dot_X_weights_vec[i];
+                            double& dot_weights_consensus        = dot_weights_consensus_vec[i];
+                            std::vector<double>& X_consensus_vec = X_consensus_table[i];
 
-        size_t j = 0;
-        for (size_t jl = jl_lower_bound; jl < jl_upper_bound; ++jl)
-        {
-            j              = jh + jl;
-            bool consensus = std::abs(X(j) - h_centers(i)) <= ranges(j);
-            if (consensus)
-            {
-                dot_X_weights += X(j) * weights(j);
-                dot_weights_consensus += weights(j);
-                X_consensus_vec.push_back(X(j));
-            }
-            else
-            {
-                ranges_inverse_sum += ranges(j);
-            }
-        }
+                            size_t j = 0;
+                            for (size_t jl = jl_lower_bound; jl < jl_upper_bound; ++jl)
+                            {
+                                j              = jh + jl;
+                                bool consensus = std::abs(X(j) - h_centers(i)) <= ranges(j);
+                                if (consensus)
+                                {
+                                    dot_X_weights += X(j) * weights(j);
+                                    dot_weights_consensus += weights(j);
+                                    X_consensus_vec.push_back(X(j));
+                                }
+                                else
+                                {
+                                    ranges_inverse_sum += ranges(j);
+                                }
+                            }
 
-        if (static_cast<int>(j) == N - 1)
-        {
-            // x_hat(i) = dot(X(consensus), weights(consensus)) / dot(weights, consensus);
-            x_hat(i) = dot_X_weights / dot_weights_consensus;
+                            if (static_cast<int>(j) == N - 1)
+                            {
+                                // x_hat(i) = dot(X(consensus), weights(consensus)) / dot(weights, consensus);
+                                x_hat(i) = dot_X_weights / dot_weights_consensus;
 
-            // residual = X(consensus)-x_hat(i);
-            Eigen::Map<Eigen::VectorXd> X_consensus(X_consensus_vec.data(), X_consensus_vec.size());
-            Eigen::VectorXd residual = X_consensus.array() - x_hat(i);
+                                // residual = X(consensus)-x_hat(i);
+                                Eigen::Map<Eigen::VectorXd> X_consensus(X_consensus_vec.data(), X_consensus_vec.size());
+                                Eigen::VectorXd residual = X_consensus.array() - x_hat(i);
 
-            // x_cost(i) = dot(residual,residual) + sum(ranges(~consensus));
-            x_cost(i) = residual.squaredNorm() + ranges_inverse_sum;
-        }
-    };
+                                // x_cost(i) = dot(residual,residual) + sum(ranges(~consensus));
+                                x_cost(i) = residual.squaredNorm() + ranges_inverse_sum;
+                            }
+                        };
 
-#pragma omp parallel for default(none) shared(jh_bound,                  \
-                                              ih_bound,                  \
-                                              ranges_inverse_sum_vec,    \
-                                              dot_X_weights_vec,         \
-                                              dot_weights_consensus_vec, \
-                                              X_consensus_table,         \
-                                              h_centers,                 \
-                                              weights,                   \
-                                              N,                         \
-                                              X,                         \
-                                              x_hat,                     \
-                                              x_cost,                    \
-                                              s,                         \
-                                              ranges,                    \
-                                              inner_loop_f)
+#pragma omp parallel for default(none) shared(jh_bound, \
+    ih_bound, \
+    ranges_inverse_sum_vec, \
+    dot_X_weights_vec, \
+    dot_weights_consensus_vec, \
+    X_consensus_table, \
+    h_centers, \
+    weights, \
+    N, \
+    X, \
+    x_hat, \
+    x_cost, \
+    s, \
+    ranges, \
+    inner_loop_f)
     for (size_t ih = 0; ih < ih_bound; ih += s)
     {
         for (size_t jh = 0; jh < jh_bound; jh += s)
@@ -202,44 +206,44 @@ void ScalarTLSEstimator::estimate_tiled(const Eigen::RowVectorXd& X,
 
     // finish the left over entries
     // 1. Finish the unfinished js
-#pragma omp parallel for default(none) shared(jh_bound,                  \
-                                              ih_bound,                  \
-                                              ranges_inverse_sum_vec,    \
-                                              dot_X_weights_vec,         \
-                                              dot_weights_consensus_vec, \
-                                              X_consensus_table,         \
-                                              h_centers,                 \
-                                              weights,                   \
-                                              N,                         \
-                                              X,                         \
-                                              x_hat,                     \
-                                              x_cost,                    \
-                                              s,                         \
-                                              ranges,                    \
-                                              nr_centers,                \
-                                              inner_loop_f)
+#pragma omp parallel for default(none) shared(jh_bound, \
+    ih_bound, \
+    ranges_inverse_sum_vec, \
+    dot_X_weights_vec, \
+    dot_weights_consensus_vec, \
+    X_consensus_table, \
+    h_centers, \
+    weights, \
+    N, \
+    X, \
+    x_hat, \
+    x_cost, \
+    s, \
+    ranges, \
+    nr_centers, \
+    inner_loop_f)
     for (size_t i = 0; i < nr_centers; ++i)
     {
         inner_loop_f(i, 0, jh_bound, N);
     }
 
     // 2. Finish the unfinished is
-#pragma omp parallel for default(none) shared(jh_bound,                  \
-                                              ih_bound,                  \
-                                              ranges_inverse_sum_vec,    \
-                                              dot_X_weights_vec,         \
-                                              dot_weights_consensus_vec, \
-                                              X_consensus_table,         \
-                                              h_centers,                 \
-                                              weights,                   \
-                                              N,                         \
-                                              X,                         \
-                                              x_hat,                     \
-                                              x_cost,                    \
-                                              s,                         \
-                                              ranges,                    \
-                                              nr_centers,                \
-                                              inner_loop_f)
+#pragma omp parallel for default(none) shared(jh_bound, \
+    ih_bound, \
+    ranges_inverse_sum_vec, \
+    dot_X_weights_vec, \
+    dot_weights_consensus_vec, \
+    X_consensus_table, \
+    h_centers, \
+    weights, \
+    N, \
+    X, \
+    x_hat, \
+    x_cost, \
+    s, \
+    ranges, \
+    nr_centers, \
+    inner_loop_f)
     for (size_t i = ih_bound; i < nr_centers; ++i)
     {
         inner_loop_f(i, 0, 0, N);
