@@ -27,8 +27,8 @@ launch:
 
       remap:
         # Subscriber topics
-        - { from: '/cloud', to: $(var scan_topic) }
-        - { from: '/odom',   to: $(var odom_topic) }
+        - { from: 'cloud', to: $(var scan_topic) }
+        - { from: 'odom',  to: $(var odom_topic) }
 
       param:
         - name: "map_frame"
