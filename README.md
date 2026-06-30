@@ -43,33 +43,55 @@ inside it recursively.
 | Simulation | `s_slam_simulation` | Future CARLA/Gazebo/Ignition launch, worlds, models, bridges | Recorded-bag replay presets, RViz config files |
 | Visualization | `s_slam_visualization` | RViz configs and RViz launch | Algorithm config, simulator assets |
 
-## Environment
+## Step-by-Step Setup
 
-Prerequisites:
+This guide targets a clean Ubuntu 22.04 / Jammy machine. Run the commands in
+order. The first build downloads pinned third-party source code, including
+GTSAM and small_gicp when system copies are not available, so network access to
+GitHub is required once.
 
-- ROS 2 Humble and `colcon`
-- PCL, GTSAM, Eigen3, FLANN, TBB, OpenMP, LZ4
-- CMake `>= 3.24` and `< 4.0`
-
-Install missing ROS/system dependencies from package manifests:
+### 1. Install System Tools
 
 ```bash
-rosdep update
-rosdep install --from-paths . --ignore-src -r -y
+sudo apt update
+sudo apt install -y software-properties-common curl gnupg lsb-release \
+  build-essential cmake git python3-pip locales
+sudo add-apt-repository -y universe
+sudo locale-gen en_US en_US.UTF-8
+sudo update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
 ```
 
-Install CMake if the system version is too old:
+### 2. Install ROS 2 Humble
+
+Follow the same apt repository setup used by the official ROS 2 Humble Ubuntu
+Debian-package guide:
 
 ```bash
-pip install --user "cmake>=3.24,<4"
+sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+  -o /usr/share/keyrings/ros-archive-keyring.gpg
+
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" | \
+  sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
+
+sudo apt update
+sudo apt install -y ros-humble-desktop ros-dev-tools
 ```
 
-Use system Python and system compilers when building. This matters on machines
-where Anaconda appears before `/usr/bin` in `PATH`; ROS Humble expects Python
-3.10 and system Boost libraries.
+Check ROS:
 
 ```bash
-cd /home/jaden/workspace/sanshan-workspace/s-slam
+source /opt/ros/humble/setup.bash
+ros2 --help >/dev/null
+colcon --help >/dev/null
+```
+
+### 3. Prepare the Workspace
+
+Use system Python and system compilers. This avoids Anaconda/Conda paths leaking
+into ROS and Boost.
+
+```bash
+cd /home/jaden/workspace/s-slam
 
 export PATH=$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin
 export CC=/usr/bin/cc
@@ -77,53 +99,68 @@ export CXX=/usr/bin/c++
 source /opt/ros/humble/setup.bash
 ```
 
-Use the same environment in every terminal before running commands:
+### 4. Install Dependencies
+
+Install native libraries used directly by CMake and by the vendored GTSAM
+fallback:
 
 ```bash
-cd /home/jaden/workspace/sanshan-workspace/s-slam
+sudo apt install -y libboost-all-dev libeigen3-dev libpcl-dev libflann-dev \
+  liblz4-dev libtbb-dev libomp-dev
+```
+
+Initialize `rosdep` once per machine. If it was already initialized, the first
+command may print an error; continuing is OK.
+
+```bash
+sudo rosdep init || true
+rosdep update
+```
+
+Install dependencies declared by the package manifests:
+
+```bash
+rosdep install --from-paths . --ignore-src -r -y
+```
+
+### 5. Install a Reproducible CMake
+
+Ubuntu 22.04 often ships CMake 3.22, but this workspace requires CMake 3.24 or
+newer. Install a pinned major range and keep it first in `PATH`:
+
+```bash
+python3 -m pip install --user "cmake>=3.24,<4"
+export PATH=$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin
+cmake --version
+```
+
+The printed version must be `3.24` or newer.
+
+### 6. Build Everything
+
+```bash
+cd /home/jaden/workspace/s-slam
 source /opt/ros/humble/setup.bash
+scripts/build.sh --clean
+scripts/build.sh
 source install/setup.bash
 ```
 
-## Build
-
-Clean build:
+The first build may download pinned third-party source code. `scripts/build.sh`
+builds packages sequentially and uses at most half of the detected CPU cores per
+package through `MAKEFLAGS`, capped at 4 jobs. On low-memory machines use `BUILD_JOBS=2 scripts/build.sh`.
+On WSL or memory-constrained machines, use the safest mode:
 
 ```bash
-colcon build --cmake-clean-cache --cmake-args \
-  -DPython3_EXECUTABLE=/usr/bin/python3 \
-  -DCMAKE_C_COMPILER=/usr/bin/cc \
-  -DCMAKE_CXX_COMPILER=/usr/bin/c++
+BUILD_JOBS=1 scripts/build.sh
 ```
 
-Incremental rebuild after source or launch/config changes:
+For later source/config changes:
 
 ```bash
-colcon build --cmake-args \
-  -DPython3_EXECUTABLE=/usr/bin/python3 \
-  -DCMAKE_C_COMPILER=/usr/bin/cc \
-  -DCMAKE_CXX_COMPILER=/usr/bin/c++
-```
-
-After every build:
-
-```bash
+scripts/build.sh
 source install/setup.bash
 ```
-
-Expected packages:
-
-```bash
-colcon list --names-only
-# kiss_matcher_ros
-# s_slam_replay
-# s_slam_simulation
-# s_slam_visualization
-# spark_fast_lio
-```
-
-If CMake previously cached Anaconda paths, rebuild once with
-`--cmake-clean-cache`.
 
 ## Replay Workflow
 

@@ -14,10 +14,11 @@ front-end odometry + registered cloud
   -> corrected trajectory + loop closures + global map
 ```
 
-Primary inputs:
+Primary inputs are relative topic names. Launch files remap them to the
+front-end outputs, usually `/odometry` and `/cloud_registered`.
 
-- `/odom`: `nav_msgs/msg/Odometry`
-- `/cloud`: `sensor_msgs/msg/PointCloud2`
+- `odom`: `nav_msgs/msg/Odometry`
+- `cloud`: `sensor_msgs/msg/PointCloud2`
 
 Primary outputs:
 

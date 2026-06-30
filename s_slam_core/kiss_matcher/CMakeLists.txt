@@ -28,6 +28,13 @@ endif()
 # KISS-Matcher core library dependencies (Eigen3 / TBB / ROBIN / FLANN / LZ4)
 # =============================================================================
 include(GNUInstallDirs)
+include(FetchContent)
+# Several fetched projects use broad cache option names. Pin them before any
+# FetchContent dependency is loaded so third-party tests/examples stay out of
+# normal workspace builds.
+set(BUILD_TESTS OFF CACHE BOOL "Disable fetched dependency tests" FORCE)
+set(BUILD_EXAMPLES OFF CACHE BOOL "Disable fetched dependency examples" FORCE)
+set(BUILD_BENCHMARKS OFF CACHE BOOL "Disable fetched dependency benchmarks" FORCE)
 # 3rdparty dependency scripts are shared inside s_slam_core/third_party.
 include(${CMAKE_CURRENT_SOURCE_DIR}/../third_party/find_dependencies.cmake)
 
@@ -72,30 +79,43 @@ find_package(geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
+find_package(message_filters REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(PCL REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_eigen REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_sensor_msgs REQUIRED)
-find_package(GTSAM REQUIRED)
+find_package(GTSAM CONFIG QUIET)
+if(NOT GTSAM_FOUND)
+  message(STATUS "GTSAM not found. Fetching pinned GTSAM 4.2.0 for this build.")
+  set(GTSAM_USE_SYSTEM_EIGEN ON CACHE BOOL "Use system Eigen for vendored GTSAM" FORCE)
+  set(GTSAM_BUILD_TESTS OFF CACHE BOOL "Disable GTSAM tests" FORCE)
+  set(GTSAM_BUILD_EXAMPLES_ALWAYS OFF CACHE BOOL "Disable GTSAM examples" FORCE)
+  set(GTSAM_BUILD_WITH_MARCH_NATIVE OFF CACHE BOOL "Disable CPU-specific GTSAM flags" FORCE)
+  set(GTSAM_INSTALL_CPPUNITLITE OFF CACHE BOOL "Disable GTSAM CppUnitLite install" FORCE)
+  FetchContent_Declare(
+    gtsam
+    GIT_REPOSITORY https://github.com/borglab/gtsam.git
+    # GTSAM 4.2.0, pinned to the resolved tag commit for reproducible builds.
+    GIT_TAG 4f66a491ffc83cf092d0d818b11dc35135521612
+  )
+  FetchContent_MakeAvailable(gtsam)
+endif()
 
 include_directories(include ${PCL_INCLUDE_DIRS})
 link_directories(${PCL_LIBRARY_DIRS})
 add_definitions(${PCL_DEFINITIONS})
 
 # Load small_gicp
-include(FetchContent)
 # small_gicp uses broad cache variable names. Pin them before FetchContent so
 # a workspace-level cache cannot make third-party tests part of this package.
-set(BUILD_TESTS OFF CACHE BOOL "Disable small_gicp tests" FORCE)
-set(BUILD_EXAMPLES OFF CACHE BOOL "Disable small_gicp examples" FORCE)
-set(BUILD_BENCHMARKS OFF CACHE BOOL "Disable small_gicp benchmarks" FORCE)
 set(BUILD_WITH_PCL ON CACHE BOOL "Build small_gicp PCL integration" FORCE)
 FetchContent_Declare(
   small_gicp
   GIT_REPOSITORY https://github.com/koide3/small_gicp
-  GIT_TAG master
+  # v1.0.1, pinned to the resolved commit for reproducible builds.
+  GIT_TAG 57c1106daf83c2c79ee0c58a9c7ed0032298ff4e
 )
 FetchContent_MakeAvailable(small_gicp)
 
@@ -141,7 +161,7 @@ add_executable(kiss_matcher_sam src/slam/pose_graph_manager.cpp
                                 src/slam/loop_closure.cpp
                                 src/slam/loop_detector.cpp)
 ament_target_dependencies(kiss_matcher_sam
-  rclcpp tf2_ros sensor_msgs nav_msgs visualization_msgs pcl_conversions PCL
+  rclcpp tf2_ros sensor_msgs nav_msgs visualization_msgs message_filters pcl_conversions PCL
 )
 target_link_libraries(kiss_matcher_sam
   kiss_matcher::kiss_matcher_core
