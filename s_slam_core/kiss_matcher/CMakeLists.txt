@@ -133,6 +133,7 @@ add_library(kiss_matcher::kiss_matcher_core ALIAS kiss_matcher_core)
 target_compile_features(kiss_matcher_core PUBLIC cxx_std_17)
 target_include_directories(kiss_matcher_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../third_party/tsl/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_link_libraries(kiss_matcher_core
     PUBLIC Eigen3::Eigen robin::robin flann::flann_cpp TBB::tbb ${LZ4_LIBRARY}
