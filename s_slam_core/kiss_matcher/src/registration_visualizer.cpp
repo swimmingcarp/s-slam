@@ -92,7 +92,9 @@ private:
         for (const auto& point : cloud.points)
         {
             if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z))
+            {
                 continue;
+            }
             points.emplace_back(point.x, point.y, point.z);
         }
         return points;

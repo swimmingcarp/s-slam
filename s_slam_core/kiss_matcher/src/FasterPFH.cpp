@@ -39,11 +39,17 @@ void CheckNaNandBreak(const std::vector<Eigen::VectorXf> &vecs)
 bool FasterPFH::IsNormalValid(const Eigen::Vector3f &normal)
 {
     if (std::isnan(normal(0)))
+    {
         return false;
+    }
     if (std::isnan(normal(1)))
+    {
         return false;
+    }
     if (std::isnan(normal(2)))
+    {
         return false;
+    }
 
     // Otherwise, it's valid!
     return true;
@@ -257,16 +263,16 @@ void FasterPFH::ComputeFeature(std::vector<Eigen::Vector3f> &points,
     // Currently, we assume that spfh_indices_ == fpfh_indices_
     // auto t_e_s    = std::chrono::high_resolution_clock::now();
     fpfh_indices_ = spfh_indices_;
-    size_t N      = fpfh_indices_.size();
-    points.resize(N);
-    descriptors.resize(N);
+    size_t fpfh_point_count = fpfh_indices_.size();
+    points.resize(fpfh_point_count);
+    descriptors.resize(fpfh_point_count);
     // Iterate over the entire index vector
 
     tbb::parallel_for(
-        tbb::blocked_range<size_t>(0, N),
+        tbb::blocked_range<size_t>(0, fpfh_point_count),
         [&](const tbb::blocked_range<size_t> &r)
         {
-            //    tbb::parallel_for(0, N, [&](const int& j) {
+            //    tbb::parallel_for(0, fpfh_point_count, [&](const int& j) {
             for (size_t j = r.begin(); j != r.end(); ++j)
             {
                 const int p_idx = fpfh_indices_[j];
@@ -363,28 +369,42 @@ void FasterPFH::ComputePointSPFHSignature(const uint32_t p_idx,
                                  pfh_tuple[1],
                                  pfh_tuple[2],
                                  pfh_tuple[3]))
+        {
             continue;
+        }
 
         // Normalize the f1, f2, f3 features and push them in the histogram
         int h_index = static_cast<int>(std::floor(nr_bins_f1_ * ((pfh_tuple[0] + M_PI) * d_pi_)));
         if (h_index < 0)
+        {
             h_index = 0;
+        }
         if (h_index >= nr_bins_f1_)
+        {
             h_index = nr_bins_f1_ - 1;
+        }
         hist_f1(h_index) += hist_incr;
 
         h_index = static_cast<int>(std::floor(nr_bins_f2_ * ((pfh_tuple[1] + 1.0) * 0.5)));
         if (h_index < 0)
+        {
             h_index = 0;
+        }
         if (h_index >= nr_bins_f2_)
+        {
             h_index = nr_bins_f2_ - 1;
+        }
         hist_f2(h_index) += hist_incr;
 
         h_index = static_cast<int>(std::floor(nr_bins_f3_ * ((pfh_tuple[2] + 1.0) * 0.5)));
         if (h_index < 0)
+        {
             h_index = 0;
+        }
         if (h_index >= nr_bins_f3_)
+        {
             h_index = nr_bins_f3_ - 1;
+        }
         hist_f3(h_index) += hist_incr;
     }
 }
@@ -528,7 +548,9 @@ void FasterPFH::WeightPointSPFHSignature(const std::vector<Eigen::VectorXf> &his
         }
         // Minus the query point itself
         if (dists[idx] == 0 || indices[idx] == NOT_ASSIGNED)
+        {
             continue;
+        }
 
         // Standard weighting function used
         // HT: note that squared distance showed better performance
@@ -558,11 +580,17 @@ void FasterPFH::WeightPointSPFHSignature(const std::vector<Eigen::VectorXf> &his
     }
 
     if (sum_f1 != 0)
+    {
         sum_f1 = 100.0 / sum_f1;  // histogram values sum up to 100
+    }
     if (sum_f2 != 0)
+    {
         sum_f2 = 100.0 / sum_f2;  // histogram values sum up to 100
+    }
     if (sum_f3 != 0)
+    {
         sum_f3 = 100.0 / sum_f3;  // histogram values sum up to 100
+    }
 
     // Adjust final FPFH values
     const auto denormalize_with = [](auto factor)

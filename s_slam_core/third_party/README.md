@@ -14,6 +14,7 @@ directly in-tree.
 |-------|---------|-------|
 | `ikd-Tree/` | `spark_fast_lio` | Incremental k-d tree implementation |
 | `IKFoM_toolkit/` | `spark_fast_lio` | Error-state iterated Kalman filter toolkit |
+| `tsl/` | `kiss_matcher_ros` | Header-only robin-map dependency used by KISS-Matcher |
 
 ## FetchContent Helpers
 
@@ -26,6 +27,11 @@ during the build.
 | `eigen/` | Eigen3 finder/fetch script | `kiss_matcher_ros` |
 | `tbb/` | oneTBB fetch script | `kiss_matcher_ros` |
 | `robin/` | ROBIN fetch script | `kiss_matcher_ros` |
+
+GTSAM and small_gicp are fetched directly from
+`../kiss_matcher/CMakeLists.txt`: GTSAM is used when no system
+`GTSAMConfig.cmake` is found, and small_gicp is always fetched as the backend
+registration helper.
 
 ## Rules
 

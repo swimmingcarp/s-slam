@@ -4,10 +4,10 @@
       lidar_type: 5               # 1 Livox, 2 Velodyne, 3 Ouster, 4 KM-Ouster, 5 RoboSense (Airy)
       scan_line: 96               # Airy-h / Airy-v = 96 channels (Airy-g = 48). Confirm via Web "Config Version".
       scan_rate: 10               # Airy spins at 600 RPM -> 10 Hz frame rate.
-      timestamp_unit: 0           # IGNORED for RoboSense (rs_handler relativizes the absolute per-point timestamp).
+      timestamp_unit: 0           # IGNORED for RoboSense (the point cloud handler relativizes the absolute per-point timestamp).
       # TODO(device-bringup): tune after checking prop/frame returns in RViz.
       blind: 0.5                  # [m] reject self-returns (frame/props). Sensor min range is 0.1 m.
-      blind_for_human_pilots: 0.0  # unused by rs_handler (no human-pilot rejection on a UAV)
+      blind_for_human_pilots: 0.0  # unused by the RoboSense point cloud handler (no human-pilot rejection on a UAV)
 
     mapping:
       # TODO(device-bringup): replace with noise values estimated from a static Airy IMU log.

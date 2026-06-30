@@ -35,13 +35,13 @@
     std::vector<decltype(mat)::Scalar>(mat.data(), mat.data() + mat.rows() * mat.cols())
 #define DEBUG_FILE_DIR(name) (std::string(std::string(ROOT_DIR) + "Log/" + name))
 
-typedef pcl::PointXYZINormal PointType;
-typedef pcl::PointCloud<PointType> PointCloudXYZI;
-typedef std::vector<PointType, Eigen::aligned_allocator<PointType>> PointVector;
-typedef Eigen::Vector3d V3D;
-typedef Eigen::Matrix3d M3D;
-typedef Eigen::Vector3f V3F;
-typedef Eigen::Matrix3f M3F;
+using PointType      = pcl::PointXYZINormal;
+using PointCloudXYZI = pcl::PointCloud<PointType>;
+using PointVector    = std::vector<PointType, Eigen::aligned_allocator<PointType>>;
+using V3D            = Eigen::Vector3d;
+using M3D            = Eigen::Matrix3d;
+using V3F            = Eigen::Vector3f;
+using M3F            = Eigen::Matrix3f;
 
 #define MD(a, b) Eigen::Matrix<double, (a), (b)>
 #define VD(a) Eigen::Matrix<double, (a), 1>
@@ -205,7 +205,9 @@ auto set_pose6d(const double t,
         rot_kp.vel[i] = v(i);
         rot_kp.pos[i] = p(i);
         for (int j = 0; j < 3; ++j)
+        {
             rot_kp.rot[i * 3 + j] = R(i, j);
+        }
     }
     return rot_kp;
 }

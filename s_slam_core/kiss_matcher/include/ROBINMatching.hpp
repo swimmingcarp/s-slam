@@ -29,8 +29,8 @@ namespace kiss_matcher
 class ROBINMatching
 {
 public:
-    typedef std::vector<Eigen::VectorXf> Feature;
-    typedef flann::Index<flann::L2<float> > KDTree;
+    using Feature = std::vector<Eigen::VectorXf>;
+    using KDTree  = flann::Index<flann::L2<float>>;
 
     ROBINMatching()
     {

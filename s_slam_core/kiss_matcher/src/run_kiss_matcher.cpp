@@ -68,11 +68,11 @@ void colorize(const pcl::PointCloud<pcl::PointXYZ>& pc,
               pcl::PointCloud<pcl::PointXYZRGB>& pc_colored,
               const std::vector<int>& color)
 {
-    int N = pc.points.size();
+    int point_count = pc.points.size();
 
     pc_colored.clear();
     pcl::PointXYZRGB pt_tmp;
-    for (int i = 0; i < N; ++i)
+    for (int i = 0; i < point_count; ++i)
     {
         const auto& pt = pc.points[i];
         pt_tmp.x       = pt.x;
@@ -92,7 +92,9 @@ std::vector<Eigen::Vector3f> convertCloudToVec(const pcl::PointCloud<pcl::PointX
     for (const auto& pt : cloud.points)
     {
         if (!std::isfinite(pt.x) || !std::isfinite(pt.y) || !std::isfinite(pt.z))
+        {
             continue;
+        }
         vec.emplace_back(pt.x, pt.y, pt.z);
     }
     return vec;

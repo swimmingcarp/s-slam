@@ -16,7 +16,6 @@ launch:
   - arg: { name: save_voxel_resolution, default: "0.3", description: "Voxel resolution used for saved map PCD" }
 
   - include:
-    # Please make sure to build SPARK-Fast-LIO first (see https://github.com/MIT-SPARK/spark-fast-lio).
       file: $(find-pkg-share s_slam_replay)/launch/mapping_kimera_multi.launch.yaml
       arg:
         - { name: replay_id, value: $(var replay_id) }

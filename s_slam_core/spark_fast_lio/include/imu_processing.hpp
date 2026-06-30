@@ -74,7 +74,7 @@ public:
 private:
     void IMU_init(const MeasureGroup &meas,
                   esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state,
-                  int &N);
+                  int &init_sample_count);
     void UndistortPcl(const MeasureGroup &meas,
                       esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state,
                       PointCloudXYZI &pcl_in_out);
@@ -172,7 +172,7 @@ void ImuProcess::set_acc_bias_cov(const V3D &b_a)
 
 void ImuProcess::IMU_init(const MeasureGroup &meas,
                           esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state,
-                          int &N)
+                          int &init_sample_count)
 {
     /** 1. initializing the gravity, gyro bias, acc and gyro covariance
      ** 2. normalize the acceleration measurenments to unit gravity **/
@@ -182,7 +182,7 @@ void ImuProcess::IMU_init(const MeasureGroup &meas,
     if (b_first_frame_)
     {
         Reset();
-        N                   = 1;
+        init_sample_count   = 1;
         b_first_frame_      = false;
         const auto &imu_acc = meas.imu.front()->linear_acceleration;
         const auto &gyr_acc = meas.imu.front()->angular_velocity;
@@ -198,17 +198,19 @@ void ImuProcess::IMU_init(const MeasureGroup &meas,
         cur_acc << imu_acc.x, imu_acc.y, imu_acc.z;
         cur_gyr << gyr_acc.x, gyr_acc.y, gyr_acc.z;
 
-        mean_acc += (cur_acc - mean_acc) / N;
-        mean_gyr += (cur_gyr - mean_gyr) / N;
+        mean_acc += (cur_acc - mean_acc) / init_sample_count;
+        mean_gyr += (cur_gyr - mean_gyr) / init_sample_count;
 
-        cov_acc = cov_acc * (N - 1.0) / N +
-                  (cur_acc - mean_acc).cwiseProduct(cur_acc - mean_acc) * (N - 1.0) / (N * N);
-        cov_gyr = cov_gyr * (N - 1.0) / N +
-                  (cur_gyr - mean_gyr).cwiseProduct(cur_gyr - mean_gyr) * (N - 1.0) / (N * N);
+        cov_acc = cov_acc * (init_sample_count - 1.0) / init_sample_count +
+                  (cur_acc - mean_acc).cwiseProduct(cur_acc - mean_acc) *
+                      (init_sample_count - 1.0) / (init_sample_count * init_sample_count);
+        cov_gyr = cov_gyr * (init_sample_count - 1.0) / init_sample_count +
+                  (cur_gyr - mean_gyr).cwiseProduct(cur_gyr - mean_gyr) *
+                      (init_sample_count - 1.0) / (init_sample_count * init_sample_count);
 
         // cout<<"acc norm: "<<cur_acc.norm()<<" "<<mean_acc.norm()<<endl;
 
-        N++;
+        ++init_sample_count;
     }
     state_ikfom init_state = kf_state.get_x();
     init_state.grav        = S2(-mean_acc / mean_acc.norm() * G_m_s2);
@@ -303,7 +305,9 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas,
         auto &&tail = *(it_imu + 1);
 
         if (rclcpp::Time(tail->header.stamp).seconds() < last_lidar_end_time_)
+        {
             continue;
+        }
 
         angvel_avr << 0.5 * (head->angular_velocity.x + tail->angular_velocity.x),
             0.5 * (head->angular_velocity.y + tail->angular_velocity.y),
@@ -364,7 +368,9 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas,
 
     /*** undistort each lidar point (backward propagation) ***/
     if (pcl_out.points.begin() == pcl_out.points.end())
+    {
         return;
+    }
     auto it_pcl = pcl_out.points.end() - 1;
     for (auto it_kp = IMUpose.end() - 1; it_kp != IMUpose.begin(); --it_kp)
     {
@@ -403,7 +409,9 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas,
             it_pcl->z = P_compensate(2);
 
             if (it_pcl == pcl_out.points.begin())
+            {
                 break;
+            }
         }
     }
 }

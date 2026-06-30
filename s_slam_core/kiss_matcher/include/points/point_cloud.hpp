@@ -31,7 +31,7 @@ public:
     explicit PointCloud(const std::vector<Eigen::Matrix<T, D, 1>, Allocator>& points)
     {
         this->resize(points.size());
-        for (size_t i = 0; i < points.size(); i++) {
+        for (size_t i = 0; i < points.size(); ++i) {
             this->point(i) << points[i].template cast<double>().template head<3>(), 1.0;
         }
     }

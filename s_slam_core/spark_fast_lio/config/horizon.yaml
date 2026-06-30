@@ -1,7 +1,7 @@
 /**:
   ros__parameters:
     preprocess:
-      lidar_type: 1                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR,
+      lidar_type: 1                # 1 Livox, 2 Velodyne, 3 Ouster, 4 KM-Ouster, 5 RoboSense
       scan_line:  6
       blind: 4
 

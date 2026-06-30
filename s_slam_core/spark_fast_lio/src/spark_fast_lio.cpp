@@ -38,7 +38,7 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     scan_body_frame_publish_enabled_  = declare_parameter<bool>("publish.scan_body_frame_publish_enabled", false);
     scan_base_frame_publish_enabled_  = declare_parameter<bool>("publish.scan_base_frame_publish_enabled", false);
 
-    NUM_MAX_ITERATIONS_ = declare_parameter<int>("max_iteration", 4);
+    max_iterations_ = declare_parameter<int>("max_iteration", 4);
 
     map_file_path_ = declare_parameter<std::string>("map_file_path", "");
     save_dir_      = declare_parameter<std::string>("common.save_dir", "");
@@ -154,7 +154,9 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
 
     double epsi[23];
     for (int i = 0; i < 23; ++i)
+    {
         epsi[i] = 0.001;
+    }
 
     kf_.init_dyn_share(
         get_f,
@@ -162,7 +164,7 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
         df_dw,
         // we use a lambda so we can call a member function
         std::bind(&SPARKFastLIO2::calcHModel, this, std::placeholders::_1, std::placeholders::_2),
-        NUM_MAX_ITERATIONS_,
+        max_iterations_,
         epsi);
 
     cloud_undistort_.reset(new PointCloudXYZI());
@@ -400,13 +402,13 @@ void SPARKFastLIO2::collectRemovedPoints()
 void SPARKFastLIO2::standardLiDARCallback(const sensor_msgs::msg::PointCloud2 &msg)
 {
     std::lock_guard<std::mutex> lk(buffer_mutex_);
-    scan_count_++;
+    ++scan_count_;
     rclcpp::Time msg_time = msg.header.stamp;
 
     PointCloudXYZI::Ptr ptr(new PointCloudXYZI());
     preprocessor_->process(msg, ptr);
 
-    if (preprocessor_->lidar_type == RS)
+    if (preprocessor_->lidar_type == ROBOSENSE)
     {
         if (!preprocessor_->has_scan_time() || ptr->empty())
         {
@@ -434,7 +436,7 @@ void SPARKFastLIO2::livoxLiDARCallback(const livox_ros_driver2::msg::CustomMsg::
     static bool timediff_set_flg = false;
 
     std::lock_guard<std::mutex> lk(buffer_mutex_);
-    scan_count_++;
+    ++scan_count_;
     rclcpp::Time msg_time = msg->header.stamp;
 
     if (msg_time < last_lidar_timestamp_)
@@ -581,7 +583,9 @@ void SPARKFastLIO2::calcHModel(state_ikfom &s, esekfom::dyn_share_datastruct<dou
         }
 
         if (!point_selected_surf_[i])
+        {
             continue;
+        }
 
         VF(4) pabcd;
         point_selected_surf_[i] = false;
@@ -612,7 +616,7 @@ void SPARKFastLIO2::calcHModel(state_ikfom &s, esekfom::dyn_share_datastruct<dou
             laser_cloud_ori_->points[effect_feat_num_] = feats_down_body_->points[i];
             corr_normvec_->points[effect_feat_num_]    = normvec_->points[i];
             total_residual_ += res_last_[i];
-            effect_feat_num_++;
+            ++effect_feat_num_;
         }
     }
 
@@ -697,10 +701,14 @@ void SPARKFastLIO2::lasermapFovSegment()
         dist_to_map_edge[i][1] = fabs(lidar_xyz(i) - localmap_points_.vertex_max[i]);
         if (dist_to_map_edge[i][0] <= MOV_THRESHOLD * det_range_ ||
             dist_to_map_edge[i][1] <= MOV_THRESHOLD * det_range_)
+        {
             need_move = true;
+        }
     }
     if (!need_move)
+    {
         return;
+    }
     BoxPointType new_localmap_points, tmp_boxpoints;
     new_localmap_points = localmap_points_;
     float mov_dist      = max((cube_len_ - 2.0 * MOV_THRESHOLD * det_range_) * 0.5 * 0.9,
@@ -776,7 +784,9 @@ void SPARKFastLIO2::mapIncremental()
             for (int readd_i = 0; readd_i < NUM_MATCH_POINTS; ++readd_i)
             {
                 if (points_near.size() < NUM_MATCH_POINTS)
+                {
                     break;
+                }
                 if (calc_dist(points_near[readd_i], mid_point) < dist)
                 {
                     need_add = false;
@@ -862,9 +872,8 @@ void SPARKFastLIO2::publishPath(const state_ikfom &state)
     msg_body_pose_.header.stamp    = rclcpp::Time(lidar_end_time_ * 1e9);
     msg_body_pose_.header.frame_id = map_frame_;
 
-    static int jjj = 0;
-    jjj++;
-    if (jjj % 10 == 0)
+    ++path_publish_counter_;
+    if (path_publish_counter_ % 10 == 0)
     {
         path_msg_.poses.push_back(msg_body_pose_);
         pub_path_->publish(path_msg_);
@@ -934,11 +943,11 @@ void SPARKFastLIO2::publishFrameWorld(
         }
 
         static int scan_wait_num = 0;
-        scan_wait_num++;
+        ++scan_wait_num;
         if (cloud_to_be_saved_->size() > 0 && pcd_save_interval_ > 0 &&
             scan_wait_num >= pcd_save_interval_)
         {
-            pcd_index_++;
+            ++pcd_index_;
             std::string all_points_dir(std::string(ROOT_DIR) + "PCD/scans_" +
                                        std::to_string(pcd_index_) + ".pcd");
             pcl::PCDWriter pcd_writer;
@@ -1061,7 +1070,9 @@ bool SPARKFastLIO2::syncPackages(MeasureGroup &meas, bool verbose)
     }
 
     if (lidar_buffer_.empty() || imu_buffer_.empty())
+    {
         return false;
+    }
 
     if (!lidar_pushed_)
     {
@@ -1079,7 +1090,7 @@ bool SPARKFastLIO2::syncPackages(MeasureGroup &meas, bool verbose)
         }
         else
         {
-            scan_num_++;
+            ++scan_num_;
             if (meas.lidar->points.back().curvature < 80 ||
                 meas.lidar->points.back().curvature > 120)
             {
@@ -1124,7 +1135,9 @@ bool SPARKFastLIO2::syncPackages(MeasureGroup &meas, bool verbose)
     {
         imu_time = rclcpp::Time(imu_buffer_.front()->header.stamp).seconds();
         if (imu_time > lidar_end_time_)
+        {
             break;
+        }
         meas.imu.push_back(imu_buffer_.front());
         imu_buffer_.pop_front();
     }
@@ -1313,11 +1326,17 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
     {
         publishFrameWorld(pub_cloud_full_);
         if (scan_lidar_frame_publish_enabled_)
+        {
             publishFrame(pub_cloud_lidar_, "lidar");
+        }
         if (scan_body_frame_publish_enabled_)
+        {
             publishFrame(pub_cloud_body_, "imu");
+        }
         if (scan_base_frame_publish_enabled_)
+        {
             publishFrame(pub_cloud_base_, "base");
+        }
     }
 }
 }  // namespace spark_fast_lio

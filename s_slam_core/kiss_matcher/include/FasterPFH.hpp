@@ -61,8 +61,14 @@ struct FasterPFH
         bool is_planar = false;
         inline void clear()
         {
-            if (!neighboring_indices.empty()) neighboring_indices.clear();
-            if (!neighboring_dists.empty()) neighboring_dists.clear();
+            if (!neighboring_indices.empty())
+            {
+                neighboring_indices.clear();
+            }
+            if (!neighboring_dists.empty())
+            {
+                neighboring_dists.clear();
+            }
         }
     };
 

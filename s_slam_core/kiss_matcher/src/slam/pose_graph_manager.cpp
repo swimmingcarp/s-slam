@@ -368,7 +368,9 @@ void PoseGraphManager::buildMap()
             }
 
             if (keyframes_.empty())
+            {
                 return;
+            }
 
             // NOTE(hlim): Building the full map causes RViz delay when keyframes > 500.
             // Since the map is for visualization only, we apply a heuristic to reduce cost.

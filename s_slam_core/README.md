@@ -32,9 +32,9 @@ Do not put these in `s_slam_core`:
 ```text
 spark_fast_lio
   inputs:  LiDAR point cloud + IMU
-  outputs: /odometry, /path, /cloud_registered, frame-specific registered clouds
+  outputs: odometry, path, cloud_registered, frame-specific registered clouds
 
 kiss_matcher_ros
-  inputs:  odometry + registered cloud
+  inputs:  odom + cloud; launch files remap these relative names to front-end topics
   outputs: corrected path, global map, loop-closure markers, saved results
 ```

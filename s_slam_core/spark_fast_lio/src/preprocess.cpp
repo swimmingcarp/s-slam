@@ -107,18 +107,18 @@ Preprocess::~Preprocess()
 {
 }
 
-void Preprocess::set(bool feature_enabled_input, int lid_type, double bld, int pfilt_num)
+void Preprocess::set(bool is_enabled, int lid_type, double bld, int pfilt_num)
 {
-    feature_enabled  = feature_enabled_input;
-    lidar_type       = lid_type;
-    blind            = bld;
-    point_filter_num = pfilt_num;
+    feature_enabled       = is_enabled;
+    lidar_type            = lid_type;
+    blind                 = bld;
+    point_filter_num      = pfilt_num;
 }
 
 #if defined(LIVOX_ROS_DRIVER_FOUND) && LIVOX_ROS_DRIVER_FOUND
 void Preprocess::process(const livox_ros_driver2::msg::CustomMsg &msg, PointCloudXYZI::Ptr &pcl_out)
 {
-    avia_handler(msg);
+    handleAviaPointCloud(msg);
     *pcl_out = pl_surf;
 }
 #endif
@@ -150,16 +150,16 @@ void Preprocess::process(const sensor_msgs::msg::PointCloud2 &msg, PointCloudXYZ
     switch (lidar_type)
     {
         case OUST64:
-            oust64_handler(msg);
+            handleOusterPointCloud(msg);
             break;
         case KMOUST64:
-            kmoust64_handler(msg);
+            handleKimeraOusterPointCloud(msg);
             break;
         case VELO16:
-            velodyne_handler(msg);
+            handleVelodynePointCloud(msg);
             break;
-        case RS:
-            rs_handler(msg);
+        case ROBOSENSE:
+            handleRoboSensePointCloud(msg);
             break;
         default:
             RCLCPP_FATAL(rclcpp::get_logger("Preprocess"), "Error LiDAR Type");
@@ -204,7 +204,7 @@ bool Preprocess::is_from_pilot_zone(const float &pt_x,
 }
 
 #if defined(LIVOX_ROS_DRIVER_FOUND) && LIVOX_ROS_DRIVER_FOUND
-void Preprocess::avia_handler(const livox_ros_driver2::msg::CustomMsg &msg)
+void Preprocess::handleAviaPointCloud(const livox_ros_driver2::msg::CustomMsg &msg)
 {
     pl_surf.clear();
     pl_corn.clear();
@@ -252,18 +252,20 @@ void Preprocess::avia_handler(const livox_ros_driver2::msg::CustomMsg &msg)
         }
         static int count   = 0;
         static double time = 0.0;
-        count++;
+        ++count;
         double t0 = omp_get_wtime();
         for (int j = 0; j < N_SCANS; ++j)
         {
             if (pl_buff[j].size() <= 5)
+            {
                 continue;
+            }
             pcl::PointCloud<PointType> &pl = pl_buff[j];
             plsize                         = pl.size();
             std::vector<orgtype> &types    = typess[j];
             types.clear();
             types.resize(plsize);
-            plsize--;
+            --plsize;
             for (uint i = 0; i < plsize; ++i)
             {
                 types[i].range = sqrt(pl[i].x * pl[i].x + pl[i].y * pl[i].y);
@@ -286,7 +288,7 @@ void Preprocess::avia_handler(const livox_ros_driver2::msg::CustomMsg &msg)
             if ((msg.points[i].line < N_SCANS) &&
                 ((msg.points[i].tag & 0x30) == 0x10 || (msg.points[i].tag & 0x30) == 0x00))
             {
-                valid_num++;
+                ++valid_num;
                 if (valid_num % point_filter_num == 0)
                 {
                     pl_full[i].x         = msg.points[i].x;
@@ -314,7 +316,7 @@ void Preprocess::avia_handler(const livox_ros_driver2::msg::CustomMsg &msg)
 }
 #endif
 
-void Preprocess::oust64_handler(const sensor_msgs::msg::PointCloud2 &msg)
+void Preprocess::handleOusterPointCloud(const sensor_msgs::msg::PointCloud2 &msg)
 {
     pl_surf.clear();
     pl_corn.clear();
@@ -340,7 +342,9 @@ void Preprocess::oust64_handler(const sensor_msgs::msg::PointCloud2 &msg)
                            pl_orig.points[i].y * pl_orig.points[i].y +
                            pl_orig.points[i].z * pl_orig.points[i].z;
             if (range < (blind * blind))
+            {
                 continue;
+            }
             Eigen::Vector3d pt_vec;
             PointType added_pt;
             added_pt.x         = pl_orig.points[i].x;
@@ -352,9 +356,13 @@ void Preprocess::oust64_handler(const sensor_msgs::msg::PointCloud2 &msg)
             added_pt.normal_z  = 0;
             double yaw_angle   = atan2(added_pt.y, added_pt.x) * 57.3;
             if (yaw_angle >= 180.0)
+            {
                 yaw_angle -= 360.0;
+            }
             if (yaw_angle <= -180.0)
+            {
                 yaw_angle += 360.0;
+            }
 
             added_pt.curvature = pl_orig.points[i].t * time_unit_scale;
             if (pl_orig.points[i].ring < N_SCANS)
@@ -370,7 +378,7 @@ void Preprocess::oust64_handler(const sensor_msgs::msg::PointCloud2 &msg)
             std::vector<orgtype> &types = typess[j];
             types.clear();
             types.resize(linesize);
-            linesize--;
+            --linesize;
             for (uint i = 0; i < linesize; ++i)
             {
                 types[i].range = sqrt(pl[i].x * pl[i].x + pl[i].y * pl[i].y);
@@ -389,14 +397,18 @@ void Preprocess::oust64_handler(const sensor_msgs::msg::PointCloud2 &msg)
         for (size_t i = 0; i < pl_orig.points.size(); ++i)
         {
             if (i % point_filter_num != 0)
+            {
                 continue;
+            }
 
             double range = pl_orig.points[i].x * pl_orig.points[i].x +
                            pl_orig.points[i].y * pl_orig.points[i].y +
                            pl_orig.points[i].z * pl_orig.points[i].z;
 
             if (range < (blind * blind))
+            {
                 continue;
+            }
 
             Eigen::Vector3d pt_vec;
             PointType added_pt;
@@ -416,7 +428,7 @@ void Preprocess::oust64_handler(const sensor_msgs::msg::PointCloud2 &msg)
     // pub_func(pl_surf, pub_corn, msg->header.stamp);
 }
 
-void Preprocess::kmoust64_handler(const sensor_msgs::msg::PointCloud2 &msg)
+void Preprocess::handleKimeraOusterPointCloud(const sensor_msgs::msg::PointCloud2 &msg)
 {
     //  std::cout << "Ouster handler for Kimera-Multi dataset runs" << std::endl;
     pl_surf.clear();
@@ -455,7 +467,9 @@ void Preprocess::kmoust64_handler(const sensor_msgs::msg::PointCloud2 &msg)
             if (range < (blind * blind) ||
                 is_from_pilot_zone(
                     pl_orig.points[i].x, pl_orig.points[i].y, pl_orig.points[i].z, "ouster"))
+            {
                 continue;
+            }
 
             Eigen::Vector3d pt_vec;
             PointType added_pt;
@@ -468,9 +482,13 @@ void Preprocess::kmoust64_handler(const sensor_msgs::msg::PointCloud2 &msg)
             added_pt.normal_z  = 0;
             double yaw_angle   = atan2(added_pt.y, added_pt.x) * 57.3;
             if (yaw_angle >= 180.0)
+            {
                 yaw_angle -= 360.0;
+            }
             if (yaw_angle <= -180.0)
+            {
                 yaw_angle += 360.0;
+            }
 
             added_pt.curvature = pl_orig.points[i].t * time_unit_scale;
             if (pl_orig.points[i].ring < N_SCANS)
@@ -486,7 +504,7 @@ void Preprocess::kmoust64_handler(const sensor_msgs::msg::PointCloud2 &msg)
             std::vector<orgtype> &types = typess[j];
             types.clear();
             types.resize(linesize);
-            linesize--;
+            --linesize;
             for (uint i = 0; i < linesize; ++i)
             {
                 types[i].range = sqrt(pl[i].x * pl[i].x + pl[i].y * pl[i].y);
@@ -505,14 +523,18 @@ void Preprocess::kmoust64_handler(const sensor_msgs::msg::PointCloud2 &msg)
         for (size_t i = 0; i < pl_orig.points.size(); ++i)
         {
             if (i % point_filter_num != 0)
+            {
                 continue;
+            }
 
             double range = pl_orig.points[i].x * pl_orig.points[i].x +
                            pl_orig.points[i].y * pl_orig.points[i].y +
                            pl_orig.points[i].z * pl_orig.points[i].z;
 
             if (range < (blind * blind))
+            {
                 continue;
+            }
 
             Eigen::Vector3d pt_vec;
             PointType added_pt;
@@ -531,7 +553,7 @@ void Preprocess::kmoust64_handler(const sensor_msgs::msg::PointCloud2 &msg)
     }
 }
 
-void Preprocess::velodyne_handler(const sensor_msgs::msg::PointCloud2 &msg)
+void Preprocess::handleVelodynePointCloud(const sensor_msgs::msg::PointCloud2 &msg)
 {
     pl_surf.clear();
     pl_corn.clear();
@@ -542,7 +564,9 @@ void Preprocess::velodyne_handler(const sensor_msgs::msg::PointCloud2 &msg)
     pcl::fromROSMsg(msg, pl_orig);
     int plsize = pl_orig.points.size();
     if (plsize == 0)
+    {
         return;
+    }
     pl_surf.reserve(plsize);
 
     /*** These variables only works when no point timestamps given ***/
@@ -577,7 +601,9 @@ void Preprocess::velodyne_handler(const sensor_msgs::msg::PointCloud2 &msg)
             added_pt.normal_z = 0;
             int layer         = pl_orig.points[i].ring;
             if (layer >= N_SCANS)
+            {
                 continue;
+            }
             added_pt.x         = pl_orig.points[i].x;
             added_pt.y         = pl_orig.points[i].y;
             added_pt.z         = pl_orig.points[i].z;
@@ -607,7 +633,9 @@ void Preprocess::velodyne_handler(const sensor_msgs::msg::PointCloud2 &msg)
                 }
 
                 if (added_pt.curvature < time_last[layer])
+                {
                     added_pt.curvature += 360.0 / omega_l;
+                }
                 yaw_last[layer]  = yaw_angle;
                 time_last[layer] = added_pt.curvature;
             }
@@ -620,11 +648,13 @@ void Preprocess::velodyne_handler(const sensor_msgs::msg::PointCloud2 &msg)
             PointCloudXYZI &pl = pl_buff[j];
             auto linesize      = pl.size();
             if (linesize < 2)
+            {
                 continue;
+            }
             std::vector<orgtype> &types = typess[j];
             types.clear();
             types.resize(linesize);
-            linesize--;
+            --linesize;
             for (uint i = 0; i < linesize; ++i)
             {
                 types[i].range = sqrt(pl[i].x * pl[i].x + pl[i].y * pl[i].y);
@@ -682,7 +712,9 @@ void Preprocess::velodyne_handler(const sensor_msgs::msg::PointCloud2 &msg)
                 }
 
                 if (added_pt.curvature < time_last[layer])
+                {
                     added_pt.curvature += 360.0 / omega_l;
+                }
 
                 yaw_last[layer]  = yaw_angle;
                 time_last[layer] = added_pt.curvature;
@@ -706,7 +738,7 @@ void Preprocess::velodyne_handler(const sensor_msgs::msg::PointCloud2 &msg)
     }
 }
 
-void Preprocess::rs_handler(const sensor_msgs::msg::PointCloud2 &msg)
+void Preprocess::handleRoboSensePointCloud(const sensor_msgs::msg::PointCloud2 &msg)
 {
     pl_surf.clear();
     pl_corn.clear();
@@ -804,7 +836,7 @@ void Preprocess::rs_handler(const sensor_msgs::msg::PointCloud2 &msg)
             std::vector<orgtype> &types = typess[j];
             types.clear();
             types.resize(linesize);
-            linesize--;
+            --linesize;
             for (uint i = 0; i < linesize; ++i)
             {
                 types[i].range = sqrt(pl[i].x * pl[i].x + pl[i].y * pl[i].y);
@@ -860,7 +892,7 @@ void Preprocess::give_feature(pcl::PointCloud<PointType> &pl, std::vector<orgtyp
 
     while (head < types.size() && types[head].range < blind)
     {
-        head++;
+        ++head;
     }
     if (head >= types.size())
     {
@@ -1200,7 +1232,9 @@ int Preprocess::plane_judge(const PointCloudXYZI &pl,
     for (;;)
     {
         if ((i_cur >= pl.size()) || (i_nex >= pl.size()))
+        {
             break;
+        }
 
         if (types[i_nex].range < blind)
         {
@@ -1216,7 +1250,7 @@ int Preprocess::plane_judge(const PointCloudXYZI &pl,
             break;
         }
         disarr.push_back(types[i_nex].dista);
-        i_nex++;
+        ++i_nex;
     }
 
     double leng_wid = 0;
@@ -1224,7 +1258,9 @@ int Preprocess::plane_judge(const PointCloudXYZI &pl,
     for (uint j = i_cur + 1; j < i_nex; ++j)
     {
         if ((j >= pl.size()) || (i_cur >= pl.size()))
+        {
             break;
+        }
         v1[0] = pl[j].x - pl[i_cur].x;
         v1[1] = pl[j].y - pl[i_cur].y;
         v1[2] = pl[j].z - pl[i_cur].z;

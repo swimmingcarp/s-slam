@@ -25,7 +25,6 @@
 
 #define INIT_TIME (0.1)
 #define LASER_POINT_COV (0.001)
-#define MAXN (720000)
 #define PUBFRAME_PERIOD (20)
 #define MOV_THRESHOLD (1.5)
 
@@ -193,19 +192,6 @@ private:
     double solve_time_         = 0.0;
     double solve_const_H_time_ = 0.0;
 
-    std::array<double, MAXN> T1_;
-    std::array<double, MAXN> s_plot_;
-    std::array<double, MAXN> s_plot2_;
-    std::array<double, MAXN> s_plot3_;
-    std::array<double, MAXN> s_plot4_;
-    std::array<double, MAXN> s_plot5_;
-    std::array<double, MAXN> s_plot6_;
-    std::array<double, MAXN> s_plot7_;
-    std::array<double, MAXN> s_plot8_;
-    std::array<double, MAXN> s_plot9_;
-    std::array<double, MAXN> s_plot10_;
-    std::array<double, MAXN> s_plot11_;
-
     bool runtime_pos_log_ = false;
     /**************************/
     int kdtree_size_st_        = 0;
@@ -265,13 +251,14 @@ private:
     double first_lidar_time_        = 0.0;
 
     int effect_feat_num_  = 0;
-    int time_log_counter_ = 0;
-    int scan_count_       = 0;
-    int publish_count_    = 0;
+    int time_log_counter_     = 0;
+    int scan_count_           = 0;
+    int publish_count_        = 0;
+    int path_publish_counter_ = 0;
 
     int iterCount_                = 0;
     int feats_down_size_          = 0;
-    int NUM_MAX_ITERATIONS_       = 0;
+    int max_iterations_       = 0;
     int laserCloudValidNum_       = 0;
     int pcd_save_interval_        = -1;
     int pcd_index_                = 0;

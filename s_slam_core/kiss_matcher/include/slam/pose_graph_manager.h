@@ -54,7 +54,7 @@
 #include <gtsam/slam/BetweenFactor.h>
 #include <gtsam/slam/PriorFactor.h>
 
-#include "../tictoc.hpp"
+#include "tictoc.hpp"
 #include "slam/loop_closure.h"
 #include "slam/loop_detector.h"
 #include "slam/pose_graph_node.hpp"
@@ -64,9 +64,9 @@
 
 namespace fs = std::filesystem;
 using namespace std::chrono;
-typedef message_filters::sync_policies::ApproximateTime<nav_msgs::msg::Odometry,
-                                                        sensor_msgs::msg::PointCloud2>
-    NodeSyncPolicy;
+using NodeSyncPolicy =
+    message_filters::sync_policies::ApproximateTime<nav_msgs::msg::Odometry,
+                                                    sensor_msgs::msg::PointCloud2>;
 
 class PoseGraphManager : public rclcpp::Node
 {

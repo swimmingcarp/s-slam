@@ -221,8 +221,12 @@ inline std::vector<Eigen::Vector3f> convertCloudToVec(const pcl::PointCloud<T> &
 {
     std::vector<Eigen::Vector3f> vec;
     vec.reserve(cloud.size());
-    for (const auto &pt : cloud.points) {
-        if (!std::isfinite(pt.x) || !std::isfinite(pt.y) || !std::isfinite(pt.z)) continue;
+    for (const auto &pt : cloud.points)
+    {
+        if (!std::isfinite(pt.x) || !std::isfinite(pt.y) || !std::isfinite(pt.z))
+        {
+            continue;
+        }
         vec.emplace_back(pt.x, pt.y, pt.z);
     }
     return vec;

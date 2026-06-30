@@ -29,9 +29,9 @@ void ScalarTLSEstimator::estimate(const Eigen::RowVectorXd& X,
     assert(!dimension_inconsistent);
     assert(!only_one_element);  // TODO(jshi): admit a trivial solution
 
-    size_t N = X.cols();
+    size_t measurement_count = X.cols();
     std::vector<std::pair<double, int> > h;
-    for (size_t i = 0; i < N; ++i)
+    for (size_t i = 0; i < measurement_count; ++i)
     {
         h.push_back(std::make_pair(X(i) - ranges(i), i + 1));
         h.push_back(std::make_pair(X(i) + ranges(i), -i - 1));
@@ -47,7 +47,7 @@ void ScalarTLSEstimator::estimate(const Eigen::RowVectorXd& X,
     // calculate weights
     Eigen::RowVectorXd weights = ranges.array().square();
     weights                    = weights.array().inverse();
-    size_t nr_centers          = 2 * N;
+    size_t nr_centers          = 2 * measurement_count;
     Eigen::RowVectorXd x_hat   = Eigen::MatrixXd::Zero(1, nr_centers);
     Eigen::RowVectorXd x_cost  = Eigen::MatrixXd::Zero(1, nr_centers);
 
@@ -109,8 +109,8 @@ void ScalarTLSEstimator::estimate_tiled(const Eigen::RowVectorXd& X,
     assert(!only_one_element);  // TODO(jshi): admit a trivial solution
 
     // Prepare variables for calculations
-    int N = static_cast<int>(X.cols());
-    Eigen::RowVectorXd h(N * 2);
+    int measurement_count = static_cast<int>(X.cols());
+    Eigen::RowVectorXd h(measurement_count * 2);
     h << X - ranges, X + ranges;
     // ascending order
     std::sort(h.data(), h.data() + h.cols(), [](double a, double b) {
@@ -129,7 +129,7 @@ void ScalarTLSEstimator::estimate_tiled(const Eigen::RowVectorXd& X,
 
     // loop tiling
     size_t ih_bound = ((nr_centers) & ~((s)-1));
-    size_t jh_bound = ((N) &~((s)-1));
+    size_t jh_bound = ((measurement_count) &~((s)-1));
 
     std::vector<double> ranges_inverse_sum_vec(nr_centers, 0);
     std::vector<double> dot_X_weights_vec(nr_centers, 0);
@@ -163,7 +163,7 @@ void ScalarTLSEstimator::estimate_tiled(const Eigen::RowVectorXd& X,
                                 }
                             }
 
-                            if (static_cast<int>(j) == N - 1)
+                            if (static_cast<int>(j) == measurement_count - 1)
                             {
                                 // x_hat(i) = dot(X(consensus), weights(consensus)) / dot(weights, consensus);
                                 x_hat(i) = dot_X_weights / dot_weights_consensus;
@@ -185,7 +185,7 @@ void ScalarTLSEstimator::estimate_tiled(const Eigen::RowVectorXd& X,
     X_consensus_table, \
     h_centers, \
     weights, \
-    N, \
+    measurement_count, \
     X, \
     x_hat, \
     x_cost, \
@@ -214,7 +214,7 @@ void ScalarTLSEstimator::estimate_tiled(const Eigen::RowVectorXd& X,
     X_consensus_table, \
     h_centers, \
     weights, \
-    N, \
+    measurement_count, \
     X, \
     x_hat, \
     x_cost, \
@@ -224,7 +224,7 @@ void ScalarTLSEstimator::estimate_tiled(const Eigen::RowVectorXd& X,
     inner_loop_f)
     for (size_t i = 0; i < nr_centers; ++i)
     {
-        inner_loop_f(i, 0, jh_bound, N);
+        inner_loop_f(i, 0, jh_bound, measurement_count);
     }
 
     // 2. Finish the unfinished is
@@ -236,7 +236,7 @@ void ScalarTLSEstimator::estimate_tiled(const Eigen::RowVectorXd& X,
     X_consensus_table, \
     h_centers, \
     weights, \
-    N, \
+    measurement_count, \
     X, \
     x_hat, \
     x_cost, \
@@ -246,7 +246,7 @@ void ScalarTLSEstimator::estimate_tiled(const Eigen::RowVectorXd& X,
     inner_loop_f)
     for (size_t i = ih_bound; i < nr_centers; ++i)
     {
-        inner_loop_f(i, 0, 0, N);
+        inner_loop_f(i, 0, 0, measurement_count);
     }
 
     size_t min_idx;
@@ -418,13 +418,14 @@ void TLSTranslationSolver::solveForTranslation(const Eigen::Matrix<double, 3, Ei
     Eigen::Matrix<double, 3, Eigen::Dynamic> raw_translation = dst - src;
 
     // Error bounds for each measurements
-    int N                                           = static_cast<int>(src.cols());
-    double beta                                     = noise_bound_ * sqrt(cbar2_);
-    Eigen::Matrix<double, 1, Eigen::Dynamic> alphas = beta * Eigen::MatrixXd::Ones(1, N);
+    int correspondence_count                         = static_cast<int>(src.cols());
+    double beta                                      = noise_bound_ * sqrt(cbar2_);
+    Eigen::Matrix<double, 1, Eigen::Dynamic> alphas =
+        beta * Eigen::MatrixXd::Ones(1, correspondence_count);
 
     // Estimate x, y, and z component of translation: perform TLS on each row
-    *inliers = Eigen::Matrix<bool, 1, Eigen::Dynamic>::Ones(1, N);
-    Eigen::Matrix<bool, 1, Eigen::Dynamic> inliers_temp(1, N);
+    *inliers = Eigen::Matrix<bool, 1, Eigen::Dynamic>::Ones(1, correspondence_count);
+    Eigen::Matrix<bool, 1, Eigen::Dynamic> inliers_temp(1, correspondence_count);
     for (size_t i = 0; i < static_cast<size_t>(raw_translation.rows()); ++i)
     {
         auto& translation_ref = (*translation)(i);
@@ -444,30 +445,31 @@ Eigen::Matrix<double, 3, Eigen::Dynamic> RobustRegistrationSolver::computeTIMs(
     const Eigen::Matrix<double, 3, Eigen::Dynamic>& v,
     Eigen::Matrix<int, 2, Eigen::Dynamic>* map)
 {
-    size_t N = v.cols();
-    Eigen::Matrix<double, 3, Eigen::Dynamic> vtilde(3, N * (N - 1) / 2);
-    map->resize(2, N * (N - 1) / 2);
+    size_t point_count = v.cols();
+    Eigen::Matrix<double, 3, Eigen::Dynamic> vtilde(3, point_count * (point_count - 1) / 2);
+    map->resize(2, point_count * (point_count - 1) / 2);
 
-#pragma omp parallel for default(none) shared(N, v, vtilde, map)
-    for (size_t i = 0; i < N - 1; ++i)
+#pragma omp parallel for default(none) shared(point_count, v, vtilde, map)
+    for (size_t i = 0; i < point_count - 1; ++i)
     {
         // Calculate some important indices
         // For each measurement, we compute the TIMs between itself and all the measurements after
         // it. For example: i=0: add N-1 TIMs i=1: add N-2 TIMs etc.. i=k: add N-1-k TIMs And by
         // arithmatic series, we can get the starting index of each segment be: k*N - k*(k+1)/2
-        size_t segment_start_idx = i * N - i * (i + 1) / 2;
-        size_t segment_cols      = N - 1 - i;
+        size_t segment_start_idx = i * point_count - i * (i + 1) / 2;
+        size_t segment_cols      = point_count - 1 - i;
 
         // calculate TIM
         Eigen::Matrix<double, 3, 1> m                 = v.col(i);
-        Eigen::Matrix<double, 3, Eigen::Dynamic> temp = v - m * Eigen::MatrixXd::Ones(1, N);
+        Eigen::Matrix<double, 3, Eigen::Dynamic> temp =
+            v - m * Eigen::MatrixXd::Ones(1, point_count);
 
         // concatenate to the end of the tilde vector
         vtilde.middleCols(segment_start_idx, segment_cols) = temp.rightCols(segment_cols);
 
         // populate the index map
-        Eigen::Matrix<int, 2, Eigen::Dynamic> map_addition(2, N);
-        for (size_t j = 0; j < N; ++j)
+        Eigen::Matrix<int, 2, Eigen::Dynamic> map_addition(2, point_count);
+        for (size_t j = 0; j < point_count; ++j)
         {
             map_addition(0, j) = static_cast<int>(i);
             map_addition(1, j) = static_cast<int>(j);

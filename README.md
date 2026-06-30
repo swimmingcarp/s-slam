@@ -46,9 +46,9 @@ inside it recursively.
 ## Step-by-Step Setup
 
 This guide targets a clean Ubuntu 22.04 / Jammy machine. Run the commands in
-order. The first build downloads pinned third-party source code, including
-GTSAM and small_gicp when system copies are not available, so network access to
-GitHub is required once.
+order. The first build downloads pinned third-party source code, including GTSAM
+if no system copy is available and small_gicp for the backend, so network access
+to GitHub is required once.
 
 ### 1. Install System Tools
 
@@ -138,6 +138,8 @@ The printed version must be `3.24` or newer.
 
 ### 6. Build Everything
 
+For a clean first build:
+
 ```bash
 cd /home/jaden/workspace/s-slam
 source /opt/ros/humble/setup.bash
@@ -146,20 +148,22 @@ scripts/build.sh
 source install/setup.bash
 ```
 
-The first build may download pinned third-party source code. `scripts/build.sh`
-builds packages sequentially and uses at most half of the detected CPU cores per
-package through `MAKEFLAGS`, capped at 4 jobs. On low-memory machines use `BUILD_JOBS=2 scripts/build.sh`.
-On WSL or memory-constrained machines, use the safest mode:
+`scripts/build.sh --clean` removes `build/`, `install/`, and `log/`, then exits.
+Run `scripts/build.sh` after it to compile.
 
-```bash
-BUILD_JOBS=1 scripts/build.sh
-```
-
-For later source/config changes:
+For normal rebuilds after source or config changes:
 
 ```bash
 scripts/build.sh
 source install/setup.bash
+```
+
+`scripts/build.sh` builds packages sequentially and uses at most half of the
+detected CPU cores per package, capped at 4 jobs. On WSL or low-memory machines,
+use the safest mode:
+
+```bash
+BUILD_JOBS=1 scripts/build.sh
 ```
 
 ## Replay Workflow

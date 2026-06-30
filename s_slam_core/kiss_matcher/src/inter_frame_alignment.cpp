@@ -26,7 +26,7 @@
 #include <tf2_ros/transform_listener.h>
 #include <visualization_msgs/msg/marker.hpp>
 
-#include "./tictoc.hpp"
+#include "tictoc.hpp"
 #include "slam/loop_closure.h"
 #include "slam/utils.hpp"
 
@@ -133,7 +133,9 @@ public:
     void performAlignment()
     {
         if (!is_source_updated_ || !is_target_updated_)
+        {
             return;
+        }
 
         kiss_matcher::TicToc timer;
         // Only for visualization

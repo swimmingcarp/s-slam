@@ -81,7 +81,9 @@ LoopCandidates LoopClosure::getLoopCandidatesFromQuery(const PoseGraphNode &quer
 LoopCandidate LoopClosure::getClosestCandidate(const LoopCandidates &candidates)
 {
     if (candidates.empty())
+    {
         return LoopCandidate();
+    }
 
     return *std::min_element(candidates.begin(),
                              candidates.end(),

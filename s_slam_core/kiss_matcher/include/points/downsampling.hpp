@@ -42,7 +42,7 @@ std::shared_ptr<OutputPointCloud> VoxelgridSampling(const InputPointCloud& point
     tbb::parallel_for(
         tbb::blocked_range<size_t>(0, traits::size(points), 64),
         [&](const tbb::blocked_range<size_t>& range) {
-            for (size_t i = range.begin(); i != range.end(); i++) {
+            for (size_t i = range.begin(); i != range.end(); ++i) {
                 const Eigen::Array4i coord =
                     fast_floor(traits::point(points, i) * inv_leaf_size) + coord_offset;
                 if ((coord < 0).any() || (coord > coord_bit_mask).any()) {
@@ -76,7 +76,7 @@ std::shared_ptr<OutputPointCloud> VoxelgridSampling(const InputPointCloud& point
 
             Eigen::Vector4d sum_pt =
                 traits::point(points, coord_pt[range.begin()].second);
-            for (size_t i = range.begin() + 1; i != range.end(); i++) {
+            for (size_t i = range.begin() + 1; i != range.end(); ++i) {
                 if (coord_pt[i].first == invalid_coord) {
                     continue;
                 }
@@ -90,7 +90,7 @@ std::shared_ptr<OutputPointCloud> VoxelgridSampling(const InputPointCloud& point
             sub_points.emplace_back(sum_pt / sum_pt.w());
 
             const size_t point_index_begin = num_points.fetch_add(sub_points.size());
-            for (size_t i = 0; i < sub_points.size(); i++) {
+            for (size_t i = 0; i < sub_points.size(); ++i) {
                 traits::set_point(*downsampled, point_index_begin + i, sub_points[i]);
             }
         });
@@ -119,7 +119,7 @@ inline std::vector<Eigen::Vector3f> VoxelgridSampling(const std::vector<Eigen::V
     tbb::parallel_for(
         tbb::blocked_range<size_t>(0, num_raw_points, 64),
         [&](const tbb::blocked_range<size_t>& range) {
-            for (size_t i = range.begin(); i != range.end(); i++) {
+            for (size_t i = range.begin(); i != range.end(); ++i) {
                 const Eigen::Array3i coord =
                     fast_floor_vector3f(points[i] * inv_leaf_size) + coord_offset;
                 if ((coord < 0).any() || (coord > coord_bit_mask).any()) {
@@ -153,7 +153,7 @@ inline std::vector<Eigen::Vector3f> VoxelgridSampling(const std::vector<Eigen::V
 
             Eigen::Vector3f sum_pt = points[coord_pt[range.begin()].second];
             float count            = 1.0;
-            for (size_t i = range.begin() + 1; i != range.end(); i++) {
+            for (size_t i = range.begin() + 1; i != range.end(); ++i) {
                 if (coord_pt[i].first == invalid_coord) {
                     continue;
                 }
@@ -169,7 +169,7 @@ inline std::vector<Eigen::Vector3f> VoxelgridSampling(const std::vector<Eigen::V
             sub_points.emplace_back(sum_pt / count);
 
             const size_t point_index_begin = num_points.fetch_add(sub_points.size());
-            for (size_t i = 0; i < sub_points.size(); i++) {
+            for (size_t i = 0; i < sub_points.size(); ++i) {
                 downsampled[point_index_begin + i] = sub_points[i];
             }
         });

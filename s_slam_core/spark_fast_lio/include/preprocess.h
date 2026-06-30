@@ -15,16 +15,16 @@
 
 #define IS_VALID(a) ((abs(a) > 1e8) ? true : false)
 
-typedef pcl::PointXYZINormal PointType;
-typedef pcl::PointCloud<PointType> PointCloudXYZI;
+using PointType       = pcl::PointXYZINormal;
+using PointCloudXYZI  = pcl::PointCloud<PointType>;
 
 enum LID_TYPE
 {
     AVIA     = 1,
     VELO16   = 2,
     OUST64   = 3,
-    KMOUST64 = 4,
-    RS       = 5   // RoboSense (rslidar_sdk XYZIRT, e.g. Airy)
+    KMOUST64   = 4,
+    ROBOSENSE = 5   // RoboSense (rslidar_sdk XYZIRT, e.g. Airy)
 };  // {1, 2, 3, 4, 5}
 enum TIME_UNIT
 {
@@ -126,7 +126,7 @@ namespace rslidar_ros
 {
 // Point layout published by rslidar_sdk when built with POINT_TYPE=XYZIRT.
 // NOTE: `timestamp` is an ABSOLUTE time (seconds), unlike velodyne(.time) /
-// ouster(.t) which are per-scan relative offsets. rs_handler() relativizes it.
+// ouster(.t) which are per-scan relative offsets. handleRoboSensePointCloud() relativizes it.
 // rslidar_sdk publishes `intensity` as FLOAT32 in the ROS PointCloud2 layout.
 struct EIGEN_ALIGN16 Point
 {
@@ -156,7 +156,7 @@ public:
     void process(const livox_ros_driver2::msg::CustomMsg &msg, PointCloudXYZI::Ptr &pcl_out);
 #endif
     void process(const sensor_msgs::msg::PointCloud2 &msg, PointCloudXYZI::Ptr &pcl_out);
-    void set(bool feature_enabled_input, int lid_type, double bld, int pfilt_num);
+    void set(bool is_enabled, int lid_type, double bld, int pfilt_num);
 
     bool has_scan_time() const
     {
@@ -185,12 +185,12 @@ public:
 private:
     bool is_from_pilot_zone(const float &pt_x, const float &pt_y, const float &pt_z, const std::string mode = "velodyne");
 #if defined(LIVOX_ROS_DRIVER_FOUND) && LIVOX_ROS_DRIVER_FOUND
-    void avia_handler(const livox_ros_driver2::msg::CustomMsg &msg);
+    void handleAviaPointCloud(const livox_ros_driver2::msg::CustomMsg &msg);
 #endif
-    void oust64_handler(const sensor_msgs::msg::PointCloud2 &msg);
-    void kmoust64_handler(const sensor_msgs::msg::PointCloud2 &msg);
-    void velodyne_handler(const sensor_msgs::msg::PointCloud2 &msg);
-    void rs_handler(const sensor_msgs::msg::PointCloud2 &msg);
+    void handleOusterPointCloud(const sensor_msgs::msg::PointCloud2 &msg);
+    void handleKimeraOusterPointCloud(const sensor_msgs::msg::PointCloud2 &msg);
+    void handleVelodynePointCloud(const sensor_msgs::msg::PointCloud2 &msg);
+    void handleRoboSensePointCloud(const sensor_msgs::msg::PointCloud2 &msg);
     void give_feature(PointCloudXYZI &pl, std::vector<orgtype> &types);
     void pub_func(PointCloudXYZI &pl, const rclcpp::Time &ct);
     int plane_judge(const PointCloudXYZI &pl, std::vector<orgtype> &types, uint i, uint &i_nex, Eigen::Vector3d &curr_direct);
