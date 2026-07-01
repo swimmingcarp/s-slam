@@ -62,7 +62,7 @@ s_slam_simulation/
 │   └── carla_slam.launch.yaml
 ├── config/
 │   └── carla/
-│       ├── airy_sensor_rig.yaml
+│       ├── fairy_sensor_rig.yaml
 │       ├── topic_remap.yaml
 │       └── town10_loop.yaml
 └── models/

@@ -39,23 +39,23 @@ config/
 ├── avia.yaml
 ├── horizon.yaml
 ├── ouster.yaml
-├── rs_airy.yaml
+├── rs_fairy.yaml
 └── velodyne.yaml
 ```
 
 Recorded-bag presets do not belong here. They live in
 `../../s_slam_replay/config/spark_fast_lio/`.
 
-## Airy Configuration Notes
+## Fairy Configuration Notes
 
-`config/rs_airy.yaml` and `launch/mapping_rs_airy.launch.yaml` are for RoboSense
-Airy bench/device bring-up.
+`config/rs_fairy.yaml` and `launch/mapping_rs_fairy.launch.yaml` are for
+RoboSense Fairy bench/device bring-up.
 
 Important device-specific values:
 
 - RoboSense driver must publish `PointXYZIRT` fields and IMU data.
-- Airy internal IMU/LiDAR extrinsics must be read from the real device and
-  written into `rs_airy.yaml`.
+- Fairy internal IMU/LiDAR extrinsics are read from DIFOP and written into
+  `rs_fairy.yaml`. Re-read them if the LiDAR unit changes.
 - The airframe mounting transform must replace the placeholder
   `base_link -> rslidar` static transform in the launch file.
 - IMU covariance, blind distance, and point filtering are tuning parameters that

@@ -1,24 +1,23 @@
 ---
-# Bring-up for a RoboSense Airy (96-line) with its built-in IMU, on Jetson Orin NX.
+# Bring-up for a RoboSense Fairy with its built-in IMU, on Jetson Orin NX.
 #
 # Run the RoboSense driver (rslidar_sdk) separately, built with:
 #   set(POINT_TYPE XYZIRT)   and   ENABLE_IMU_DATA_PARSE = ON
 # TODO(device-bringup): mirror these values in the real rslidar_sdk config.yaml on the Jetson.
-# and config: lidar_type RSAIRY, imu_port 6688, use_lidar_clock true,
+# and config: lidar_type RSFAIRY, imu_port 6688, use_lidar_clock true,
 #   ts_first_point true, dense_points false.
 # It publishes:  /rslidar_points (PointXYZIRT)  +  /rslidar_imu_data (sensor_msgs/Imu)
 #
 # Bench test: just wave the sensor by hand and watch /odometry + /cloud_registered.
 # Visualize:  ros2 launch s_slam_visualization rviz.launch.yaml
 launch:
-  - arg: {name: config_path, default: $(find-pkg-share spark_fast_lio)/config/rs_airy.yaml}
+  - arg: {name: config_path, default: $(find-pkg-share spark_fast_lio)/config/rs_fairy.yaml}
 
   - node:
       pkg: spark_fast_lio
       exec: spark_lio_mapping
       name: lio_mapping
       output: screen
-      on_exit: shutdown
 
       remap:
         - { from: 'lidar', to: '/rslidar_points' }

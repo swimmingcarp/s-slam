@@ -37,7 +37,7 @@ inside it recursively.
 
 | Area | ROS package | Owns | Does not own |
 |------|-------------|------|--------------|
-| Core front end | `spark_fast_lio` | Live LiDAR/IMU processing, live sensor configs, Airy bring-up launch | Rosbag dataset presets, RViz configs |
+| Core front end | `spark_fast_lio` | Live LiDAR/IMU processing, live sensor configs, Fairy bring-up launch | Rosbag dataset presets, RViz configs |
 | Core back end | `kiss_matcher_ros` | Loop closure, pose graph, corrected map/path, result save callback | Bag playback, simulator setup |
 | Replay | `s_slam_replay` | Recorded-bag presets, whole-system replay launch, replay result export | Simulator worlds, live hardware configs |
 | Simulation | `s_slam_simulation` | Future CARLA/Gazebo/Ignition launch, worlds, models, bridges | Recorded-bag replay presets, RViz config files |
@@ -123,18 +123,15 @@ Install dependencies declared by the package manifests:
 rosdep install --from-paths . --ignore-src -r -y
 ```
 
-### 5. Install a Reproducible CMake
+### 5. Check CMake
 
-Ubuntu 22.04 often ships CMake 3.22, but this workspace requires CMake 3.24 or
-newer. Install a pinned major range and keep it first in `PATH`:
+Ubuntu 22.04 ships CMake 3.22, which is sufficient for this workspace:
 
 ```bash
-python3 -m pip install --user "cmake>=3.24,<4"
-export PATH=$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin
 cmake --version
 ```
 
-The printed version must be `3.24` or newer.
+The printed version must be `3.22` or newer.
 
 ### 6. Build Everything
 
@@ -360,12 +357,12 @@ ros2 launch kiss_matcher_ros run_kiss_matcher_sam.launch.yaml \
 ros2 topic pub --once /acl_jackal2/save_dir std_msgs/msg/String "{data: '/tmp/s_slam_results'}"
 ```
 
-## RoboSense Airy Bring-Up
+## RoboSense Fairy Bring-Up
 
-Run the RoboSense driver separately, then start the Airy LIO front end:
+Run the RoboSense driver separately, then start the Fairy LIO front end:
 
 ```bash
-ros2 launch spark_fast_lio mapping_rs_airy.launch.yaml
+ros2 launch spark_fast_lio mapping_rs_fairy.launch.yaml
 ```
 
 Expected RoboSense driver topics:
@@ -375,21 +372,22 @@ Expected RoboSense driver topics:
 /rslidar_imu_data   sensor_msgs/msg/Imu
 ```
 
-Current Airy launch status:
+Current Fairy launch status:
 
 - It is a bench/bring-up launch, not a finished flight configuration.
-- `launch/mapping_rs_airy.launch.yaml` currently uses an identity
+- `launch/mapping_rs_fairy.launch.yaml` currently uses an identity
   `base_link -> rslidar` static transform.
-- `config/rs_airy.yaml` currently uses placeholder Airy LiDAR/IMU extrinsics.
+- `config/rs_fairy.yaml` uses the Fairy DIFOP IMU/LiDAR extrinsics read from
+  the test unit on the Jetson.
 
 Before flight or real device validation:
 
 - Update the real RoboSense driver config: point type `XYZIRT`, IMU parsing
-  enabled, Airy lidar type, LiDAR clock settings, and IMU port.
-- Read Airy DIFOP `IMU_CALIB_DATA`, convert it to the LiDAR-w.r.t-IMU transform,
-  and replace `extrinsic_T` and `extrinsic_R` in `rs_airy.yaml`.
+  enabled, Fairy lidar type, LiDAR clock settings, and IMU port.
+- Re-read Fairy DIFOP `IMU_CALIB_DATA` and update `extrinsic_T` and
+  `extrinsic_R` if the LiDAR unit changes.
 - Measure and replace the `base_link -> rslidar` mounting transform in
-  `mapping_rs_airy.launch.yaml`.
+  `mapping_rs_fairy.launch.yaml`.
 - Tune IMU noise, blind distance, and point filtering from static logs and
   flight logs.
 - Validate `/odometry`, `/path`, and `/cloud_registered` in RViz before flight.

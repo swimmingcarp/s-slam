@@ -24,7 +24,7 @@ enum LID_TYPE
     VELO16   = 2,
     OUST64   = 3,
     KMOUST64   = 4,
-    ROBOSENSE = 5   // RoboSense (rslidar_sdk XYZIRT, e.g. Airy)
+    ROBOSENSE = 5   // RoboSense (rslidar_sdk XYZIRT, e.g. Fairy)
 };  // {1, 2, 3, 4, 5}
 enum TIME_UNIT
 {

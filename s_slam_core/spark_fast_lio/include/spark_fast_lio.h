@@ -235,6 +235,9 @@ private:
     double total_residual_ = 0.0;
     rclcpp::Time last_lidar_timestamp_;
     rclcpp::Time last_imu_timestamp_;
+    bool has_last_lidar_timestamp_ = false;
+    bool has_last_imu_timestamp_   = false;
+    int64_t last_not_enough_imu_log_timestamp_ns_ = -1;
     int64_t timediff_lidar_wrt_imu_ = 0;
 
     double gyr_cov_   = 0.1;

@@ -1,0 +1,57 @@
+/**:
+  ros__parameters:
+    preprocess:
+      lidar_type: 5               # 1 Livox, 2 Velodyne, 3 Ouster, 4 KM-Ouster, 5 RoboSense (Fairy)
+      scan_line: 96               # Fairy has 96/48-beam variants. Use 48 if ring max is 47.
+      scan_rate: 10               # Fairy spins at 600 RPM -> 10 Hz frame rate.
+      timestamp_unit: 0           # IGNORED for RoboSense (the point cloud handler relativizes the absolute per-point timestamp).
+      # TODO(device-bringup): tune after checking prop/frame returns in RViz.
+      blind: 0.5                  # [m] reject self-returns (frame/props). Sensor min range is 0.1 m.
+      blind_for_human_pilots: 0.0  # unused by the RoboSense point cloud handler (no human-pilot rejection on a UAV)
+
+    mapping:
+      # Estimated from a 55.5 min static Fairy IMU bag, after skipping the first 300 s.
+      # Raw max variances: acc 5.57e-05, gyro 1.74e-06. Allan deviation shows
+      # accelerometer z-bias drift around 1e-03 m/s^2 at longer taus, so the
+      # values below are intentionally inflated for bench vibration and early flight tests.
+      acc_cov: 0.0001
+      gyr_cov: 0.000005
+      b_acc_cov: 0.001
+      b_gyr_cov: 0.0001
+      fov_degree: 360.0           # Fairy: 360 deg horizontal FOV
+      det_range: 150.0            # Fairy max range. Tune lower if Jetson load or map quality requires it.
+      extrinsic_est_enabled: false      # Fairy's built-in IMU has a fixed factory extrinsic.
+
+      # ===== IMU <-> LiDAR extrinsic (LiDAR w.r.t. IMU) =====
+      # The Fairy IMU is INTERNAL: this is a FIXED factory value, NOT flight/airframe dependent.
+      # Read from Fairy DIFOP on Jetson:
+      #   qx=-0.00114635, qy=-0.00195127, qz=-0.0112111, qw=0.999935
+      #   x=0.01365, y=0.00782, z=0.00492
+      # The DIFOP value is IMU relative to LiDAR; the values below are inverted for
+      # FAST-LIO's LiDAR-w.r.t-IMU convention.
+      extrinsic_T: [ -0.0134904954, -0.0081130535, -0.0048853042 ]
+      extrinsic_R: [ 0.9997410078, -0.0224162506, 0.0039279868,
+                     0.0224251980, 0.9997459944, -0.0022487974,
+                    -0.0038765795, 0.0023363008, 0.9999897569 ]
+
+    filter_size_map: 0.4          # [m] map voxel size (a bit coarse for Jetson Orin NX real-time)
+
+    publish:
+      path_enabled: true
+      scan_publish_enabled: true
+      dense_publish_enabled: true
+      scan_lidar_frame_publish_enabled: true
+      scan_body_frame_publish_enabled: true
+      scan_base_frame_publish_enabled: false
+
+    pcd_save:
+      pcd_save_enabled: false
+      interval: -1
+
+    verbose: false
+    runtime_pos_log_enabled: false
+    point_filter_num_for_preprocessing: 1
+    # TODO(device-bringup): start with 1 for baseline quality, then raise only if Jetson load requires it.
+    point_filter_num: 3           # every 3rd point for pose estimation (Orin NX load; 856k pts/s raw)
+    max_iteration: 3              # EKF iterations (lower for Jetson real-time)
+    cube_side_length: 1000.0
