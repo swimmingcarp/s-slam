@@ -1,5 +1,5 @@
 ---
-# Bring-up for a RoboSense Fairy with its built-in IMU, on Jetson Orin NX.
+# RoboSense Fairy with its built-in IMU, on Jetson Orin NX.
 #
 # Run the RoboSense driver (rslidar_sdk) separately, built with:
 #   set(POINT_TYPE XYZIRT)   and   ENABLE_IMU_DATA_PARSE = ON

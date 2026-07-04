@@ -1,5 +1,10 @@
 /**:
   ros__parameters:
+    common:
+      # Keep all 200 Hz IMU samples while LiDAR matching/publishing is busy.
+      # SensorDataQoS defaults to depth 5, which can drop IMU samples on Jetson.
+      imu_qos_depth: 1000
+
     preprocess:
       lidar_type: 5               # 1 Livox, 2 Velodyne, 3 Ouster, 4 KM-Ouster, 5 RoboSense (Fairy)
       scan_line: 96               # Fairy has 96/48-beam variants. Use 48 if ring max is 47.
@@ -10,17 +15,25 @@
       blind_for_human_pilots: 0.0  # unused by the RoboSense point cloud handler (no human-pilot rejection on a UAV)
 
     mapping:
-      # Estimated from a 55.5 min static Fairy IMU bag, after skipping the first 300 s.
-      # Raw max variances: acc 5.57e-05, gyro 1.74e-06. Allan deviation shows
-      # accelerometer z-bias drift around 1e-03 m/s^2 at longer taus, so the
-      # values below are intentionally inflated for bench vibration and early flight tests.
-      acc_cov: 0.0001
-      gyr_cov: 0.000005
+      # Runtime EKF process noise. These are larger than static IMU noise because
+      # replay tests showed that smaller values over-trust IMU propagation on Fairy.
+      # Keep gate and LiDAR geometry unchanged; this was the most repeatable
+      # low-noise candidate across pitch, turn, and shake replay bags.
+      acc_cov: 8.0
+      gyr_cov: 0.85
       b_acc_cov: 0.001
       b_gyr_cov: 0.0001
       fov_degree: 360.0           # Fairy: 360 deg horizontal FOV
       det_range: 150.0            # Fairy max range. Tune lower if Jetson load or map quality requires it.
       extrinsic_est_enabled: false      # Fairy's built-in IMU has a fixed factory extrinsic.
+      motion_quality_gate_enabled: true
+      motion_gate_max_pre_grav_residual: 8.0
+      motion_gate_suspect_frame_step: 0.5  # [m] candidate odom step.
+      motion_gate_max_update_step: 0.15    # [m] correction from IMU prediction to LiDAR update.
+      motion_gate_max_update_step_ratio: 0.02
+      motion_gate_min_effective_ratio: 0.10
+      motion_gate_min_effective_features: 20
+      motion_gate_reject_weak_lidar: true
 
       # ===== IMU <-> LiDAR extrinsic (LiDAR w.r.t. IMU) =====
       # The Fairy IMU is INTERNAL: this is a FIXED factory value, NOT flight/airframe dependent.
@@ -34,7 +47,7 @@
                      0.0224251980, 0.9997459944, -0.0022487974,
                     -0.0038765795, 0.0023363008, 0.9999897569 ]
 
-    filter_size_map: 0.4          # [m] map voxel size (a bit coarse for Jetson Orin NX real-time)
+    filter_size_map: 0.1          # [m] keep enough Fairy constraints; raise only if compute load requires it.
 
     publish:
       path_enabled: true
@@ -43,6 +56,9 @@
       scan_lidar_frame_publish_enabled: true
       scan_body_frame_publish_enabled: true
       scan_base_frame_publish_enabled: false
+      # High-rate IMU prediction is published on /odometry_imu_predicted; /odometry remains
+      # the LiDAR-corrected state for mapping and RViz.
+      imu_predicted_odometry_enabled: true
 
     pcd_save:
       pcd_save_enabled: false
@@ -51,7 +67,7 @@
     verbose: false
     runtime_pos_log_enabled: false
     point_filter_num_for_preprocessing: 1
-    # TODO(device-bringup): start with 1 for baseline quality, then raise only if Jetson load requires it.
-    point_filter_num: 3           # every 3rd point for pose estimation (Orin NX load; 856k pts/s raw)
+    # Stability-first default. Raise only if Jetson cannot keep up with the LiDAR frame rate.
+    point_filter_num: 1
     max_iteration: 3              # EKF iterations (lower for Jetson real-time)
     cube_side_length: 1000.0

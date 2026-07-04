@@ -1,6 +1,8 @@
 #include "spark_fast_lio.h"
 
+#include <algorithm>
 #include <cmath>
+#include <sstream>
 #include <stdexcept>
 
 #include <omp.h>
@@ -37,6 +39,8 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     scan_lidar_frame_publish_enabled_ = declare_parameter<bool>("publish.scan_lidar_frame_publish_enabled", false);
     scan_body_frame_publish_enabled_  = declare_parameter<bool>("publish.scan_body_frame_publish_enabled", false);
     scan_base_frame_publish_enabled_  = declare_parameter<bool>("publish.scan_base_frame_publish_enabled", false);
+    imu_predicted_odometry_enabled_ =
+        declare_parameter<bool>("publish.imu_predicted_odometry_enabled", true);
 
     max_iterations_ = declare_parameter<int>("max_iteration", 4);
 
@@ -49,6 +53,8 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     imu_frame_     = declare_parameter<std::string>("common.imu_frame", "imu");
     viz_frame_     = declare_parameter<std::string>("common.visualization_frame", "imu");
     time_sync_enabled_ = declare_parameter<bool>("common.time_sync_enabled", false);
+    imu_qos_depth_     = declare_parameter<int>("common.imu_qos_depth", 1000);
+    imu_qos_depth_     = std::max(10, imu_qos_depth_);
 
     filter_size_map_min_ = declare_parameter<double>("filter_size_map", 0.5);
     cube_len_            = declare_parameter<double>("cube_side_length", 200.0);
@@ -58,6 +64,29 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     acc_cov_             = declare_parameter<double>("mapping.acc_cov", 0.1);
     b_gyr_cov_           = declare_parameter<double>("mapping.b_gyr_cov", 0.0001);
     b_acc_cov_           = declare_parameter<double>("mapping.b_acc_cov", 0.0001);
+    motion_quality_gate_enabled_ =
+        declare_parameter<bool>("mapping.motion_quality_gate_enabled", false);
+    motion_gate_max_pre_grav_residual_ =
+        declare_parameter<double>("mapping.motion_gate_max_pre_grav_residual", 3.0);
+    motion_gate_suspect_frame_step_ =
+        declare_parameter<double>("mapping.motion_gate_suspect_frame_step", 0.5);
+    motion_gate_max_update_step_ =
+        declare_parameter<double>("mapping.motion_gate_max_update_step", 0.15);
+    motion_gate_max_update_step_ratio_ =
+        declare_parameter<double>("mapping.motion_gate_max_update_step_ratio", 0.2);
+    motion_gate_min_effective_ratio_ =
+        declare_parameter<double>("mapping.motion_gate_min_effective_ratio", 0.25);
+    motion_gate_min_effective_features_ =
+        declare_parameter<int>("mapping.motion_gate_min_effective_features", 100);
+    motion_gate_reject_weak_lidar_ =
+        declare_parameter<bool>("mapping.motion_gate_reject_weak_lidar", true);
+    motion_gate_max_pre_grav_residual_ = std::max(0.1, motion_gate_max_pre_grav_residual_);
+    motion_gate_suspect_frame_step_ = std::max(0.1, motion_gate_suspect_frame_step_);
+    motion_gate_max_update_step_ = std::max(0.01, motion_gate_max_update_step_);
+    motion_gate_max_update_step_ratio_ =
+        std::clamp(motion_gate_max_update_step_ratio_, 0.0, 1.0);
+    motion_gate_min_effective_ratio_ = std::clamp(motion_gate_min_effective_ratio_, 0.0, 1.0);
+    motion_gate_min_effective_features_ = std::max(1, motion_gate_min_effective_features_);
 
     enable_gravity_alignment_ =
         declare_parameter<bool>("gravity_alignment.enable_gravity_alignment", true);
@@ -103,8 +132,10 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
         lidar_qos,
         std::bind(&SPARKFastLIO2::livoxLiDARCallback, this, std::placeholders::_1));
 #endif
-    auto imu_qos = rclcpp::SensorDataQoS();
-    sub_imu_     = create_subscription<sensor_msgs::msg::Imu>(
+    auto imu_qos = rclcpp::QoS(rclcpp::KeepLast(imu_qos_depth_));
+    imu_qos.reliable();
+    imu_qos.durability_volatile();
+    sub_imu_ = create_subscription<sensor_msgs::msg::Imu>(
         "imu", imu_qos, std::bind(&SPARKFastLIO2::imuCallback, this, std::placeholders::_1));
 
     rclcpp::QoS qos((rclcpp::SystemDefaultsQoS().keep_last(1).durability_volatile()));
@@ -114,7 +145,9 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     pub_cloud_body_ = create_publisher<sensor_msgs::msg::PointCloud2>("cloud_registered_body", qos);
     pub_cloud_base_ = create_publisher<sensor_msgs::msg::PointCloud2>("cloud_registered_base", qos);
 
-    pub_odom_                 = create_publisher<nav_msgs::msg::Odometry>("odometry", qos);
+    pub_odom_ = create_publisher<nav_msgs::msg::Odometry>("odometry", qos);
+    pub_imu_predicted_odom_ =
+        create_publisher<nav_msgs::msg::Odometry>("odometry_imu_predicted", qos);
     pub_path_                 = create_publisher<nav_msgs::msg::Path>("path", qos);
     path_msg_.header.frame_id = map_frame_;
 
@@ -196,7 +229,76 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
                     "'point_filter_num_' instead.");
     }
 
-    RCLCPP_INFO(this->get_logger(), "SPARKFastLIO2 constructed");
+    RCLCPP_INFO(this->get_logger(),
+                "SPARKFastLIO2 constructed; imu_qos_depth=%d reliable=true",
+                imu_qos_depth_);
+}
+
+void SPARKFastLIO2::resetEstimatorState(const std::string &reason)
+{
+    RCLCPP_WARN(this->get_logger(), "Resetting estimator state: %s", reason.c_str());
+
+    lidar_buffer_.clear();
+    time_buffer_.clear();
+    lidar_end_time_buffer_.clear();
+    imu_buffer_.clear();
+    imu_integration_queue_.clear();
+
+    lidar_pushed_ = false;
+    lidar_end_time_ = 0.0;
+    lidar_mean_scantime_ = 0.0;
+    scan_num_ = 0;
+    first_lidar_time_ = 0.0;
+    flg_first_scan_ = true;
+    flg_EKF_inited_ = false;
+    has_last_lidar_timestamp_ = false;
+    has_last_imu_timestamp_ = false;
+    last_not_enough_imu_log_timestamp_ns_ = -1;
+
+    cloud_undistort_->clear();
+    feats_undistort_->clear();
+    feats_down_body_->clear();
+    feats_down_world_->clear();
+    cloud_to_be_saved_->clear();
+    nearest_points_.clear();
+    cub_needrm_.clear();
+
+    PointVector empty_map;
+    ikd_tree_.Build(empty_map);
+    ikd_tree_.set_downsample_param(filter_size_map_min_);
+    kdtree_size_st_ = 0;
+    kdtree_delete_counter_ = 0;
+    add_point_size_ = 0;
+
+    state_ikfom initial_state;
+    kf_.change_x(initial_state);
+    esekfom::esekf<state_ikfom, 12, input_ikfom>::cov initial_cov =
+        esekfom::esekf<state_ikfom, 12, input_ikfom>::cov::Identity();
+    kf_.change_P(initial_cov);
+    kf_for_preintegration_.reset();
+    imu_processor_->Reset();
+
+    latest_state_ = initial_state;
+    last_good_state_ = initial_state;
+    have_last_good_state_ = false;
+    last_good_imu_processor_snapshot_.reset();
+    have_last_lio_debug_state_ = false;
+    last_lio_debug_pos_ = Zero3d;
+    last_lio_debug_time_ = 0.0;
+
+    path_msg_.poses.clear();
+    path_publish_counter_ = 0;
+    motion_gate_consecutive_reject_count_ = 0;
+    total_residual_ = 0.0;
+    res_mean_last_ = 0.05;
+    effect_feat_num_ = 0;
+    feats_down_size_ = 0;
+    scan_count_ = 0;
+
+    is_gravity_aligned_ = false;
+    global_gravity_directions_.clear();
+    mean_acc_stopped_ = Zero3d;
+    position_last_ = Zero3d;
 }
 
 // Outputs rotation matrix that aligns a to b, i.e., R such that R * g_a = g_b
@@ -404,6 +506,7 @@ void SPARKFastLIO2::standardLiDARCallback(const sensor_msgs::msg::PointCloud2 &m
     std::lock_guard<std::mutex> lk(buffer_mutex_);
     ++scan_count_;
     rclcpp::Time msg_time = msg.header.stamp;
+    double msg_end_time   = 0.0;
 
     PointCloudXYZI::Ptr ptr(new PointCloudXYZI());
     preprocessor_->process(msg, ptr);
@@ -414,19 +517,20 @@ void SPARKFastLIO2::standardLiDARCallback(const sensor_msgs::msg::PointCloud2 &m
         {
             return;
         }
-        msg_time = rclcpp::Time(preprocessor_->scan_start_time() * 1e9);
+        msg_time     = rclcpp::Time(preprocessor_->scan_start_time() * 1e9);
+        msg_end_time = preprocessor_->scan_end_time();
     }
 
     if (has_last_lidar_timestamp_ && msg_time < last_lidar_timestamp_)
     {
-        RCLCPP_ERROR(get_logger(), "Lidar loopback detected, clearing buffers");
-        lidar_buffer_.clear();
+        resetEstimatorState("LiDAR timestamp moved backwards");
     }
     last_lidar_timestamp_ = msg_time;
     has_last_lidar_timestamp_ = true;
 
     lidar_buffer_.push_back(ptr);
     time_buffer_.push_back(msg_time.seconds());
+    lidar_end_time_buffer_.push_back(msg_end_time);
 
     sig_buffer_.notify_all();
 }
@@ -442,8 +546,7 @@ void SPARKFastLIO2::livoxLiDARCallback(const livox_ros_driver2::msg::CustomMsg::
 
     if (has_last_lidar_timestamp_ && msg_time < last_lidar_timestamp_)
     {
-        RCLCPP_ERROR(get_logger(), "Livox loopback, clearing buffers");
-        lidar_buffer_.clear();
+        resetEstimatorState("Livox timestamp moved backwards");
     }
     last_lidar_timestamp_ = msg_time;
     has_last_lidar_timestamp_ = true;
@@ -472,6 +575,7 @@ void SPARKFastLIO2::livoxLiDARCallback(const livox_ros_driver2::msg::CustomMsg::
 
     lidar_buffer_.push_back(ptr);
     time_buffer_.push_back(msg_time.seconds());
+    lidar_end_time_buffer_.push_back(0.0);
 
     sig_buffer_.notify_all();
 }
@@ -493,18 +597,16 @@ void SPARKFastLIO2::imuCallback(const sensor_msgs::msg::Imu::ConstSharedPtr msg)
 
     if (has_last_imu_timestamp_ && stamp < last_imu_timestamp_)
     {
-        RCLCPP_WARN_STREAM(get_logger(),
-                           "IMU loopback, clearing buffers (previous: "
-                               << last_imu_timestamp_.nanoseconds()
-                               << " vs. received: " << stamp.nanoseconds() << " [ns]");
-        imu_buffer_.clear();
-        imu_integration_queue_.clear();
-        kf_for_preintegration_.reset();
+        std::stringstream reason;
+        reason << "IMU timestamp moved backwards (previous: "
+               << last_imu_timestamp_.nanoseconds()
+               << " vs. received: " << stamp.nanoseconds() << " [ns])";
+        resetEstimatorState(reason.str());
     }
     last_imu_timestamp_ = stamp;
     has_last_imu_timestamp_ = true;
 
-    if (kf_for_preintegration_.has_value())
+    if (imu_predicted_odometry_enabled_ && kf_for_preintegration_.has_value())
     {
         integrateIMU(*kf_for_preintegration_, *imu_input);
     }
@@ -544,7 +646,7 @@ void SPARKFastLIO2::integrateIMU(esekfom::esekf<state_ikfom, 12, input_ikfom> &s
     integrated_state.pos = R_gravity_aligned_ * integrated_state.pos;
     integrated_state.rot = R_gravity_aligned_ * integrated_state.rot;
 
-    publishOdometry(integrated_state, stamp);
+    publishOdometry(integrated_state, stamp, pub_imu_predicted_odom_, false);
 }
 
 void SPARKFastLIO2::calcHModel(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_data)
@@ -553,11 +655,13 @@ void SPARKFastLIO2::calcHModel(state_ikfom &s, esekfom::dyn_share_datastruct<dou
     laser_cloud_ori_->clear();
     corr_normvec_->clear();
     total_residual_ = 0.0;
+    int nearest_candidate_num = 0;
+    int plane_candidate_num   = 0;
 
     /** closest surface search and residual computation **/
 #ifdef MP_ENABLED
     omp_set_num_threads(MP_PROC_NUM);
-#pragma omp parallel for
+#pragma omp parallel for reduction(+ : nearest_candidate_num, plane_candidate_num)
 #endif
     for (int i = 0; i < feats_down_size_; ++i)
     {
@@ -589,11 +693,13 @@ void SPARKFastLIO2::calcHModel(state_ikfom &s, esekfom::dyn_share_datastruct<dou
         {
             continue;
         }
+        ++nearest_candidate_num;
 
         VF(4) pabcd;
         point_selected_surf_[i] = false;
         if (esti_plane(pabcd, points_near, 0.1f))
         {
+            ++plane_candidate_num;
             float pd2 = pabcd(0) * point_world.x + pabcd(1) * point_world.y +
                         pabcd(2) * point_world.z + pabcd(3);
             float s = 1 - 0.9 * fabs(pd2) / sqrt(p_body.norm());
@@ -626,7 +732,22 @@ void SPARKFastLIO2::calcHModel(state_ikfom &s, esekfom::dyn_share_datastruct<dou
     if (effect_feat_num_ < 1)
     {
         ekfom_data.valid = false;
-        RCLCPP_WARN(this->get_logger(), "No Effective Points!");
+        RCLCPP_WARN_THROTTLE(this->get_logger(),
+                             *this->get_clock(),
+                             1000,
+                             "No Effective Points! feats_down=%d nearest_candidates=%d "
+                             "plane_candidates=%d tree=%d pos=[%.3f, %.3f, %.3f] "
+                             "vel=[%.3f, %.3f, %.3f]",
+                             feats_down_size_,
+                             nearest_candidate_num,
+                             plane_candidate_num,
+                             ikd_tree_.size(),
+                             s.pos[0],
+                             s.pos[1],
+                             s.pos[2],
+                             s.vel[0],
+                             s.vel[1],
+                             s.vel[2]);
         return;
     }
 
@@ -818,6 +939,15 @@ void SPARKFastLIO2::mapIncremental()
 
 void SPARKFastLIO2::publishOdometry(const state_ikfom &state, const rclcpp::Time &stamp)
 {
+    publishOdometry(state, stamp, pub_odom_, true);
+}
+
+void SPARKFastLIO2::publishOdometry(
+    const state_ikfom &state,
+    const rclcpp::Time &stamp,
+    const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr &publisher,
+    bool publish_tf)
+{
     odomAftMapped_.header.frame_id = map_frame_;
     odomAftMapped_.header.stamp    = stamp;
 
@@ -854,7 +984,11 @@ void SPARKFastLIO2::publishOdometry(const state_ikfom &state, const rclcpp::Time
     }
 
     // publish
-    pub_odom_->publish(odomAftMapped_);
+    publisher->publish(odomAftMapped_);
+    if (!publish_tf)
+    {
+        return;
+    }
 
     geometry_msgs::msg::TransformStamped transform_stamped;
     transform_stamped.header.stamp    = odomAftMapped_.header.stamp;
@@ -880,6 +1014,43 @@ void SPARKFastLIO2::publishPath(const state_ikfom &state)
     {
         path_msg_.poses.push_back(msg_body_pose_);
         pub_path_->publish(path_msg_);
+    }
+}
+
+void SPARKFastLIO2::publishCurrentFrame(const state_ikfom &state,
+                                        const rclcpp::Time &stamp,
+                                        bool insert_into_map,
+                                        bool append_path)
+{
+    publishOdometry(state, stamp);
+
+    if (insert_into_map)
+    {
+        mapIncremental();
+    }
+
+    if (append_path && path_enabled_)
+    {
+        publishPath(state);
+    }
+
+    if (!scan_publish_enabled_)
+    {
+        return;
+    }
+
+    publishFrameWorld(pub_cloud_full_);
+    if (scan_lidar_frame_publish_enabled_)
+    {
+        publishFrame(pub_cloud_lidar_, "lidar");
+    }
+    if (scan_body_frame_publish_enabled_)
+    {
+        publishFrame(pub_cloud_body_, "imu");
+    }
+    if (scan_base_frame_publish_enabled_)
+    {
+        publishFrame(pub_cloud_base_, "base");
     }
 }
 
@@ -1081,9 +1252,31 @@ bool SPARKFastLIO2::syncPackages(MeasureGroup &meas, bool verbose)
     {
         meas.lidar                = lidar_buffer_.front();
         meas.lidar_beg_time       = time_buffer_.front();
+        const double msg_end_time =
+            lidar_end_time_buffer_.empty() ? 0.0 : lidar_end_time_buffer_.front();
         static double denominator = 1000;
 
-        if (meas.lidar->points.size() <= 1)
+        // RoboSense filtering can drop late-scan points; prefer the raw scan end timestamp.
+        if (msg_end_time > meas.lidar_beg_time)
+        {
+            lidar_end_time_ = msg_end_time;
+            const double dt = lidar_end_time_ - meas.lidar_beg_time;
+            const double expected_scan_time_ms =
+                1000.0 / static_cast<double>(std::max(preprocessor_->SCAN_RATE, 1));
+            const double dt_ms = dt * 1000.0;
+            if (dt_ms < 0.8 * expected_scan_time_ms || dt_ms > 1.2 * expected_scan_time_ms)
+            {
+                RCLCPP_WARN(
+                    this->get_logger(),
+                    "LiDAR scan duration (%.2f ms) should be close to %.2f ms. Please check "
+                    "the point timestamp field from your sensor.",
+                    dt_ms,
+                    expected_scan_time_ms);
+            }
+            ++scan_num_;
+            lidar_mean_scantime_ += (dt - lidar_mean_scantime_) / static_cast<double>(scan_num_);
+        }
+        else if (meas.lidar->points.size() <= 1)
         {
             lidar_end_time_ = meas.lidar_beg_time + lidar_mean_scantime_;
         }
@@ -1146,6 +1339,10 @@ bool SPARKFastLIO2::syncPackages(MeasureGroup &meas, bool verbose)
 
     lidar_buffer_.pop_front();
     time_buffer_.pop_front();
+    if (!lidar_end_time_buffer_.empty())
+    {
+        lidar_end_time_buffer_.pop_front();
+    }
     lidar_pushed_ = false;
 
     return true;
@@ -1174,6 +1371,40 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
     cloud_undistort_->clear();
     feats_undistort_->clear();
 
+    const auto kf_before_measurement = kf_;
+    const auto imu_processor_before_measurement = imu_processor_->GetSnapshot();
+    const auto restore_state_before_measurement = [&]() {
+        if (have_last_good_state_)
+        {
+            kf_           = last_good_kf_;
+            latest_state_ = last_good_state_;
+            if (last_good_imu_processor_snapshot_.has_value())
+            {
+                imu_processor_->RestoreSnapshot(*last_good_imu_processor_snapshot_);
+            }
+            else
+            {
+                imu_processor_->RestoreSnapshot(imu_processor_before_measurement);
+            }
+        }
+        else
+        {
+            kf_ = kf_before_measurement;
+            imu_processor_->RestoreSnapshot(imu_processor_before_measurement);
+            latest_state_     = kf_.get_x();
+            latest_state_.pos = R_gravity_aligned_ * latest_state_.pos;
+            latest_state_.rot = R_gravity_aligned_ * latest_state_.rot;
+        }
+        kf_for_preintegration_ = kf_;
+    };
+    const auto publish_last_good_state = [&]() {
+        if (have_last_good_state_)
+        {
+            const auto stamp = rclcpp::Time(lidar_end_time_ * 1e9);
+            publishCurrentFrame(latest_state_, stamp, false, false);
+        }
+    };
+
     imu_processor_->Process(Measures, kf_, cloud_undistort_);
     feats_undistort_->reserve(cloud_undistort_->size() / point_filter_num_);
 
@@ -1189,9 +1420,33 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
 
     if (feats_undistort_->empty() || (feats_undistort_ == NULL))
     {
-        RCLCPP_WARN_STREAM(this->get_logger(), "No point, skip this scan!\n");
+        RCLCPP_WARN_THROTTLE(this->get_logger(),
+                             *this->get_clock(),
+                             1000,
+                             "No point, skip this scan! cloud_undistort=%zu "
+                             "feats_undistort=%zu raw_lidar=%zu imu=%zu scan_dt=%.3f ms "
+                             "pos=[%.3f, %.3f, %.3f] vel=[%.3f, %.3f, %.3f]",
+                             cloud_undistort_->size(),
+                             feats_undistort_->size(),
+                             Measures.lidar ? Measures.lidar->size() : 0,
+                             Measures.imu.size(),
+                             (Measures.lidar_end_time - Measures.lidar_beg_time) * 1000.0,
+                             latest_state_.pos[0],
+                             latest_state_.pos[1],
+                             latest_state_.pos[2],
+                             latest_state_.vel[0],
+                             latest_state_.vel[1],
+                             latest_state_.vel[2]);
+        if (motion_quality_gate_enabled_ && flg_EKF_inited_)
+        {
+            restore_state_before_measurement();
+            publish_last_good_state();
+        }
         return;
     }
+
+    latest_state_ = kf_.get_x();
+    const state_ikfom propagated_state = latest_state_;
 
     static int num_consecutive_moving_frames = 0;
     if (enable_gravity_alignment_ && !is_gravity_aligned_ && !base_frame_.empty())
@@ -1245,7 +1500,30 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
     /*** ICP and iterated Kalman filter update ***/
     if (feats_down_size_ < 5)
     {
-        RCLCPP_WARN_STREAM(this->get_logger(), "No point, skip this scan!");
+        RCLCPP_WARN_THROTTLE(this->get_logger(),
+                             *this->get_clock(),
+                             1000,
+                             "No point, skip this scan! cloud_undistort=%zu "
+                             "feats_undistort=%zu feats_down=%d raw_lidar=%zu imu=%zu "
+                             "scan_dt=%.3f ms pos=[%.3f, %.3f, %.3f] "
+                             "vel=[%.3f, %.3f, %.3f]",
+                             cloud_undistort_->size(),
+                             feats_undistort_->size(),
+                             feats_down_size_,
+                             Measures.lidar ? Measures.lidar->size() : 0,
+                             Measures.imu.size(),
+                             (Measures.lidar_end_time - Measures.lidar_beg_time) * 1000.0,
+                             latest_state_.pos[0],
+                             latest_state_.pos[1],
+                             latest_state_.pos[2],
+                             latest_state_.vel[0],
+                             latest_state_.vel[1],
+                             latest_state_.vel[2]);
+        if (motion_quality_gate_enabled_ && flg_EKF_inited_)
+        {
+            restore_state_before_measurement();
+            publish_last_good_state();
+        }
         return;
     }
 
@@ -1302,11 +1580,222 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
         }
     }
 
-    latest_state_          = kf_.get_x();
-    kf_for_preintegration_ = kf_;
+    latest_state_ = kf_.get_x();
     // Update corrected rotation here
     latest_state_.pos = R_gravity_aligned_ * latest_state_.pos;
     latest_state_.rot = R_gravity_aligned_ * latest_state_.rot;
+    const double lio_time = lidar_end_time_;
+    const V3D mean_acc    = Measures.getMeanAcc();
+    const SO3 rot_update  = propagated_state.rot.conjugate() * latest_state_.rot;
+    const double rot_update_deg =
+        Eigen::AngleAxisd(rot_update.toRotationMatrix()).angle() * 180.0 / M_PI;
+    const V3D pre_gravity_residual =
+        propagated_state.rot * mean_acc +
+        V3D(propagated_state.grav[0], propagated_state.grav[1], propagated_state.grav[2]);
+    const V3D post_gravity_residual =
+        latest_state_.rot * mean_acc +
+        V3D(latest_state_.grav[0], latest_state_.grav[1], latest_state_.grav[2]);
+    const double update_step = (latest_state_.pos - propagated_state.pos).norm();
+    const double lio_velocity_norm = latest_state_.vel.norm();
+    {
+        RCLCPP_INFO_THROTTLE(this->get_logger(),
+                             *this->get_clock(),
+                             1000,
+                             "LIO state: pos=[%.3f, %.3f, %.3f] vel=[%.3f, %.3f, %.3f] "
+                             "ekf_update_step=%.3f m rot_update=%.3f deg res_mean=%.5f "
+                             "bg=[%.5f, %.5f, %.5f] ba=[%.5f, %.5f, %.5f] "
+                             "grav=[%.3f, %.3f, %.3f] mean_acc=[%.3f, %.3f, %.3f] "
+                             "mean_acc_norm=%.3f pre_grav_res=%.3f post_grav_res=%.3f "
+                             "feats_down=%d effect=%d tree=%d imu=%zu "
+                             "scan_dt=%.3f ms",
+                             latest_state_.pos[0],
+                             latest_state_.pos[1],
+                             latest_state_.pos[2],
+                             latest_state_.vel[0],
+                             latest_state_.vel[1],
+                             latest_state_.vel[2],
+                             update_step,
+                             rot_update_deg,
+                             res_mean_last_,
+                             latest_state_.bg[0],
+                             latest_state_.bg[1],
+                             latest_state_.bg[2],
+                             latest_state_.ba[0],
+                             latest_state_.ba[1],
+                             latest_state_.ba[2],
+                             latest_state_.grav[0],
+                             latest_state_.grav[1],
+                             latest_state_.grav[2],
+                             mean_acc[0],
+                             mean_acc[1],
+                             mean_acc[2],
+                             mean_acc.norm(),
+                             pre_gravity_residual.norm(),
+                             post_gravity_residual.norm(),
+                             feats_down_size_,
+                             effect_feat_num_,
+                             ikd_tree_.size(),
+                             Measures.imu.size(),
+                             (Measures.lidar_end_time - Measures.lidar_beg_time) * 1000.0);
+    }
+    double lio_debug_dt     = 0.0;
+    double lio_state_step   = 0.0;
+    double lio_state_speed  = 0.0;
+    double update_step_ratio = 1.0;
+    if (have_last_lio_debug_state_)
+    {
+        lio_debug_dt    = lio_time - last_lio_debug_time_;
+        lio_state_step  = (latest_state_.pos - last_lio_debug_pos_).norm();
+        lio_state_speed = lio_debug_dt > 1.0e-6 ? lio_state_step / lio_debug_dt : 0.0;
+        update_step_ratio = lio_state_step > 1.0e-6 ? update_step / lio_state_step : 1.0;
+    }
+    const double effective_ratio =
+        feats_down_size_ > 0
+            ? static_cast<double>(effect_feat_num_) / static_cast<double>(feats_down_size_)
+            : 0.0;
+    const bool finite_state =
+        std::isfinite(latest_state_.pos[0]) && std::isfinite(latest_state_.pos[1]) &&
+        std::isfinite(latest_state_.pos[2]) && std::isfinite(latest_state_.vel[0]) &&
+        std::isfinite(latest_state_.vel[1]) && std::isfinite(latest_state_.vel[2]);
+    const bool high_pre_gravity_residual =
+        pre_gravity_residual.norm() > motion_gate_max_pre_grav_residual_;
+    const bool high_post_gravity_residual =
+        post_gravity_residual.norm() > motion_gate_max_pre_grav_residual_;
+    const bool suspicious_large_correction =
+        have_last_lio_debug_state_ && lio_debug_dt > 0.0 &&
+        lio_state_step > motion_gate_suspect_frame_step_ &&
+        update_step > motion_gate_max_update_step_;
+    const bool weak_lidar_update =
+        update_step_ratio < motion_gate_max_update_step_ratio_;
+    const bool weak_lidar_constraints =
+        effect_feat_num_ < motion_gate_min_effective_features_ ||
+        effective_ratio < motion_gate_min_effective_ratio_;
+    const bool reject_motion_frame =
+        motion_quality_gate_enabled_ && flg_EKF_inited_ &&
+        (!finite_state || (motion_gate_reject_weak_lidar_ && weak_lidar_constraints) ||
+         high_pre_gravity_residual ||
+         high_post_gravity_residual ||
+         suspicious_large_correction);
+
+    if (reject_motion_frame)
+    {
+        ++motion_gate_reject_count_;
+        ++motion_gate_consecutive_reject_count_;
+        restore_state_before_measurement();
+        RCLCPP_WARN(this->get_logger(),
+                    "Motion quality gate rejected scan #%d: consecutive=%d dt=%.3f s step=%.3f m "
+                    "speed=%.3f m/s ekf_update_step=%.3f m update_step_ratio=%.3f "
+                    "state_speed=%.3f m/s pre_grav_res=%.3f post_grav_res=%.3f "
+                    "feats_down=%d effect=%d effective_ratio=%.3f imu=%zu "
+                    "scan_dt=%.3f ms finite_state=%d weak_lidar=%d high_pre_grav=%d "
+                    "high_post_grav=%d weak_update=%d large_correction=%d "
+                    "restored_last_good=%d published_last_good=%d",
+                    motion_gate_reject_count_,
+                    motion_gate_consecutive_reject_count_,
+                    lio_debug_dt,
+                    lio_state_step,
+                    lio_state_speed,
+                    update_step,
+                    update_step_ratio,
+                    lio_velocity_norm,
+                    pre_gravity_residual.norm(),
+                    post_gravity_residual.norm(),
+                    feats_down_size_,
+                    effect_feat_num_,
+                    effective_ratio,
+                    Measures.imu.size(),
+                    (Measures.lidar_end_time - Measures.lidar_beg_time) * 1000.0,
+                    finite_state ? 1 : 0,
+                    weak_lidar_constraints ? 1 : 0,
+                    high_pre_gravity_residual ? 1 : 0,
+                    high_post_gravity_residual ? 1 : 0,
+                    weak_lidar_update ? 1 : 0,
+                    suspicious_large_correction ? 1 : 0,
+                    have_last_good_state_ ? 1 : 0,
+                    have_last_good_state_ ? 1 : 0);
+        publish_last_good_state();
+        return;
+    }
+
+    motion_gate_consecutive_reject_count_ = 0;
+    kf_for_preintegration_                = kf_;
+    last_good_kf_                         = kf_;
+    last_good_imu_processor_snapshot_     = imu_processor_->GetSnapshot();
+    last_good_state_                      = latest_state_;
+    have_last_good_state_                 = true;
+    if (have_last_lio_debug_state_)
+    {
+        const double dt    = lio_debug_dt;
+        const double step  = lio_state_step;
+        const double speed = lio_state_speed;
+        if ((dt > 0.0 && step > 0.5) || latest_state_.pos.norm() > 50.0)
+        {
+            const double imu_first_time =
+                Measures.imu.empty() ? 0.0 : rclcpp::Time(Measures.imu.front()->header.stamp).seconds();
+            const double imu_last_time =
+                Measures.imu.empty() ? 0.0 : rclcpp::Time(Measures.imu.back()->header.stamp).seconds();
+            const double imu_span_ms =
+                Measures.imu.empty() ? 0.0 : (imu_last_time - imu_first_time) * 1000.0;
+            const double imu_first_minus_lidar_begin_ms =
+                Measures.imu.empty() ? 0.0 : (imu_first_time - Measures.lidar_beg_time) * 1000.0;
+            const double lidar_end_minus_imu_last_ms =
+                Measures.imu.empty() ? 0.0 : (Measures.lidar_end_time - imu_last_time) * 1000.0;
+            RCLCPP_WARN_THROTTLE(this->get_logger(),
+                                 *this->get_clock(),
+                                 1000,
+                                 "Large LIO state jump: dt=%.3f s step=%.3f m speed=%.3f m/s "
+                                 "pre_pos=[%.3f, %.3f, %.3f] pre_vel=[%.3f, %.3f, %.3f] "
+                                 "post_pos=[%.3f, %.3f, %.3f] post_vel=[%.3f, %.3f, %.3f] "
+                                 "ekf_update_step=%.3f m rot_update=%.3f deg res_mean=%.5f "
+                                 "bg=[%.5f, %.5f, %.5f] ba=[%.5f, %.5f, %.5f] "
+                                 "grav=[%.3f, %.3f, %.3f] "
+                                 "pre_grav_res=%.3f post_grav_res=%.3f "
+                                 "feats_down=%d effect=%d tree=%d imu=%zu "
+                                 "scan_dt=%.3f ms imu_span=%.3f ms "
+                                 "imu_first_minus_lidar_begin=%.3f ms "
+                                 "lidar_end_minus_imu_last=%.3f ms",
+                                 dt,
+                                 step,
+                                 speed,
+                                 propagated_state.pos[0],
+                                 propagated_state.pos[1],
+                                 propagated_state.pos[2],
+                                 propagated_state.vel[0],
+                                 propagated_state.vel[1],
+                                 propagated_state.vel[2],
+                                 latest_state_.pos[0],
+                                 latest_state_.pos[1],
+                                 latest_state_.pos[2],
+                                 latest_state_.vel[0],
+                                 latest_state_.vel[1],
+                                 latest_state_.vel[2],
+                                 update_step,
+                                 rot_update_deg,
+                                 res_mean_last_,
+                                 latest_state_.bg[0],
+                                 latest_state_.bg[1],
+                                 latest_state_.bg[2],
+                                 latest_state_.ba[0],
+                                 latest_state_.ba[1],
+                                 latest_state_.ba[2],
+                                 latest_state_.grav[0],
+                                 latest_state_.grav[1],
+                                 latest_state_.grav[2],
+                                 pre_gravity_residual.norm(),
+                                 post_gravity_residual.norm(),
+                                 feats_down_size_,
+                                 effect_feat_num_,
+                                 ikd_tree_.size(),
+                                 Measures.imu.size(),
+                                 (Measures.lidar_end_time - Measures.lidar_beg_time) * 1000.0,
+                                 imu_span_ms,
+                                 imu_first_minus_lidar_begin_ms,
+                                 lidar_end_minus_imu_last_ms);
+        }
+    }
+    have_last_lio_debug_state_ = true;
+    last_lio_debug_pos_        = latest_state_.pos;
+    last_lio_debug_time_       = lio_time;
 
     if (enable_gravity_alignment_ && !is_gravity_aligned_ && !base_frame_.empty())
     {
@@ -1315,31 +1804,8 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
         return;
     }
 
-    /******* Publish topics *******/
     const auto stamp = rclcpp::Time(lidar_end_time_ * 1e9);
-    publishOdometry(latest_state_, stamp);
-    mapIncremental();
-
-    if (path_enabled_)
-    {
-        publishPath(latest_state_);
-    }
-    if (scan_publish_enabled_)
-    {
-        publishFrameWorld(pub_cloud_full_);
-        if (scan_lidar_frame_publish_enabled_)
-        {
-            publishFrame(pub_cloud_lidar_, "lidar");
-        }
-        if (scan_body_frame_publish_enabled_)
-        {
-            publishFrame(pub_cloud_body_, "imu");
-        }
-        if (scan_base_frame_publish_enabled_)
-        {
-            publishFrame(pub_cloud_base_, "base");
-        }
-    }
+    publishCurrentFrame(latest_state_, stamp, true, true);
 }
 }  // namespace spark_fast_lio
 

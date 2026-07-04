@@ -49,7 +49,7 @@ Recorded-bag presets do not belong here. They live in
 ## Fairy Configuration Notes
 
 `config/rs_fairy.yaml` and `launch/mapping_rs_fairy.launch.yaml` are for
-RoboSense Fairy bench/device bring-up.
+RoboSense Fairy live use.
 
 Important device-specific values:
 
@@ -60,6 +60,9 @@ Important device-specific values:
   `base_link -> rslidar` static transform in the launch file.
 - IMU covariance, blind distance, and point filtering are tuning parameters that
   need static logs and flight logs.
+- Motion quality gate thresholds in `rs_fairy.yaml` must reflect the vehicle's
+  real speed envelope. Keep speed and frame-step gates as catastrophic sanity
+  checks, not normal UAV or vehicle speed limits.
 
 ## Add a Live Sensor Config
 

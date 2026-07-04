@@ -31,7 +31,11 @@
 
 /// *************Preconfiguration
 
-#define MAX_INI_COUNT (10)
+static constexpr int kMinImuInitSamples      = 200;
+static constexpr double kMinImuInitDuration  = 2.0;
+static constexpr double kMaxInitMeanGyroNorm = 0.05;
+static constexpr double kMinInitAccNorm      = 8.0;
+static constexpr double kMaxInitAccNorm      = 11.5;
 
 bool time_list(PointType &x, PointType &y)
 {
@@ -44,11 +48,42 @@ class ImuProcess
 public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
+    struct Snapshot
+    {
+        Eigen::Matrix<double, 12, 12> Q;
+        V3D cov_acc;
+        V3D cov_gyr;
+        V3D cov_acc_scale;
+        V3D cov_gyr_scale;
+        V3D cov_bias_gyr;
+        V3D cov_bias_acc;
+        double first_lidar_time = 0.0;
+        std::shared_ptr<const sensor_msgs::msg::Imu> last_imu;
+        std::deque<std::shared_ptr<const sensor_msgs::msg::Imu>> v_imu;
+        std::vector<Pose6D> imu_pose;
+        std::vector<M3D> v_rot_pcl;
+        M3D lidar_R_wrt_imu;
+        V3D lidar_T_wrt_imu;
+        V3D mean_acc;
+        V3D mean_gyr;
+        V3D angvel_last;
+        V3D acc_s_last;
+        double start_timestamp = -1.0;
+        double last_lidar_end_time = -1.0;
+        double init_begin_time = -1.0;
+        double init_end_time = -1.0;
+        int init_iter_num = 1;
+        bool b_first_frame = true;
+        bool imu_need_init = true;
+    };
+
     ImuProcess();
     ~ImuProcess();
 
     void Reset();
     void Reset(double start_timestamp, const std::shared_ptr<const sensor_msgs::msg::Imu> &lastimu);
+    Snapshot GetSnapshot() const;
+    void RestoreSnapshot(const Snapshot &snapshot);
     void set_extrinsic(const V3D &transl, const M3D &rot);
     void set_extrinsic(const V3D &transl);
     void set_extrinsic(const MD(4, 4) & T);
@@ -92,12 +127,20 @@ private:
     V3D acc_s_last;
     double start_timestamp_;
     double last_lidar_end_time_;
+    double init_begin_time_;
+    double init_end_time_;
     int init_iter_num   = 1;
     bool b_first_frame_ = true;
     bool imu_need_init_ = true;
 };
 
-ImuProcess::ImuProcess() : start_timestamp_(-1), b_first_frame_(true), imu_need_init_(true)
+ImuProcess::ImuProcess()
+    : start_timestamp_(-1),
+      last_lidar_end_time_(-1),
+      init_begin_time_(-1),
+      init_end_time_(-1),
+      b_first_frame_(true),
+      imu_need_init_(true)
 {
     init_iter_num   = 1;
     Q               = process_noise_cov();
@@ -117,6 +160,66 @@ ImuProcess::~ImuProcess()
 {
 }
 
+ImuProcess::Snapshot ImuProcess::GetSnapshot() const
+{
+    Snapshot snapshot;
+    snapshot.Q                   = Q;
+    snapshot.cov_acc             = cov_acc;
+    snapshot.cov_gyr             = cov_gyr;
+    snapshot.cov_acc_scale       = cov_acc_scale;
+    snapshot.cov_gyr_scale       = cov_gyr_scale;
+    snapshot.cov_bias_gyr        = cov_bias_gyr;
+    snapshot.cov_bias_acc        = cov_bias_acc;
+    snapshot.first_lidar_time    = first_lidar_time;
+    snapshot.last_imu            = last_imu_;
+    snapshot.v_imu               = v_imu_;
+    snapshot.imu_pose            = IMUpose;
+    snapshot.v_rot_pcl           = v_rot_pcl_;
+    snapshot.lidar_R_wrt_imu     = Lidar_R_wrt_IMU;
+    snapshot.lidar_T_wrt_imu     = Lidar_T_wrt_IMU;
+    snapshot.mean_acc            = mean_acc;
+    snapshot.mean_gyr            = mean_gyr;
+    snapshot.angvel_last         = angvel_last;
+    snapshot.acc_s_last          = acc_s_last;
+    snapshot.start_timestamp     = start_timestamp_;
+    snapshot.last_lidar_end_time = last_lidar_end_time_;
+    snapshot.init_begin_time     = init_begin_time_;
+    snapshot.init_end_time       = init_end_time_;
+    snapshot.init_iter_num       = init_iter_num;
+    snapshot.b_first_frame       = b_first_frame_;
+    snapshot.imu_need_init       = imu_need_init_;
+    return snapshot;
+}
+
+void ImuProcess::RestoreSnapshot(const Snapshot &snapshot)
+{
+    Q                    = snapshot.Q;
+    cov_acc              = snapshot.cov_acc;
+    cov_gyr              = snapshot.cov_gyr;
+    cov_acc_scale        = snapshot.cov_acc_scale;
+    cov_gyr_scale        = snapshot.cov_gyr_scale;
+    cov_bias_gyr         = snapshot.cov_bias_gyr;
+    cov_bias_acc         = snapshot.cov_bias_acc;
+    first_lidar_time     = snapshot.first_lidar_time;
+    last_imu_            = snapshot.last_imu;
+    v_imu_               = snapshot.v_imu;
+    IMUpose              = snapshot.imu_pose;
+    v_rot_pcl_           = snapshot.v_rot_pcl;
+    Lidar_R_wrt_IMU      = snapshot.lidar_R_wrt_imu;
+    Lidar_T_wrt_IMU      = snapshot.lidar_T_wrt_imu;
+    mean_acc             = snapshot.mean_acc;
+    mean_gyr             = snapshot.mean_gyr;
+    angvel_last          = snapshot.angvel_last;
+    acc_s_last           = snapshot.acc_s_last;
+    start_timestamp_     = snapshot.start_timestamp;
+    last_lidar_end_time_ = snapshot.last_lidar_end_time;
+    init_begin_time_     = snapshot.init_begin_time;
+    init_end_time_       = snapshot.init_end_time;
+    init_iter_num        = snapshot.init_iter_num;
+    b_first_frame_       = snapshot.b_first_frame;
+    imu_need_init_       = snapshot.imu_need_init;
+}
+
 void ImuProcess::Reset()
 {
     // ROS_WARN("Reset ImuProcess");
@@ -124,7 +227,11 @@ void ImuProcess::Reset()
     mean_gyr         = V3D(0, 0, 0);
     angvel_last      = Zero3d;
     imu_need_init_   = true;
+    b_first_frame_   = true;
     start_timestamp_ = -1;
+    last_lidar_end_time_ = -1;
+    init_begin_time_     = -1;
+    init_end_time_       = -1;
     init_iter_num    = 1;
     v_imu_.clear();
     IMUpose.clear();
@@ -186,13 +293,18 @@ void ImuProcess::IMU_init(const MeasureGroup &meas,
         b_first_frame_      = false;
         const auto &imu_acc = meas.imu.front()->linear_acceleration;
         const auto &gyr_acc = meas.imu.front()->angular_velocity;
+        const auto first_imu_time = rclcpp::Time(meas.imu.front()->header.stamp).seconds();
         mean_acc << imu_acc.x, imu_acc.y, imu_acc.z;
         mean_gyr << gyr_acc.x, gyr_acc.y, gyr_acc.z;
         first_lidar_time = meas.lidar_beg_time;
+        init_begin_time_ = first_imu_time;
+        init_end_time_   = first_imu_time;
     }
 
     for (const auto &imu : meas.imu)
     {
+        init_end_time_ = rclcpp::Time(imu->header.stamp).seconds();
+
         const auto &imu_acc = imu->linear_acceleration;
         const auto &gyr_acc = imu->angular_velocity;
         cur_acc << imu_acc.x, imu_acc.y, imu_acc.z;
@@ -436,14 +548,63 @@ void ImuProcess::Process(const MeasureGroup &meas,
         last_imu_ = meas.imu.back();
 
         state_ikfom imu_state = kf_state.get_x();
-        if (init_iter_num > MAX_INI_COUNT)
+        const int init_samples      = std::max(0, init_iter_num - 1);
+        const double init_duration  = init_end_time_ - init_begin_time_;
+        const double mean_acc_norm  = mean_acc.norm();
+        const double mean_gyr_norm  = mean_gyr.norm();
+        const bool has_enough_imu   = init_samples >= kMinImuInitSamples &&
+                                    init_duration >= kMinImuInitDuration;
+        const bool is_stationary    = mean_acc_norm >= kMinInitAccNorm &&
+                                   mean_acc_norm <= kMaxInitAccNorm &&
+                                   mean_gyr_norm <= kMaxInitMeanGyroNorm;
+        if (has_enough_imu && !is_stationary)
+        {
+            RCLCPP_WARN(rclcpp::get_logger("imu_processing"),
+                        "IMU initialization rejected: keep the sensor still "
+                        "(samples=%d duration=%.3f s mean_acc_norm=%.6f mean_gyr_norm=%.6f)",
+                        init_samples,
+                        init_duration,
+                        mean_acc_norm,
+                        mean_gyr_norm);
+            Reset();
+            return;
+        }
+
+        if (has_enough_imu)
         {
             cov_acc *= pow(G_m_s2 / mean_acc.norm(), 2);
             imu_need_init_ = false;
+            last_lidar_end_time_ = meas.lidar_end_time;
 
             cov_acc = cov_acc_scale;
             cov_gyr = cov_gyr_scale;
-            RCLCPP_INFO(rclcpp::get_logger("imu_processing"), "IMU Initial Done");
+            RCLCPP_INFO(rclcpp::get_logger("imu_processing"),
+                        "IMU Initial Done: samples=%d duration=%.3f s "
+                        "mean_acc=[%.6f, %.6f, %.6f] norm=%.6f "
+                        "mean_gyr=[%.6f, %.6f, %.6f] "
+                        "grav=[%.6f, %.6f, %.6f] bg=[%.6f, %.6f, %.6f] "
+                        "cov_acc=[%.6g, %.6g, %.6g] cov_gyr=[%.6g, %.6g, %.6g]",
+                        init_samples,
+                        init_duration,
+                        mean_acc[0],
+                        mean_acc[1],
+                        mean_acc[2],
+                        mean_acc.norm(),
+                        mean_gyr[0],
+                        mean_gyr[1],
+                        mean_gyr[2],
+                        imu_state.grav[0],
+                        imu_state.grav[1],
+                        imu_state.grav[2],
+                        imu_state.bg[0],
+                        imu_state.bg[1],
+                        imu_state.bg[2],
+                        cov_acc[0],
+                        cov_acc[1],
+                        cov_acc[2],
+                        cov_gyr[0],
+                        cov_gyr[1],
+                        cov_gyr[2]);
             // RCLCPP_INFO(rclcpp::get_logger("imu_processing"),
             // "IMU Initial Done: Gravity: %.4f %.4f %.4f %.4f; state.bias_g: %.4f %.4f %.4f; acc
             // covarience: %.8f %.8f %.8f; gry covarience: %.8f %.8f %.8f",

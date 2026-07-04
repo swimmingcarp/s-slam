@@ -86,6 +86,8 @@ private:
 
     void imuCallback(const sensor_msgs::msg::Imu::ConstSharedPtr msg);
 
+    void resetEstimatorState(const std::string &reason);
+
     void integrateIMU(esekfom::esekf<state_ikfom, 12, input_ikfom> &state,
                       const sensor_msgs::msg::Imu &msg);
 
@@ -96,8 +98,18 @@ private:
     void mapIncremental();
 
     void publishOdometry(const state_ikfom &state, const rclcpp::Time &stamp);
+    void publishOdometry(
+        const state_ikfom &state,
+        const rclcpp::Time &stamp,
+        const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr &publisher,
+        bool publish_tf);
 
     void publishPath(const state_ikfom &state);
+
+    void publishCurrentFrame(const state_ikfom &state,
+                             const rclcpp::Time &stamp,
+                             bool insert_into_map,
+                             bool append_path);
 
     void publishFrameWorld(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubCloud);
 
@@ -174,6 +186,7 @@ private:
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_cloud_body_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_cloud_base_;
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub_odom_;
+    rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub_imu_predicted_odom_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pub_path_;
 
     std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
@@ -208,6 +221,9 @@ private:
     bool scan_lidar_frame_publish_enabled_ = false;
     bool scan_body_frame_publish_enabled_  = false;
     bool scan_base_frame_publish_enabled_  = false;
+    bool imu_predicted_odometry_enabled_   = true;
+    bool motion_quality_gate_enabled_       = false;
+    int imu_qos_depth_                     = 1000;
 
     bool verbose_     = false;
     bool pcl_verbose_ = true;
@@ -244,6 +260,12 @@ private:
     double acc_cov_   = 0.1;
     double b_gyr_cov_ = 0.0001;
     double b_acc_cov_ = 0.0001;
+    double motion_gate_max_pre_grav_residual_ = 3.0;
+    double motion_gate_suspect_frame_step_    = 0.5;
+    double motion_gate_max_update_step_       = 0.15;
+    double motion_gate_max_update_step_ratio_ = 0.2;
+    double motion_gate_min_effective_ratio_   = 0.25;
+    bool motion_gate_reject_weak_lidar_       = true;
 
     double filter_size_map_smaller_ = 0.0;
     double filter_size_map_min_     = 0.0;
@@ -267,6 +289,9 @@ private:
     int pcd_index_                = 0;
     int point_filter_num_         = 4;  // empirically, 4 showed the best performance
     int feats_down_size_neighbor_ = numeric_limits<int>::max();
+    int motion_gate_min_effective_features_ = 100;
+    int motion_gate_reject_count_           = 0;
+    int motion_gate_consecutive_reject_count_ = 0;
 
     double lidar_mean_scantime_ = 0.0;
     int scan_num_               = 0;
@@ -292,6 +317,7 @@ private:
     double extrinsics_timeout_s_ = 10.0;
 
     std::deque<double> time_buffer_;
+    std::deque<double> lidar_end_time_buffer_;
     std::deque<PointCloudXYZI::Ptr> lidar_buffer_;
     std::deque<std::shared_ptr<const sensor_msgs::msg::Imu>> imu_buffer_;
     std::deque<sensor_msgs::msg::Imu> imu_integration_queue_;
@@ -326,7 +352,14 @@ private:
     MeasureGroup Measures_;
     esekfom::esekf<state_ikfom, 12, input_ikfom> kf_;
     std::optional<esekfom::esekf<state_ikfom, 12, input_ikfom>> kf_for_preintegration_;
+    esekfom::esekf<state_ikfom, 12, input_ikfom> last_good_kf_;
+    std::optional<ImuProcess::Snapshot> last_good_imu_processor_snapshot_;
     state_ikfom latest_state_;
+    state_ikfom last_good_state_;
+    bool have_last_good_state_ = false;
+    bool have_last_lio_debug_state_ = false;
+    V3D last_lio_debug_pos_         = Zero3d;
+    double last_lio_debug_time_     = 0.0;
 
     nav_msgs::msg::Path path_msg_;
     nav_msgs::msg::Odometry odomAftMapped_;
