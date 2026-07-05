@@ -404,9 +404,19 @@ def write_report(
         play_exit_codes = [play_exit_codes]
 
     status = "PASS"
+    frozen_ratio = float(metrics.get("odom_frozen_ratio", 0.0))
+    frozen_by_gate = (
+        metrics.get("odom_count", 0) > 1 and
+        frozen_ratio >= 0.98 and
+        (
+            log_metrics.get("motion_gate_rejections", 0) > 0 or
+            log_metrics.get("no_effective_points", 0) > 0
+        )
+    )
     if (
         metrics.get("odom_count", 0) <= 0 or
         metrics.get("odom_nonfinite_samples", 0) > 0 or
+        frozen_by_gate or
         any(code != 0 for code in play_exit_codes) or
         exit_codes.get("record_odom", 0) not in (0, None)
     ):
@@ -453,6 +463,7 @@ def write_report(
         "odom_max_step_m",
         "odom_max_speed_m_s",
         "odom_frozen_steps",
+        "odom_frozen_ratio",
         "odom_large_steps",
         "odom_nonfinite_samples",
     )
@@ -747,6 +758,7 @@ def analyze_odom_bag(args: argparse.Namespace) -> int:
     frozen_steps = 0
     large_steps = 0
     nonfinite_samples = 0
+    step_count = max(len(samples) - 1, 0)
     for _, pos in samples:
         if not all(math.isfinite(value) for value in pos):
             nonfinite_samples += 1
@@ -773,6 +785,7 @@ def analyze_odom_bag(args: argparse.Namespace) -> int:
         "odom_max_step_m": round(max_step, 6),
         "odom_max_speed_m_s": round(max_speed, 6),
         "odom_frozen_steps": frozen_steps,
+        "odom_frozen_ratio": round(frozen_steps / step_count, 6) if step_count > 0 else 0.0,
         "odom_large_steps": large_steps,
         "odom_large_step_threshold_m": args.large_step_threshold,
         "odom_nonfinite_samples": nonfinite_samples,
