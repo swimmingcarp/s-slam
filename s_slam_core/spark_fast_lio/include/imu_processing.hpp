@@ -34,6 +34,10 @@
 static constexpr int kMinImuInitSamples      = 200;
 static constexpr double kMinImuInitDuration  = 2.0;
 static constexpr double kMaxInitMeanGyroNorm = 0.05;
+// Initialization estimates gravity from average acceleration, so the window
+// must be quiet, not just close to 1g on average.
+static constexpr double kMaxInitAccStdNorm   = 0.5;
+static constexpr double kMaxInitGyrStdNorm   = 0.03;
 static constexpr double kMinInitAccNorm      = 8.0;
 static constexpr double kMaxInitAccNorm      = 11.5;
 
@@ -552,20 +556,30 @@ void ImuProcess::Process(const MeasureGroup &meas,
         const double init_duration  = init_end_time_ - init_begin_time_;
         const double mean_acc_norm  = mean_acc.norm();
         const double mean_gyr_norm  = mean_gyr.norm();
+        // A moving or vibrating window can still have a mean acceleration norm
+        // near gravity. Reject it so linear acceleration is not baked into the
+        // initial gravity direction.
+        const double acc_std_norm   = cov_acc.cwiseMax(V3D::Zero()).cwiseSqrt().norm();
+        const double gyr_std_norm   = cov_gyr.cwiseMax(V3D::Zero()).cwiseSqrt().norm();
         const bool has_enough_imu   = init_samples >= kMinImuInitSamples &&
                                     init_duration >= kMinImuInitDuration;
         const bool is_stationary    = mean_acc_norm >= kMinInitAccNorm &&
                                    mean_acc_norm <= kMaxInitAccNorm &&
-                                   mean_gyr_norm <= kMaxInitMeanGyroNorm;
+                                   mean_gyr_norm <= kMaxInitMeanGyroNorm &&
+                                   acc_std_norm <= kMaxInitAccStdNorm &&
+                                   gyr_std_norm <= kMaxInitGyrStdNorm;
         if (has_enough_imu && !is_stationary)
         {
             RCLCPP_WARN(rclcpp::get_logger("imu_processing"),
                         "IMU initialization rejected: keep the sensor still "
-                        "(samples=%d duration=%.3f s mean_acc_norm=%.6f mean_gyr_norm=%.6f)",
+                        "(samples=%d duration=%.3f s mean_acc_norm=%.6f mean_gyr_norm=%.6f "
+                        "acc_std_norm=%.6f gyr_std_norm=%.6f)",
                         init_samples,
                         init_duration,
                         mean_acc_norm,
-                        mean_gyr_norm);
+                        mean_gyr_norm,
+                        acc_std_norm,
+                        gyr_std_norm);
             Reset();
             return;
         }
