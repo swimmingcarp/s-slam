@@ -1,0 +1,40 @@
+---
+launch:
+  - arg: {name: config_path, default: $(find-pkg-share spark_fast_lio)/config/rs_fairy.yaml}
+  - arg: {name: lidar_topic, default: /rslidar_points}
+  - arg: {name: imu_topic, default: /rslidar_imu_data}
+
+  - arg: {name: map_frame, default: odom}
+  - arg: {name: base_frame, default: base_link}
+  - arg: {name: lidar_frame, default: rslidar}
+  - arg: {name: imu_frame, default: rslidar_imu}
+  - arg: {name: visualization_frame, default: base}
+
+  - node:
+      pkg: spark_fast_lio
+      exec: spark_lio_mapping
+      name: lio_mapping
+      output: screen
+
+      remap:
+        - { from: 'lidar', to: '$(var lidar_topic)' }
+        - { from: 'imu',   to: '$(var imu_topic)' }
+
+      param:
+        - name: "common.lidar_frame"
+          value: "$(var lidar_frame)"
+        - name: "common.imu_frame"
+          value: "$(var imu_frame)"
+        - name: "common.map_frame"
+          value: "$(var map_frame)"
+        - name: "common.base_frame"
+          value: "$(var base_frame)"
+        - name: "common.visualization_frame"
+          value: "$(var visualization_frame)"
+        - name: "gravity_alignment.enable_gravity_alignment"
+          value: false
+
+        - from: $(var config_path)
+
+  - executable:
+      cmd: "ros2 run tf2_ros static_transform_publisher 0 0 0 0 0 0 $(var base_frame) $(var lidar_frame)"

@@ -9,6 +9,7 @@ install(DIRECTORY config launch
 )
 
 install(PROGRAMS
+  run.py
   scripts/publish_save_dir.py
   DESTINATION lib/${PROJECT_NAME}
 )

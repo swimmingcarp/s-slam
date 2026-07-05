@@ -12,7 +12,7 @@ robot models, and simulator GUI launch files belong in `../s_slam_simulation`.
 
 ```text
 recorded rosbag
-  -> s_slam_replay launch preset
+  -> s_slam_replay generic launch
   -> spark_fast_lio + kiss_matcher_ros
   -> live ROS topics + saved trajectory/map artifacts
 ```
@@ -20,7 +20,6 @@ recorded rosbag
 `s_slam_replay` owns:
 
 - recorded-bag launch presets
-- dataset-specific front-end configs
 - dataset-specific backend configs
 - result-save helper launch
 
@@ -43,6 +42,7 @@ s_slam_replay/
 │   └── kiss_matcher/
 │       └── kimera_multi/      # backend presets by sensor type
 ├── launch/
+│   ├── spark_fast_lio_replay.launch.yaml
 │   ├── slam_in_kimera_multi.launch.yaml
 │   ├── mapping_kimera_multi.launch.yaml
 │   ├── mapping_mit_campus.launch.yaml
@@ -69,36 +69,44 @@ for compatibility. New documentation and scripts should use `replay_id`.
 
 ## Outputs
 
-Replay result files are written by the KISS-Matcher backend after the save helper
-triggers `save_dir`:
+Run one end-to-end local regression from an existing ROS 2 bag:
 
-```text
-<output_dir>/<result_seq_name>/
-├── poses_tum.txt
-├── poses_kitti.txt
-├── scans/
-│   └── 000000.pcd ...
-└── <result_seq_name>_map.pcd
+```bash
+./s_slam_replay/run.py --input <rosbag_dir> --output <output_dir>
 ```
 
-| File | Format | Purpose |
-|------|--------|---------|
-| `poses_tum.txt` | `timestamp x y z qx qy qz qw` | trajectory evaluation |
-| `poses_kitti.txt` | one `3x4` pose matrix per line | KITTI-compatible trajectory tools |
-| `scans/*.pcd` | PCD | keyframe clouds |
-| `<result_seq_name>_map.pcd` | PCD | accumulated corrected map |
+By default, replay uses the Fairy front-end config:
+`s_slam_core/spark_fast_lio/config/rs_fairy.yaml`.
 
-The `.pcd` and `.txt` files are saved artifacts. RViz displays live ROS topics
-while the replay is running; it does not load these files directly.
+For another LiDAR, pass a direct `spark_fast_lio` config:
+
+```bash
+./s_slam_replay/run.py --input <rosbag_dir> --config <config_yaml> --output <output_dir>
+```
+
+If LiDAR and IMU were recorded into separate sibling bag directories, pass their
+parent directory as `<rosbag_dir>`.
+
+The wrapper starts `spark_fast_lio`, replays the bag, records `/odometry`, and
+writes:
+
+```text
+<output_dir>/
+├── odom/              # recorded replay output
+├── logs/              # frontend, recorder, and bag-play logs
+├── input_info.txt
+├── metrics.json
+├── report.md
+└── run_manifest.json
+```
 
 ## Add a New Replay Preset
 
-1. Add or copy a front-end config under `config/spark_fast_lio/<dataset>/`.
+1. Add or copy a front-end config under `config/spark_fast_lio/<dataset>/` only
+   when the dataset genuinely needs separate FAST-LIO tuning.
 2. Add a backend config under `config/kiss_matcher/<dataset>/` if loop-closure
    tuning differs by sensor or dataset.
-3. Add or update a launch file under `launch/` to set topic remaps, frames,
-   namespace, and config paths.
+3. Add or update a launch file under `launch/` only when the generic replay
+   launch is not enough to set topic remaps, frames, namespace, and config paths.
 4. Use `replay_id` as the public argument. Keep old aliases only for backward
    compatibility.
-5. Document the bag name, required topics, expected result path, and command in
-   the top-level README.

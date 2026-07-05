@@ -165,89 +165,31 @@ BUILD_JOBS=1 scripts/build.sh
 
 ## Replay Workflow
 
-Use replay for algorithm verification and regression testing. Replay is not
-simulation; it feeds recorded rosbag data through the live SLAM pipeline.
-
-Pre-processed ROS 2 bags are currently documented here:
-[Dropbox](https://www.dropbox.com/scl/fo/i56kucdzxpzq1mr5jula7/ALJpdqvOZT1hTaQXEePCvyI?rlkey=y5bvslyazf09erko7gl0aylll&st=dh91zyho&dl=0).
-
-Terminal 1, start the full SLAM pipeline:
+Run one end-to-end local regression from an existing ROS 2 bag:
 
 ```bash
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-
-ros2 launch s_slam_replay slam_in_kimera_multi.launch.yaml \
-  replay_id:=acl_jackal2 \
-  sensor_type:=velodyne16
+./s_slam_replay/run.py --input <rosbag_dir> --output <output_dir>
 ```
 
-Terminal 2, play the bag:
+By default, replay uses the Fairy front-end config:
+`s_slam_core/spark_fast_lio/config/rs_fairy.yaml`.
+
+For another LiDAR, pass the matching `spark_fast_lio` config:
 
 ```bash
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-
-ros2 bag play 12_08_acl_jackal2
+./s_slam_replay/run.py --input <rosbag_dir> --config <config_yaml> --output <output_dir>
 ```
 
-Terminal 3, after playback finishes, save backend results:
+The command starts the front end, replays the bag, records `/odometry`, and
+writes `report.md`, `metrics.json`, logs, and the output odometry bag under the
+requested output directory.
 
-```bash
-source /opt/ros/humble/setup.bash
-source install/setup.bash
+If LiDAR and IMU were recorded into separate sibling bag directories, pass their
+parent directory as `<rosbag_dir>`.
 
-ros2 launch s_slam_replay save_result.launch.yaml \
-  replay_id:=acl_jackal2 \
-  output_dir:=/tmp/s_slam_replay_results
-```
-
-`save_result.launch.yaml` publishes a `std_msgs/msg/String` to
-`/<replay_id>/save_dir`. KISS-Matcher receives that message and writes results
-under the requested directory.
-
-Replay result files:
-
-```text
-/tmp/s_slam_replay_results/acl_jackal2/
-├── poses_tum.txt
-├── poses_kitti.txt
-├── scans/
-│   └── 000000.pcd ...
-└── acl_jackal2_map.pcd
-```
-
-| File | Format | Purpose |
-|------|--------|---------|
-| `poses_tum.txt` | `timestamp x y z qx qy qz qw` | trajectory evaluation with `evo` |
-| `poses_kitti.txt` | one `3x4` pose matrix per line | KITTI-compatible trajectory tools |
-| `scans/*.pcd` | PCD | keyframe clouds |
-| `<replay_id>_map.pcd` | PCD | accumulated corrected map |
-
-Disable large result export for exploratory runs:
-
-```bash
-ros2 launch s_slam_replay slam_in_kimera_multi.launch.yaml \
-  replay_id:=acl_jackal2 \
-  sensor_type:=velodyne16 \
-  save_map_pcd:=false \
-  save_in_kitti_format:=false
-```
-
-## Replay Evaluation
-
-With ground truth:
-
-```bash
-evo_ape tum ground_truth.tum /tmp/s_slam_replay_results/acl_jackal2/poses_tum.txt -a --plot
-evo_rpe tum ground_truth.tum /tmp/s_slam_replay_results/acl_jackal2/poses_tum.txt -a --plot
-```
-
-Without ground truth:
-
-- compare `poses_tum.txt` across commits
-- inspect drift and loop-closure behavior in RViz
-- compare generated map PCDs visually or with point-cloud metrics
+The selected FAST-LIO YAML remains the single source of algorithm and sensor
+tuning. If the YAML defines the same node parameter as a frame override, ROS
+parameter-file order may still make the YAML the final source of truth.
 
 ## RViz Workflow
 
@@ -275,48 +217,6 @@ Root-namespace topics:
 /path/corrected
 /global_map
 /loop_detection
-```
-
-Namespaced replay topics, for example `replay_id:=acl_jackal2`:
-
-```text
-/acl_jackal2/odometry
-/acl_jackal2/cloud_registered
-/acl_jackal2/path/original
-/acl_jackal2/path/corrected
-/acl_jackal2/global_map
-/acl_jackal2/loop_detection
-```
-
-Saved `.pcd` and `.txt` replay artifacts are evaluation outputs. RViz does not
-load them directly unless a node republishes them as ROS topics.
-
-## Front-End-Only Replay Presets
-
-Use these to debug `spark_fast_lio` before enabling the backend:
-
-```bash
-ros2 launch s_slam_replay mapping_kimera_multi.launch.yaml replay_id:=acl_jackal
-ros2 launch s_slam_replay mapping_kimera_multi.launch.yaml replay_id:=acl_jackal2
-ros2 launch s_slam_replay mapping_kimera_multi.launch.yaml replay_id:=sparkal1
-```
-
-Kimera-Multi presets that need frame overrides:
-
-```bash
-ros2 launch s_slam_replay mapping_kimera_multi.launch.yaml replay_id:=apis     lidar_frame:=ouster_link imu_frame:=camera_imu_optical_frame
-ros2 launch s_slam_replay mapping_kimera_multi.launch.yaml replay_id:=hathor   lidar_frame:=velodyne
-ros2 launch s_slam_replay mapping_kimera_multi.launch.yaml replay_id:=sobek    lidar_frame:=ouster_link
-ros2 launch s_slam_replay mapping_kimera_multi.launch.yaml replay_id:=sparkal2 lidar_frame:=velodyne
-ros2 launch s_slam_replay mapping_kimera_multi.launch.yaml replay_id:=thoth    lidar_frame:=ouster_link imu_frame:=camera_imu_optical_frame
-```
-
-Other front-end presets:
-
-```bash
-ros2 launch s_slam_replay mapping_mit_campus.launch.yaml replay_id:=acl_jackal
-ros2 launch s_slam_replay mapping_vbr_colosseo.launch.yaml
-ros2 launch s_slam_replay mapping_dcist_rrg.launch.yaml
 ```
 
 ## Backend-Only Workflow

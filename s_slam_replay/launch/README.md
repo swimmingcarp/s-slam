@@ -7,6 +7,7 @@ lines are maintained in the top-level README.
 
 | File | Scope |
 |------|-------|
+| `spark_fast_lio_replay.launch.yaml` | generic front-end replay launch used by `s_slam_replay/run.py` |
 | `slam_in_kimera_multi.launch.yaml` | full Kimera-Multi replay pipeline: `spark_fast_lio` front end plus `kiss_matcher_ros` backend |
 | `save_result.launch.yaml` | helper that triggers backend result export through `save_dir` |
 | `mapping_kimera_multi.launch.yaml` | Kimera-Multi front end only |
