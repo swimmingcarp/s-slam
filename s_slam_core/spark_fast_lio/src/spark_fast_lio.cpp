@@ -1474,7 +1474,6 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
     }
 
     flg_EKF_inited_ = (Measures.lidar_beg_time - first_lidar_time_) < INIT_TIME ? false : true;
-    lasermapFovSegment();
 
     down_size_filter_.setInputCloud(feats_undistort_);
     down_size_filter_.filter(*feats_down_body_);
@@ -1670,12 +1669,22 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
     const bool weak_lidar_constraints =
         effect_feat_num_ < motion_gate_min_effective_features_ ||
         effective_ratio < motion_gate_min_effective_ratio_;
+    const bool unsupported_recovery_step =
+        have_last_lio_debug_state_ && lio_debug_dt > 0.0 &&
+        motion_gate_consecutive_reject_count_ > 0 &&
+        lio_state_step > motion_gate_suspect_frame_step_ &&
+        update_step <= motion_gate_max_update_step_ &&
+        (weak_lidar_update ||
+         (motion_gate_reject_weak_lidar_ && weak_lidar_constraints) ||
+         high_pre_gravity_residual ||
+         high_post_gravity_residual);
     const bool reject_motion_frame =
         motion_quality_gate_enabled_ && flg_EKF_inited_ &&
         (!finite_state || (motion_gate_reject_weak_lidar_ && weak_lidar_constraints) ||
          high_pre_gravity_residual ||
          high_post_gravity_residual ||
-         suspicious_large_correction);
+         suspicious_large_correction ||
+         unsupported_recovery_step);
 
     if (reject_motion_frame)
     {
@@ -1689,7 +1698,7 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
                     "feats_down=%d effect=%d effective_ratio=%.3f imu=%zu "
                     "scan_dt=%.3f ms finite_state=%d weak_lidar=%d high_pre_grav=%d "
                     "high_post_grav=%d weak_update=%d large_correction=%d "
-                    "restored_last_good=%d published_last_good=%d",
+                    "unsupported_recovery=%d restored_last_good=%d published_last_good=%d",
                     motion_gate_reject_count_,
                     motion_gate_consecutive_reject_count_,
                     lio_debug_dt,
@@ -1711,12 +1720,14 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
                     high_post_gravity_residual ? 1 : 0,
                     weak_lidar_update ? 1 : 0,
                     suspicious_large_correction ? 1 : 0,
+                    unsupported_recovery_step ? 1 : 0,
                     have_last_good_state_ ? 1 : 0,
                     have_last_good_state_ ? 1 : 0);
         publish_last_good_state();
         return;
     }
 
+    lasermapFovSegment();
     motion_gate_consecutive_reject_count_ = 0;
     kf_for_preintegration_                = kf_;
     last_good_kf_                         = kf_;
