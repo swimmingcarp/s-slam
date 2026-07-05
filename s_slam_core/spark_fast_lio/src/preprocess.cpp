@@ -1,73 +1,11 @@
 #include "preprocess.h"
 
-#include <algorithm>
 #include <cmath>
-#include <limits>
-#include <sstream>
-#include <utility>
+
+#include <pcl_conversions/pcl_conversions.h>
 
 #define RETURN0 0x00
 #define RETURN0AND1 0x10
-
-namespace
-{
-bool hasPointField(const sensor_msgs::msg::PointCloud2 &msg,
-                   const std::string &name,
-                   const uint8_t datatype)
-{
-    return std::any_of(msg.fields.begin(), msg.fields.end(), [&](const auto &field) {
-        return field.name == name && field.datatype == datatype && field.count == 1;
-    });
-}
-
-bool validateRoboSenseXYZIRT(const sensor_msgs::msg::PointCloud2 &msg)
-{
-    using sensor_msgs::msg::PointField;
-    const std::pair<const char *, uint8_t> required_fields[] = {
-        {"x", PointField::FLOAT32},
-        {"y", PointField::FLOAT32},
-        {"z", PointField::FLOAT32},
-        {"intensity", PointField::FLOAT32},
-        {"ring", PointField::UINT16},
-        {"timestamp", PointField::FLOAT64},
-    };
-
-    std::ostringstream missing;
-    bool ok = true;
-    for (const auto &[name, datatype] : required_fields)
-    {
-        if (!hasPointField(msg, name, datatype))
-        {
-            if (!ok)
-            {
-                missing << ", ";
-            }
-            missing << name;
-            ok = false;
-        }
-    }
-
-    if (!ok)
-    {
-        RCLCPP_ERROR(
-            rclcpp::get_logger("Preprocess"),
-            "RoboSense point cloud must be rslidar_sdk POINT_TYPE=XYZIRT "
-            "(missing/wrong fields: %s). Drop this scan.",
-            missing.str().c_str());
-    }
-    return ok;
-}
-
-bool hasFiniteXYZ(const rslidar_ros::Point &point)
-{
-    return std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z);
-}
-
-bool hasValidTimestamp(const rslidar_ros::Point &point)
-{
-    return std::isfinite(point.timestamp) && point.timestamp > 0.0;
-}
-}  // namespace
 
 Preprocess::Preprocess()
     : lidar_type(AVIA),
@@ -323,9 +261,13 @@ void Preprocess::handleOusterPointCloud(const sensor_msgs::msg::PointCloud2 &msg
     pl_full.clear();
     pl_from_pilots.clear();
 
-    pcl::PointCloud<ouster_ros::Point> pl_orig;
-    pcl::fromROSMsg(msg, pl_orig);
-    const auto plsize = pl_orig.size();
+    sensor_adapter::InternalScan scan;
+    if (!ouster_adapter_.convert(msg, time_unit_scale, scan))
+    {
+        return;
+    }
+
+    const auto plsize = scan.points.size();
     pl_corn.reserve(plsize);
     pl_surf.reserve(plsize);
     if (feature_enabled)
@@ -336,38 +278,19 @@ void Preprocess::handleOusterPointCloud(const sensor_msgs::msg::PointCloud2 &msg
             pl_buff[i].reserve(plsize);
         }
 
-        for (uint i = 0; i < plsize; ++i)
+        for (const auto &src : scan.points)
         {
-            double range = pl_orig.points[i].x * pl_orig.points[i].x +
-                           pl_orig.points[i].y * pl_orig.points[i].y +
-                           pl_orig.points[i].z * pl_orig.points[i].z;
+            const auto &added_pt = src.point;
+            double range =
+                added_pt.x * added_pt.x + added_pt.y * added_pt.y + added_pt.z * added_pt.z;
             if (range < (blind * blind))
             {
                 continue;
             }
-            Eigen::Vector3d pt_vec;
-            PointType added_pt;
-            added_pt.x         = pl_orig.points[i].x;
-            added_pt.y         = pl_orig.points[i].y;
-            added_pt.z         = pl_orig.points[i].z;
-            added_pt.intensity = pl_orig.points[i].intensity;
-            added_pt.normal_x  = 0;
-            added_pt.normal_y  = 0;
-            added_pt.normal_z  = 0;
-            double yaw_angle   = atan2(added_pt.y, added_pt.x) * 57.3;
-            if (yaw_angle >= 180.0)
-            {
-                yaw_angle -= 360.0;
-            }
-            if (yaw_angle <= -180.0)
-            {
-                yaw_angle += 360.0;
-            }
 
-            added_pt.curvature = pl_orig.points[i].t * time_unit_scale;
-            if (pl_orig.points[i].ring < N_SCANS)
+            if (src.ring < static_cast<std::uint16_t>(N_SCANS))
             {
-                pl_buff[pl_orig.points[i].ring].push_back(added_pt);
+                pl_buff[src.ring].push_back(added_pt);
             }
         }
 
@@ -394,32 +317,21 @@ void Preprocess::handleOusterPointCloud(const sensor_msgs::msg::PointCloud2 &msg
     }
     else
     {
-        for (size_t i = 0; i < pl_orig.points.size(); ++i)
+        for (const auto &src : scan.points)
         {
-            if (i % point_filter_num != 0)
+            if (src.source_index % static_cast<std::size_t>(point_filter_num) != 0)
             {
                 continue;
             }
 
-            double range = pl_orig.points[i].x * pl_orig.points[i].x +
-                           pl_orig.points[i].y * pl_orig.points[i].y +
-                           pl_orig.points[i].z * pl_orig.points[i].z;
+            const auto &added_pt = src.point;
+            double range =
+                added_pt.x * added_pt.x + added_pt.y * added_pt.y + added_pt.z * added_pt.z;
 
             if (range < (blind * blind))
             {
                 continue;
             }
-
-            Eigen::Vector3d pt_vec;
-            PointType added_pt;
-            added_pt.x         = pl_orig.points[i].x;
-            added_pt.y         = pl_orig.points[i].y;
-            added_pt.z         = pl_orig.points[i].z;
-            added_pt.intensity = pl_orig.points[i].intensity;
-            added_pt.normal_x  = 0;
-            added_pt.normal_y  = 0;
-            added_pt.normal_z  = 0;
-            added_pt.curvature = pl_orig.points[i].t * time_unit_scale;  // curvature unit: ms
 
             pl_surf.points.push_back(added_pt);
         }
@@ -436,19 +348,13 @@ void Preprocess::handleKimeraOusterPointCloud(const sensor_msgs::msg::PointCloud
     pl_full.clear();
     pl_from_pilots.clear();
 
-    pcl::PointCloud<ouster_ros::Point> pl_orig;
-    pcl::fromROSMsg(msg, pl_orig);
-
-    // Comment by Hyungtae:
-    // Note that the `t` should range 0 - 99889152
-    // and final `curvature` value should be in the range of 0 - 100
-    const uint32_t time_offset = pl_orig.points[0].t;
-    for (size_t i = 0; i < pl_orig.points.size(); ++i)
+    sensor_adapter::InternalScan scan;
+    if (!kimera_ouster_adapter_.convert(msg, time_unit_scale, scan))
     {
-        pl_orig.points[i].t -= time_offset;
+        return;
     }
 
-    size_t plsize = pl_orig.size();
+    size_t plsize = scan.points.size();
     pl_corn.reserve(plsize);
     pl_surf.reserve(plsize);
     if (feature_enabled)
@@ -459,41 +365,20 @@ void Preprocess::handleKimeraOusterPointCloud(const sensor_msgs::msg::PointCloud
             pl_buff[i].reserve(plsize);
         }
 
-        for (uint i = 0; i < plsize; ++i)
+        for (const auto &src : scan.points)
         {
-            double range = pl_orig.points[i].x * pl_orig.points[i].x +
-                           pl_orig.points[i].y * pl_orig.points[i].y +
-                           pl_orig.points[i].z * pl_orig.points[i].z;
+            const auto &added_pt = src.point;
+            double range =
+                added_pt.x * added_pt.x + added_pt.y * added_pt.y + added_pt.z * added_pt.z;
             if (range < (blind * blind) ||
-                is_from_pilot_zone(
-                    pl_orig.points[i].x, pl_orig.points[i].y, pl_orig.points[i].z, "ouster"))
+                is_from_pilot_zone(added_pt.x, added_pt.y, added_pt.z, "ouster"))
             {
                 continue;
             }
 
-            Eigen::Vector3d pt_vec;
-            PointType added_pt;
-            added_pt.x         = pl_orig.points[i].x;
-            added_pt.y         = pl_orig.points[i].y;
-            added_pt.z         = pl_orig.points[i].z;
-            added_pt.intensity = pl_orig.points[i].intensity;
-            added_pt.normal_x  = 0;
-            added_pt.normal_y  = 0;
-            added_pt.normal_z  = 0;
-            double yaw_angle   = atan2(added_pt.y, added_pt.x) * 57.3;
-            if (yaw_angle >= 180.0)
+            if (src.ring < static_cast<std::uint16_t>(N_SCANS))
             {
-                yaw_angle -= 360.0;
-            }
-            if (yaw_angle <= -180.0)
-            {
-                yaw_angle += 360.0;
-            }
-
-            added_pt.curvature = pl_orig.points[i].t * time_unit_scale;
-            if (pl_orig.points[i].ring < N_SCANS)
-            {
-                pl_buff[pl_orig.points[i].ring].push_back(added_pt);
+                pl_buff[src.ring].push_back(added_pt);
             }
         }
 
@@ -520,33 +405,21 @@ void Preprocess::handleKimeraOusterPointCloud(const sensor_msgs::msg::PointCloud
     }
     else
     {
-        for (size_t i = 0; i < pl_orig.points.size(); ++i)
+        for (const auto &src : scan.points)
         {
-            if (i % point_filter_num != 0)
+            if (src.source_index % static_cast<std::size_t>(point_filter_num) != 0)
             {
                 continue;
             }
 
-            double range = pl_orig.points[i].x * pl_orig.points[i].x +
-                           pl_orig.points[i].y * pl_orig.points[i].y +
-                           pl_orig.points[i].z * pl_orig.points[i].z;
+            const auto &added_pt = src.point;
+            double range =
+                added_pt.x * added_pt.x + added_pt.y * added_pt.y + added_pt.z * added_pt.z;
 
             if (range < (blind * blind))
             {
                 continue;
             }
-
-            Eigen::Vector3d pt_vec;
-            PointType added_pt;
-            added_pt.x         = pl_orig.points[i].x;
-            added_pt.y         = pl_orig.points[i].y;
-            added_pt.z         = pl_orig.points[i].z;
-            added_pt.intensity = pl_orig.points[i].intensity;
-            added_pt.normal_x  = 0;
-            added_pt.normal_y  = 0;
-            added_pt.normal_z  = 0;
-            added_pt.curvature =
-                pl_orig.points[i].t * time_unit_scale;  // curvature unit: nanoseconds
 
             pl_surf.points.push_back(added_pt);
         }
@@ -560,31 +433,15 @@ void Preprocess::handleVelodynePointCloud(const sensor_msgs::msg::PointCloud2 &m
     pl_full.clear();
     pl_from_pilots.clear();
 
-    pcl::PointCloud<velodyne_ros::Point> pl_orig;
-    pcl::fromROSMsg(msg, pl_orig);
-    int plsize = pl_orig.points.size();
-    if (plsize == 0)
+    sensor_adapter::InternalScan scan;
+    if (!velodyne_adapter_.convert(
+            msg, N_SCANS, SCAN_RATE, time_unit_scale, given_offset_time, scan))
     {
         return;
     }
+
+    const auto plsize = scan.points.size();
     pl_surf.reserve(plsize);
-
-    /*** These variables only works when no point timestamps given ***/
-    double omega_l = 0.361 * SCAN_RATE;  // scan angular velocity
-    std::vector<bool> is_first(N_SCANS, true);
-    std::vector<double> yaw_fp(N_SCANS, 0.0);    // yaw of first scan point
-    std::vector<float> yaw_last(N_SCANS, 0.0);   // yaw of last scan point
-    std::vector<float> time_last(N_SCANS, 0.0);  // last offset time
-    /*****************************************************************/
-    if (pl_orig.points[plsize - 1].time > 0)
-    {
-        given_offset_time = true;
-    }
-    else
-    {
-        given_offset_time = false;
-    }
-
     if (feature_enabled)
     {
         for (int i = 0; i < N_SCANS; ++i)
@@ -593,54 +450,14 @@ void Preprocess::handleVelodynePointCloud(const sensor_msgs::msg::PointCloud2 &m
             pl_buff[i].reserve(plsize);
         }
 
-        for (int i = 0; i < plsize; ++i)
+        for (const auto &src : scan.points)
         {
-            PointType added_pt;
-            added_pt.normal_x = 0;
-            added_pt.normal_y = 0;
-            added_pt.normal_z = 0;
-            int layer         = pl_orig.points[i].ring;
-            if (layer >= N_SCANS)
+            if (src.ring >= static_cast<std::uint16_t>(N_SCANS))
             {
                 continue;
             }
-            added_pt.x         = pl_orig.points[i].x;
-            added_pt.y         = pl_orig.points[i].y;
-            added_pt.z         = pl_orig.points[i].z;
-            added_pt.intensity = pl_orig.points[i].intensity;
-            added_pt.curvature = pl_orig.points[i].time * time_unit_scale;  // units: ms
 
-            if (!given_offset_time)
-            {
-                double yaw_angle = atan2(added_pt.y, added_pt.x) * 57.2957;
-                if (is_first[layer])
-                {
-                    yaw_fp[layer]      = yaw_angle;
-                    is_first[layer]    = false;
-                    added_pt.curvature = 0.0;
-                    yaw_last[layer]    = yaw_angle;
-                    time_last[layer]   = added_pt.curvature;
-                    continue;
-                }
-
-                if (yaw_angle <= yaw_fp[layer])
-                {
-                    added_pt.curvature = (yaw_fp[layer] - yaw_angle) / omega_l;
-                }
-                else
-                {
-                    added_pt.curvature = (yaw_fp[layer] - yaw_angle + 360.0) / omega_l;
-                }
-
-                if (added_pt.curvature < time_last[layer])
-                {
-                    added_pt.curvature += 360.0 / omega_l;
-                }
-                yaw_last[layer]  = yaw_angle;
-                time_last[layer] = added_pt.curvature;
-            }
-
-            pl_buff[layer].points.push_back(added_pt);
+            pl_buff[src.ring].points.push_back(src.point);
         }
 
         for (int j = 0; j < N_SCANS; ++j)
@@ -670,58 +487,11 @@ void Preprocess::handleVelodynePointCloud(const sensor_msgs::msg::PointCloud2 &m
     }
     else
     {
-        for (int i = 0; i < plsize; ++i)
+        for (const auto &src : scan.points)
         {
-            PointType added_pt;
-            // cout<<"!!!!!!"<<i<<" "<<plsize<<endl;
-
-            added_pt.normal_x  = 0;
-            added_pt.normal_y  = 0;
-            added_pt.normal_z  = 0;
-            added_pt.x         = pl_orig.points[i].x;
-            added_pt.y         = pl_orig.points[i].y;
-            added_pt.z         = pl_orig.points[i].z;
-            added_pt.intensity = pl_orig.points[i].intensity;
-            added_pt.curvature =
-                pl_orig.points[i].time *
-                time_unit_scale;  // curvature unit: ms // cout<<added_pt.curvature<<endl;
-
-            if (!given_offset_time)
+            if (src.source_index % static_cast<std::size_t>(point_filter_num) == 0)
             {
-                int layer        = pl_orig.points[i].ring;
-                double yaw_angle = atan2(added_pt.y, added_pt.x) * 57.2957;
-
-                if (is_first[layer])
-                {
-                    yaw_fp[layer]      = yaw_angle;
-                    is_first[layer]    = false;
-                    added_pt.curvature = 0.0;
-                    yaw_last[layer]    = yaw_angle;
-                    time_last[layer]   = added_pt.curvature;
-                    continue;
-                }
-
-                // compute offset time
-                if (yaw_angle <= yaw_fp[layer])
-                {
-                    added_pt.curvature = (yaw_fp[layer] - yaw_angle) / omega_l;
-                }
-                else
-                {
-                    added_pt.curvature = (yaw_fp[layer] - yaw_angle + 360.0) / omega_l;
-                }
-
-                if (added_pt.curvature < time_last[layer])
-                {
-                    added_pt.curvature += 360.0 / omega_l;
-                }
-
-                yaw_last[layer]  = yaw_angle;
-                time_last[layer] = added_pt.curvature;
-            }
-
-            if (i % point_filter_num == 0)
-            {
+                const auto &added_pt = src.point;
                 if (added_pt.x * added_pt.x + added_pt.y * added_pt.y + added_pt.z * added_pt.z >
                     (blind * blind))
                 {
@@ -745,64 +515,19 @@ void Preprocess::handleRoboSensePointCloud(const sensor_msgs::msg::PointCloud2 &
     pl_full.clear();
     pl_from_pilots.clear();
 
-    if (!validateRoboSenseXYZIRT(msg))
+    sensor_adapter::InternalScan scan;
+    if (!robosense_fairy_adapter_.convert(msg, scan))
     {
         return;
     }
 
-    pcl::PointCloud<rslidar_ros::Point> pl_orig;
-    pcl::fromROSMsg(msg, pl_orig);
-    int plsize = pl_orig.points.size();
-    if (plsize == 0)
-    {
-        return;
-    }
+    scan_start_time_ = scan.start_time;
+    scan_end_time_   = scan.end_time;
+    const auto plsize = scan.points.size();
     pl_surf.reserve(plsize);
 
-    // RoboSense per-point `timestamp` is ABSOLUTE (seconds). Convert it to a
-    // per-scan RELATIVE offset (ms) stored in `curvature`, matching what the
-    // EKF de-skew expects. Use the minimum valid timestamp as scan start so
-    // this node does not depend on rslidar_sdk's `ts_first_point` setting.
-    // (`time_unit` from the config is ignored for RoboSense.)
-    double t0 = std::numeric_limits<double>::max();
-    double t1 = -std::numeric_limits<double>::max();
-    for (const auto &point : pl_orig.points)
-    {
-        if (!hasValidTimestamp(point))
-        {
-            continue;
-        }
-        t0 = std::min(t0, point.timestamp);
-        t1 = std::max(t1, point.timestamp);
-    }
-
-    if (t0 == std::numeric_limits<double>::max())
-    {
-        RCLCPP_ERROR(rclcpp::get_logger("Preprocess"),
-                     "RoboSense XYZIRT point cloud has no valid per-point timestamp. Drop this scan.");
-        return;
-    }
-
-    scan_start_time_ = t0;
-    scan_end_time_   = t1;
-
-    const auto fillPoint = [t0](const rslidar_ros::Point &src, PointType &dst) {
-        dst.normal_x  = 0;
-        dst.normal_y  = 0;
-        dst.normal_z  = 0;
-        dst.x         = src.x;
-        dst.y         = src.y;
-        dst.z         = src.z;
-        dst.intensity = src.intensity;
-        dst.curvature = static_cast<float>((src.timestamp - t0) * 1000.0);  // units: ms
-    };
-
-    const auto usablePoint = [](const rslidar_ros::Point &point) {
-        return hasValidTimestamp(point) && hasFiniteXYZ(point);
-    };
-
-    const auto inConfiguredScan = [this](const rslidar_ros::Point &point) {
-        return point.ring < static_cast<uint16_t>(N_SCANS);
+    const auto inConfiguredScan = [this](const sensor_adapter::InternalPoint &point) {
+        return point.ring < static_cast<std::uint16_t>(N_SCANS);
     };
 
     if (feature_enabled)
@@ -813,16 +538,13 @@ void Preprocess::handleRoboSensePointCloud(const sensor_msgs::msg::PointCloud2 &
             pl_buff[i].reserve(plsize);
         }
 
-        for (int i = 0; i < plsize; ++i)
+        for (const auto &src : scan.points)
         {
-            const auto &src = pl_orig.points[i];
-            if (!usablePoint(src) || !inConfiguredScan(src))
+            if (!inConfiguredScan(src))
             {
                 continue;
             }
-            PointType added_pt;
-            fillPoint(src, added_pt);
-            pl_buff[src.ring].points.push_back(added_pt);
+            pl_buff[src.ring].points.push_back(src.point);
         }
 
         for (int j = 0; j < N_SCANS; ++j)
@@ -852,20 +574,18 @@ void Preprocess::handleRoboSensePointCloud(const sensor_msgs::msg::PointCloud2 &
     }
     else
     {
-        for (int i = 0; i < plsize; ++i)
+        for (const auto &src : scan.points)
         {
-            if (i % point_filter_num != 0)
+            if (src.source_index % static_cast<std::size_t>(point_filter_num) != 0)
             {
                 continue;
             }
-            const auto &src = pl_orig.points[i];
-            if (!usablePoint(src) || !inConfiguredScan(src))
+            if (!inConfiguredScan(src))
             {
                 continue;
             }
 
-            PointType added_pt;
-            fillPoint(src, added_pt);
+            const auto &added_pt = src.point;
 
             double dist2 =
                 added_pt.x * added_pt.x + added_pt.y * added_pt.y + added_pt.z * added_pt.z;

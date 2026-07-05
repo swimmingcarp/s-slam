@@ -2,10 +2,13 @@
 #include <string>
 #include <vector>
 
-#include <pcl_conversions/pcl_conversions.h>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 
+#include "adapters/kimera_ouster_adapter.hpp"
+#include "adapters/ouster_adapter.hpp"
+#include "adapters/robosense_fairy_adapter.hpp"
+#include "adapters/velodyne_adapter.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/time.hpp"
 
@@ -75,77 +78,6 @@ struct orgtype
     }
 };
 
-namespace velodyne_ros
-{
-struct EIGEN_ALIGN16 Point
-{
-    PCL_ADD_POINT4D;
-    float intensity;
-    float time;
-    uint16_t ring;
-    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-};
-}  // namespace velodyne_ros
-POINT_CLOUD_REGISTER_POINT_STRUCT(velodyne_ros::Point,
-                                  (float, x, x)(float, y, y)(float, z, z)(
-                                      float,
-                                      intensity,
-                                      intensity)(float, time, time)(std::uint16_t, ring, ring))
-
-namespace ouster_ros
-{
-struct EIGEN_ALIGN16 Point
-{
-    PCL_ADD_POINT4D;
-    float intensity;
-    uint32_t t;
-    uint16_t reflectivity;
-    uint8_t ring;
-    uint16_t ambient;
-    uint32_t range;
-    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-};
-}  // namespace ouster_ros
-
-// clang-format off
-POINT_CLOUD_REGISTER_POINT_STRUCT(ouster_ros::Point,
-                                  (float, x, x)
-                                    (float, y, y)
-                                    (float, z, z)
-                                    (float, intensity, intensity)
-                                    // use std::uint32_t to avoid conflicting with pcl::uint32_t
-                                    (std::uint32_t, t, t)
-                                    (std::uint16_t, reflectivity, reflectivity)
-                                    (std::uint8_t, ring, ring)
-                                    (std::uint16_t, ambient, ambient)
-                                    (std::uint32_t, range, range)
-)
-// clang-format on
-
-namespace rslidar_ros
-{
-// Point layout published by rslidar_sdk when built with POINT_TYPE=XYZIRT.
-// NOTE: `timestamp` is an ABSOLUTE time (seconds), unlike velodyne(.time) /
-// ouster(.t) which are per-scan relative offsets. handleRoboSensePointCloud() relativizes it.
-// rslidar_sdk publishes `intensity` as FLOAT32 in the ROS PointCloud2 layout.
-struct EIGEN_ALIGN16 Point
-{
-    PCL_ADD_POINT4D;
-    float intensity;
-    uint16_t ring;
-    double timestamp;
-    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-};
-}  // namespace rslidar_ros
-POINT_CLOUD_REGISTER_POINT_STRUCT(
-    rslidar_ros::Point,
-    (float, x, x)
-    (float, y, y)
-    (float, z, z)
-    (float, intensity, intensity)
-    (std::uint16_t, ring, ring)
-    (double, timestamp, timestamp))
-
 class Preprocess
 {
 public:
@@ -211,4 +143,8 @@ private:
     double smallp_intersect, smallp_ratio;
     double vx, vy, vz;
     double scan_start_time_, scan_end_time_;
+    sensor_adapter::OusterAdapter ouster_adapter_;
+    sensor_adapter::KimeraOusterAdapter kimera_ouster_adapter_;
+    sensor_adapter::VelodyneAdapter velodyne_adapter_;
+    sensor_adapter::RoboSenseFairyAdapter robosense_fairy_adapter_;
 };

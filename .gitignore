@@ -151,6 +151,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+AGENTS.md
 
 # Type checkers / linters caches
 .mypy_cache/

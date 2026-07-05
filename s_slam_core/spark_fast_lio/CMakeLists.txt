@@ -89,6 +89,10 @@ find_package(livox_ros_driver2 QUIET)
 
 # Create the library as a component
 add_library(spark_lio_component SHARED
+  src/adapters/kimera_ouster_adapter.cpp
+  src/adapters/ouster_adapter.cpp
+  src/adapters/robosense_fairy_adapter.cpp
+  src/adapters/velodyne_adapter.cpp
   src/spark_fast_lio.cpp
   src/preprocess.cpp
 )
