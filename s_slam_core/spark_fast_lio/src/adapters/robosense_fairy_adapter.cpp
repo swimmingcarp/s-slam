@@ -34,7 +34,7 @@ bool RoboSenseFairyAdapter::convert(const sensor_msgs::msg::PointCloud2 &msg, In
     double scan_end_time   = -std::numeric_limits<double>::max();
     for (const auto &point : raw_points.points)
     {
-        if (!hasValidTimestamp(point))
+        if (!hasValidTimestamp(point) || !hasFiniteXYZ(point))
         {
             continue;
         }
@@ -45,7 +45,8 @@ bool RoboSenseFairyAdapter::convert(const sensor_msgs::msg::PointCloud2 &msg, In
     if (scan_start_time == std::numeric_limits<double>::max())
     {
         RCLCPP_ERROR(rclcpp::get_logger("Preprocess"),
-                     "RoboSense XYZIRT point cloud has no valid per-point timestamp. Drop this scan.");
+                     "RoboSense XYZIRT point cloud has no finite point with a valid per-point "
+                     "timestamp. Drop this scan.");
         return false;
     }
 

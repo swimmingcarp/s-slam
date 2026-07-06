@@ -14,7 +14,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread -std=c++0x -fexceptions")
 
 message(STATUS "Current CPU archtecture: ${CMAKE_SYSTEM_PROCESSOR}")
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86)|(X86)|(amd64)|(AMD64)" )
+option(SPARK_FAST_LIO_ENABLE_MP "Enable OpenMP parallel matching in spark_fast_lio" OFF)
+option(SPARK_FAST_LIO_DETERMINISTIC_IKD_TREE
+  "Use synchronous ikd-tree rebuilds for deterministic replay results" ON)
+if(SPARK_FAST_LIO_ENABLE_MP AND CMAKE_SYSTEM_PROCESSOR MATCHES "(x86)|(X86)|(amd64)|(AMD64)" )
   include(ProcessorCount)
   ProcessorCount(processor_count)
   message(STATUS "Processor number:  ${processor_count}")
@@ -83,6 +86,9 @@ add_definitions(${PCL_DEFINITIONS})
 add_library(ikd_tree ${THIRD_PARTY_DIR}/ikd-Tree/ikd_Tree.cpp)
 # To resolve "recompile with -fPIC" issue
 set_target_properties(ikd_tree PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if(SPARK_FAST_LIO_DETERMINISTIC_IKD_TREE)
+  target_compile_definitions(ikd_tree PRIVATE IKD_TREE_DETERMINISTIC_REBUILD)
+endif()
 
 # Optional: Livox driver
 find_package(livox_ros_driver2 QUIET)
@@ -99,6 +105,10 @@ add_library(spark_lio_component SHARED
 
 # Example: C++ standard
 target_compile_features(spark_lio_component PUBLIC cxx_std_20)
+target_compile_definitions(spark_lio_component PRIVATE EIGEN_DONT_PARALLELIZE)
+if(SPARK_FAST_LIO_DETERMINISTIC_IKD_TREE)
+  target_compile_definitions(spark_lio_component PRIVATE SPARK_FAST_LIO_DETERMINISTIC_MAP_ORDER)
+endif()
 
 # Link external libs. Replace `ikd_tree` with your actual library name
 target_link_libraries(spark_lio_component

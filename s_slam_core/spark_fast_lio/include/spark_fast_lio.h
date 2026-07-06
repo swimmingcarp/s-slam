@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <deque>
 #include <mutex>
 #include <string>
@@ -86,7 +87,19 @@ private:
 
     void imuCallback(const sensor_msgs::msg::Imu::ConstSharedPtr msg);
 
-    void resetEstimatorState(const std::string &reason);
+    // How resetEstimatorState treats the next IMU initialization.
+    // kCold is the safe default: everything is discarded and a fresh
+    // stationary initialization is required — use it whenever the estimator
+    // state itself may be corrupted. kWarmRecovery is reserved for failures
+    // external to the estimate (e.g. sensor timestamp glitches): the pre-reset
+    // gravity/bias/velocity are re-seeded so recovery works in motion.
+    enum class ResetMode
+    {
+        kCold,
+        kWarmRecovery,
+    };
+
+    void resetEstimatorState(const std::string &reason, ResetMode mode = ResetMode::kCold);
 
     void integrateIMU(esekfom::esekf<state_ikfom, 12, input_ikfom> &state,
                       const sensor_msgs::msg::Imu &msg);
@@ -164,6 +177,8 @@ private:
 
     void main();
 
+    void drainPendingPackages();
+
     bool syncPackages(MeasureGroup &meas, bool verbose);
 
     bool isMotionStopped(const V3D &acc_ref, const V3D &acc_curr, const double acc_diff_thr);
@@ -211,6 +226,11 @@ private:
     int kdtree_size_end_       = 0;
     int add_point_size_        = 0;
     int kdtree_delete_counter_ = 0;
+    bool localmap_initialized_ = false;
+    // Data-driven (frame count) gate for the periodic LIO state log; clock
+    // throttling would make the formatted-frame subset timing-dependent and
+    // break bit-reproducible replay.
+    int lio_state_log_counter_ = 0;
 
     bool pcd_save_enabled_                 = false;
     bool time_sync_enabled_                = false;
@@ -222,8 +242,10 @@ private:
     bool scan_body_frame_publish_enabled_  = false;
     bool scan_base_frame_publish_enabled_  = false;
     bool imu_predicted_odometry_enabled_   = true;
+    bool process_on_callback_              = false;
     bool motion_quality_gate_enabled_       = false;
     int imu_qos_depth_                     = 1000;
+    int lidar_qos_depth_                   = 10;
 
     bool verbose_     = false;
     bool pcl_verbose_ = true;
@@ -231,8 +253,8 @@ private:
     bool enable_gravity_alignment_ = false;
     bool is_gravity_aligned_       = false;
 
-    float res_last_[100000] = {0.0};
-    float det_range_        = 300.0f;
+    std::vector<float> res_last_;
+    float det_range_ = 300.0f;
 
     std::mutex mtx_buffer_;
     std::condition_variable sig_buffer_;
@@ -299,11 +321,13 @@ private:
     double acc_diff_thr_              = 0.2;
     int num_moving_frames_thr_        = 10;
     int num_gravity_measurements_thr_ = 10;
-    bool point_selected_surf_[100000] = {0};
-    bool lidar_pushed_                = false;
-    bool flg_first_scan_              = true;
-    bool flg_exit_                    = false;
-    bool flg_EKF_inited_              = false;
+    std::vector<std::uint8_t> point_selected_surf_;
+    bool lidar_pushed_ = false;
+    bool flg_first_scan_ = true;
+    bool flg_exit_ = false;
+    bool flg_EKF_inited_ = false;
+    bool timediff_set_ = false;
+    int num_consecutive_moving_frames_ = 0;
 
     std::deque<V3D> global_gravity_directions_;
 

@@ -82,11 +82,18 @@ class KD_TREE {
       this->point = p;
       this->dist  = d;
     };
+    static bool point_less(const PointType &lhs, const PointType &rhs) {
+      if (lhs.x != rhs.x) return lhs.x < rhs.x;
+      if (lhs.y != rhs.y) return lhs.y < rhs.y;
+      return lhs.z < rhs.z;
+    }
+    bool better_than(const PointType_CMP &other) const {
+      if (fabs(dist - other.dist) >= 1e-10) return dist < other.dist;
+      return point_less(point, other.point);
+    }
     bool operator<(const PointType_CMP &a) const {
-      if (fabs(dist - a.dist) < 1e-10)
-        return point.x < a.point.x;
-      else
-        return dist < a.dist;
+      if (fabs(dist - a.dist) >= 1e-10) return dist < a.dist;
+      return point_less(point, a.point);
     }
   };
 
@@ -196,7 +203,7 @@ class KD_TREE {
   // Multi-thread Tree Rebuild
   bool termination_flag = false;
   bool rebuild_flag     = false;
-  pthread_t rebuild_thread;
+  pthread_t rebuild_thread = 0;
   pthread_mutex_t termination_flag_mutex_lock, rebuild_ptr_mutex_lock, working_flag_mutex,
       search_flag_mutex;
   pthread_mutex_t rebuild_logger_mutex_lock, points_deleted_rebuild_mutex_lock;

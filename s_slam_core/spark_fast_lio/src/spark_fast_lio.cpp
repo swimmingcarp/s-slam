@@ -7,10 +7,37 @@
 
 #include <omp.h>
 #include <pcl_conversions/pcl_conversions.h>
+#include <rclcpp/create_timer.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
 
 namespace spark_fast_lio
 {
+
+#ifdef SPARK_FAST_LIO_DETERMINISTIC_MAP_ORDER
+namespace
+{
+bool pointLessXYZICurvature(const PointType &lhs, const PointType &rhs)
+{
+    if (lhs.x != rhs.x)
+    {
+        return lhs.x < rhs.x;
+    }
+    if (lhs.y != rhs.y)
+    {
+        return lhs.y < rhs.y;
+    }
+    if (lhs.z != rhs.z)
+    {
+        return lhs.z < rhs.z;
+    }
+    if (lhs.intensity != rhs.intensity)
+    {
+        return lhs.intensity < rhs.intensity;
+    }
+    return lhs.curvature < rhs.curvature;
+}
+}  // namespace
+#endif
 
 SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     : Node("spark_fast_lio_node", options),
@@ -53,8 +80,13 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     imu_frame_     = declare_parameter<std::string>("common.imu_frame", "imu");
     viz_frame_     = declare_parameter<std::string>("common.visualization_frame", "imu");
     time_sync_enabled_ = declare_parameter<bool>("common.time_sync_enabled", false);
+    process_on_callback_ = declare_parameter<bool>("common.process_on_callback", false);
     imu_qos_depth_     = declare_parameter<int>("common.imu_qos_depth", 1000);
     imu_qos_depth_     = std::max(10, imu_qos_depth_);
+    // Deep queues make replay transport lossless; the live default keeps
+    // real-time drop behavior for on-robot use.
+    lidar_qos_depth_ = declare_parameter<int>("common.lidar_qos_depth", 10);
+    lidar_qos_depth_ = std::max(1, lidar_qos_depth_);
 
     filter_size_map_min_ = declare_parameter<double>("filter_size_map", 0.5);
     cube_len_            = declare_parameter<double>("cube_side_length", 200.0);
@@ -108,7 +140,7 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     pcd_save_enabled_      = declare_parameter<bool>("pcd_save.pcd_save_enabled", false);
     pcd_save_interval_     = declare_parameter<int>("pcd_save.interval", -1);
 
-    point_filter_num_ = declare_parameter<int>("point_filter_num", 4);
+    point_filter_num_ = std::max(1, static_cast<int>(declare_parameter<int>("point_filter_num", 4)));
 
     // extrinT_ and extrinR_ are sized 3 and 9 respectively
     extrinT_ = declare_parameter<std::vector<double>>("mapping.extrinsic_T", extrinT_);
@@ -118,7 +150,7 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
         declare_parameter<std::vector<double>>("gravity_alignment.g_base", {0.0, 0.0, -1.0});
     g_base_ << g_vec[0], g_vec[1], g_vec[2];
 
-    rclcpp::QoS lidar_qos(rclcpp::KeepLast(10));
+    rclcpp::QoS lidar_qos(rclcpp::KeepLast(static_cast<size_t>(lidar_qos_depth_)));
     lidar_qos.reliable();
     lidar_qos.durability_volatile();
     sub_lidar_ = create_subscription<sensor_msgs::msg::PointCloud2>(
@@ -166,7 +198,7 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
         declare_parameter<int>("preprocess.timestamp_unit", static_cast<int>(US));
     preprocessor_->SCAN_RATE = declare_parameter<int>("preprocess.scan_rate", 10);
     preprocessor_->point_filter_num =
-        declare_parameter<int>("point_filter_num_for_preprocessing", 1);
+        std::max(1, static_cast<int>(declare_parameter<int>("point_filter_num_for_preprocessing", 1)));
 
     imu_processor_ = std::make_shared<ImuProcess>();
     if (extrinT_.size() == 3 && extrinR_.size() == 9)
@@ -204,10 +236,10 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     feats_undistort_.reset(new PointCloudXYZI());
     feats_down_body_.reset(new PointCloudXYZI());
     feats_down_world_.reset(new PointCloudXYZI());
-    surface_normals_.reset(new PointCloudXYZI(100000, 1));
-    normvec_.reset(new PointCloudXYZI(100000, 1));
-    laser_cloud_ori_.reset(new PointCloudXYZI(100000, 1));
-    corr_normvec_.reset(new PointCloudXYZI(100000, 1));
+    surface_normals_.reset(new PointCloudXYZI());
+    normvec_.reset(new PointCloudXYZI());
+    laser_cloud_ori_.reset(new PointCloudXYZI());
+    corr_normvec_.reset(new PointCloudXYZI());
     cloud_to_be_saved_.reset(new PointCloudXYZI());
 
     if (!base_frame_.empty())
@@ -219,8 +251,14 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
         }
     }
 
-    main_loop_timer_ =
-        create_wall_timer(std::chrono::milliseconds(1), std::bind(&SPARKFastLIO2::main, this));
+    if (!process_on_callback_)
+    {
+        main_loop_timer_ = rclcpp::create_timer(
+            this,
+            get_clock(),
+            rclcpp::Duration::from_nanoseconds(1000000),
+            std::bind(&SPARKFastLIO2::main, this));
+    }
 
     if ((preprocessor_->point_filter_num != 1 && point_filter_num_ > 1))
     {
@@ -230,13 +268,51 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     }
 
     RCLCPP_INFO(this->get_logger(),
-                "SPARKFastLIO2 constructed; imu_qos_depth=%d reliable=true",
-                imu_qos_depth_);
+                "SPARKFastLIO2 constructed; imu_qos_depth=%d reliable=true process_on_callback=%d",
+                imu_qos_depth_,
+                process_on_callback_ ? 1 : 0);
 }
 
-void SPARKFastLIO2::resetEstimatorState(const std::string &reason)
+void SPARKFastLIO2::resetEstimatorState(const std::string &reason, const ResetMode mode)
 {
-    RCLCPP_WARN(this->get_logger(), "Resetting estimator state: %s", reason.c_str());
+    RCLCPP_WARN(this->get_logger(),
+                "Resetting estimator state (%s): %s",
+                mode == ResetMode::kWarmRecovery ? "warm recovery" : "cold",
+                reason.c_str());
+
+    // For kWarmRecovery, capture a re-init prior before wiping: a mid-run
+    // reset can happen in flight, where the stationary initialization window
+    // never comes. Gravity and velocity are converted to the IMU body frame so
+    // they stay valid in the world frame the re-initialization will anchor at
+    // the current body attitude. Whether the pre-reset state is trustworthy is
+    // the CALLER's decision (via mode): timing glitches leave it valid, while
+    // a corrupted-estimate reset must stay cold.
+    bool have_warm_prior  = false;
+    V3D warm_gravity_body = Zero3d;
+    V3D warm_bg           = Zero3d;
+    V3D warm_ba           = Zero3d;
+    V3D warm_vel_body     = Zero3d;
+    // Gate on the IMU processor's own initialized flag, NOT flg_EKF_inited_:
+    // the latter needs INIT_TIME of post-reset data to flip true again, so a
+    // burst of resets (e.g. LiDAR and IMU glitches back to back) inside that
+    // window would be misjudged as a cold start and deadlock in flight. The
+    // live filter state is used as the fallback because latest_state_ is only
+    // refreshed by completed update cycles.
+    if (mode == ResetMode::kWarmRecovery && imu_processor_ && imu_processor_->IsInitialized())
+    {
+        const state_ikfom prior_state =
+            have_last_good_state_ ? last_good_state_ : kf_.get_x();
+        const V3D gravity_world(
+            prior_state.grav[0], prior_state.grav[1], prior_state.grav[2]);
+        if (gravity_world.norm() > 0.5 * G_m_s2)
+        {
+            warm_gravity_body = prior_state.rot.conjugate() * gravity_world;
+            warm_bg           = prior_state.bg;
+            warm_ba           = prior_state.ba;
+            warm_vel_body     = prior_state.rot.conjugate() * prior_state.vel;
+            have_warm_prior   = true;
+        }
+    }
 
     lidar_buffer_.clear();
     time_buffer_.clear();
@@ -269,6 +345,7 @@ void SPARKFastLIO2::resetEstimatorState(const std::string &reason)
     kdtree_size_st_ = 0;
     kdtree_delete_counter_ = 0;
     add_point_size_ = 0;
+    localmap_initialized_ = false;
 
     state_ikfom initial_state;
     kf_.change_x(initial_state);
@@ -277,6 +354,10 @@ void SPARKFastLIO2::resetEstimatorState(const std::string &reason)
     kf_.change_P(initial_cov);
     kf_for_preintegration_.reset();
     imu_processor_->Reset();
+    if (have_warm_prior)
+    {
+        imu_processor_->setWarmStartPrior(warm_gravity_body, warm_bg, warm_ba, warm_vel_body);
+    }
 
     latest_state_ = initial_state;
     last_good_state_ = initial_state;
@@ -294,8 +375,13 @@ void SPARKFastLIO2::resetEstimatorState(const std::string &reason)
     effect_feat_num_ = 0;
     feats_down_size_ = 0;
     scan_count_ = 0;
+    lio_state_log_counter_ = 0;
 
     is_gravity_aligned_ = false;
+    R_gravity_aligned_ = Eye3d;
+    num_consecutive_moving_frames_ = 0;
+    timediff_set_ = false;
+    timediff_lidar_wrt_imu_ = 0;
     global_gravity_directions_.clear();
     mean_acc_stopped_ = Zero3d;
     position_last_ = Zero3d;
@@ -424,17 +510,18 @@ void SPARKFastLIO2::pointBodyToWorld(PointType const *const pi,
                                      PointType *const po,
                                      const state_ikfom &s)
 {
+    *po = *pi;
     V3D p_body(pi->x, pi->y, pi->z);
     V3D p_global(s.rot * (s.offset_R_L_I * p_body + s.offset_T_L_I) + s.pos);
 
     po->x         = p_global(0);
     po->y         = p_global(1);
     po->z         = p_global(2);
-    po->intensity = pi->intensity;
 }
 
 void SPARKFastLIO2::pclPointBodyToWorld(PointType const *const pi, PointType *const po)
 {
+    *po = *pi;
     V3D p_body(pi->x, pi->y, pi->z);
     V3D p_global(latest_state_.rot *
                      (latest_state_.offset_R_L_I * p_body + latest_state_.offset_T_L_I) +
@@ -443,33 +530,33 @@ void SPARKFastLIO2::pclPointBodyToWorld(PointType const *const pi, PointType *co
     po->x         = p_global(0);
     po->y         = p_global(1);
     po->z         = p_global(2);
-    po->intensity = pi->intensity;
 }
 
 void SPARKFastLIO2::pclPointBodyLidarToIMU(PointType const *const pi, PointType *const po)
 {
+    *po = *pi;
     V3D p_body_lidar(pi->x, pi->y, pi->z);
     V3D p_body_imu(latest_state_.offset_R_L_I * p_body_lidar + latest_state_.offset_T_L_I);
 
     po->x         = p_body_imu(0);
     po->y         = p_body_imu(1);
     po->z         = p_body_imu(2);
-    po->intensity = pi->intensity;
 }
 
 void SPARKFastLIO2::pclPointBodyLidarToBase(PointType const *const pi, PointType *const po)
 {
+    *po = *pi;
     V3D p_body_lidar(pi->x, pi->y, pi->z);
     V3D p_body_base(lidar_R_wrt_base_ * p_body_lidar + lidar_T_wrt_base_);
 
     po->x         = p_body_base(0);
     po->y         = p_body_base(1);
     po->z         = p_body_base(2);
-    po->intensity = pi->intensity;
 }
 
 void SPARKFastLIO2::pclPointIMUToLiDAR(PointType const *const pi, PointType *const po)
 {
+    *po = *pi;
     V3D p_body_imu(pi->x, pi->y, pi->z);
     V3D p_body_lidar(latest_state_.offset_R_L_I.inverse() *
                      (p_body_imu - latest_state_.offset_T_L_I));
@@ -477,11 +564,11 @@ void SPARKFastLIO2::pclPointIMUToLiDAR(PointType const *const pi, PointType *con
     po->x         = p_body_lidar(0);
     po->y         = p_body_lidar(1);
     po->z         = p_body_lidar(2);
-    po->intensity = pi->intensity;
 }
 
 void SPARKFastLIO2::pclPointIMUToBase(PointType const *const pi, PointType *const po)
 {
+    *po = *pi;
     const Eigen::Matrix3d offset_R_B_I = latest_state_.offset_R_L_I * lidar_R_wrt_base_.inverse();
     const Eigen::Vector3d offset_T_B_I =
         -1 * offset_R_B_I * lidar_T_wrt_base_ + latest_state_.offset_T_L_I;
@@ -492,7 +579,6 @@ void SPARKFastLIO2::pclPointIMUToBase(PointType const *const pi, PointType *cons
     po->x         = p_body_base(0);
     po->y         = p_body_base(1);
     po->z         = p_body_base(2);
-    po->intensity = pi->intensity;
 }
 
 void SPARKFastLIO2::collectRemovedPoints()
@@ -503,81 +589,98 @@ void SPARKFastLIO2::collectRemovedPoints()
 
 void SPARKFastLIO2::standardLiDARCallback(const sensor_msgs::msg::PointCloud2 &msg)
 {
-    std::lock_guard<std::mutex> lk(buffer_mutex_);
-    ++scan_count_;
-    rclcpp::Time msg_time = msg.header.stamp;
-    double msg_end_time   = 0.0;
-
-    PointCloudXYZI::Ptr ptr(new PointCloudXYZI());
-    preprocessor_->process(msg, ptr);
-
-    if (preprocessor_->lidar_type == ROBOSENSE)
     {
-        if (!preprocessor_->has_scan_time() || ptr->empty())
+        std::lock_guard<std::mutex> lk(buffer_mutex_);
+        ++scan_count_;
+        rclcpp::Time msg_time = msg.header.stamp;
+        double msg_end_time   = 0.0;
+
+        PointCloudXYZI::Ptr ptr(new PointCloudXYZI());
+        preprocessor_->process(msg, ptr);
+
+        if (preprocessor_->lidar_type == ROBOSENSE)
         {
-            return;
+            if (!preprocessor_->has_scan_time() || ptr->empty())
+            {
+                return;
+            }
+            msg_time     = rclcpp::Time(preprocessor_->scan_start_time() * 1e9);
+            msg_end_time = preprocessor_->scan_end_time();
         }
-        msg_time     = rclcpp::Time(preprocessor_->scan_start_time() * 1e9);
-        msg_end_time = preprocessor_->scan_end_time();
+
+        if (has_last_lidar_timestamp_ && msg_time < last_lidar_timestamp_)
+        {
+            resetEstimatorState("LiDAR timestamp moved backwards", ResetMode::kWarmRecovery);
+        }
+        last_lidar_timestamp_ = msg_time;
+        has_last_lidar_timestamp_ = true;
+
+        lidar_buffer_.push_back(ptr);
+        time_buffer_.push_back(msg_time.seconds());
+        lidar_end_time_buffer_.push_back(msg_end_time);
     }
 
-    if (has_last_lidar_timestamp_ && msg_time < last_lidar_timestamp_)
+    if (process_on_callback_)
     {
-        resetEstimatorState("LiDAR timestamp moved backwards");
+        drainPendingPackages();
     }
-    last_lidar_timestamp_ = msg_time;
-    has_last_lidar_timestamp_ = true;
-
-    lidar_buffer_.push_back(ptr);
-    time_buffer_.push_back(msg_time.seconds());
-    lidar_end_time_buffer_.push_back(msg_end_time);
-
-    sig_buffer_.notify_all();
+    else
+    {
+        sig_buffer_.notify_all();
+    }
 }
 
 #if defined(LIVOX_ROS_DRIVER_FOUND) && LIVOX_ROS_DRIVER_FOUND
 void SPARKFastLIO2::livoxLiDARCallback(const livox_ros_driver2::msg::CustomMsg::ConstSharedPtr msg)
 {
-    static bool timediff_set_flg = false;
-
-    std::lock_guard<std::mutex> lk(buffer_mutex_);
-    ++scan_count_;
-    rclcpp::Time msg_time = msg->header.stamp;
-
-    if (has_last_lidar_timestamp_ && msg_time < last_lidar_timestamp_)
     {
-        resetEstimatorState("Livox timestamp moved backwards");
-    }
-    last_lidar_timestamp_ = msg_time;
-    has_last_lidar_timestamp_ = true;
+        std::lock_guard<std::mutex> lk(buffer_mutex_);
+        ++scan_count_;
+        rclcpp::Time msg_time = msg->header.stamp;
 
-    const auto diff_s = std::abs((last_imu_timestamp_ - last_lidar_timestamp_).seconds());
-    if (!time_sync_enabled_ && diff_s > 10.0 && !imu_buffer_.empty() && !lidar_buffer_.empty())
+        if (has_last_lidar_timestamp_ && msg_time < last_lidar_timestamp_)
+        {
+            resetEstimatorState("Livox timestamp moved backwards", ResetMode::kWarmRecovery);
+        }
+        last_lidar_timestamp_ = msg_time;
+        has_last_lidar_timestamp_ = true;
+
+        const auto diff_s = std::abs((last_imu_timestamp_ - last_lidar_timestamp_).seconds());
+        if (!time_sync_enabled_ && diff_s > 10.0 && !imu_buffer_.empty() && !lidar_buffer_.empty())
+        {
+            RCLCPP_WARN_STREAM(this->get_logger(),
+                               "IMU and LiDAR not Synced, IMU time: "
+                                   << last_imu_timestamp_.nanoseconds()
+                                   << ", lidar header time: " << last_lidar_timestamp_.nanoseconds());
+        }
+
+        if (time_sync_enabled_ && !timediff_set_ && diff_s > 1.0 && !imu_buffer_.empty())
+        {
+            timediff_set_           = true;
+            timediff_lidar_wrt_imu_ =
+                last_lidar_timestamp_.nanoseconds() + static_cast<int64_t>(1.0e8) -
+                last_imu_timestamp_.nanoseconds();
+            RCLCPP_INFO_STREAM(
+                this->get_logger(),
+                "Self sync IMU and LiDAR, time diff is " << timediff_lidar_wrt_imu_ << "[ns]");
+        }
+
+        PointCloudXYZI::Ptr ptr(new PointCloudXYZI());
+        preprocessor_->process(*msg, ptr);
+
+        lidar_buffer_.push_back(ptr);
+        time_buffer_.push_back(msg_time.seconds());
+        lidar_end_time_buffer_.push_back(0.0);
+    }
+
+    if (process_on_callback_)
     {
-        RCLCPP_WARN_STREAM(this->get_logger(),
-                           "IMU and LiDAR not Synced, IMU time: "
-                               << last_imu_timestamp_.nanoseconds()
-                               << ", lidar header time: " << last_lidar_timestamp_.nanoseconds());
+        drainPendingPackages();
     }
-
-    if (time_sync_enabled_ && !timediff_set_flg && diff_s > 1.0 && !imu_buffer_.empty())
+    else
     {
-        timediff_set_flg        = true;
-        timediff_lidar_wrt_imu_ = last_lidar_timestamp_.nanoseconds() + static_cast<int64_t>(1.0e8) -
-                                  last_imu_timestamp_.nanoseconds();
-        RCLCPP_INFO_STREAM(
-            this->get_logger(),
-            "Self sync IMU and LiDAR, time diff is " << timediff_lidar_wrt_imu_ << "[ns]");
+        sig_buffer_.notify_all();
     }
-
-    PointCloudXYZI::Ptr ptr(new PointCloudXYZI());
-    preprocessor_->process(*msg, ptr);
-
-    lidar_buffer_.push_back(ptr);
-    time_buffer_.push_back(msg_time.seconds());
-    lidar_end_time_buffer_.push_back(0.0);
-
-    sig_buffer_.notify_all();
 }
 #endif
 
@@ -586,33 +689,43 @@ void SPARKFastLIO2::imuCallback(const sensor_msgs::msg::Imu::ConstSharedPtr msg)
     ++publish_count_;
 
     rclcpp::Time stamp = msg->header.stamp;
-    std::lock_guard<std::mutex> lk(buffer_mutex_);
-
-    auto imu_input = std::make_shared<sensor_msgs::msg::Imu>(*msg);
-    if (time_sync_enabled_ && std::abs(timediff_lidar_wrt_imu_) > static_cast<int64_t>(1.0e8))
     {
-        stamp += rclcpp::Duration::from_nanoseconds(timediff_lidar_wrt_imu_);
-        imu_input->header.stamp = stamp;
+        std::lock_guard<std::mutex> lk(buffer_mutex_);
+
+        auto imu_input = std::make_shared<sensor_msgs::msg::Imu>(*msg);
+        if (time_sync_enabled_ && std::abs(timediff_lidar_wrt_imu_) > static_cast<int64_t>(1.0e8))
+        {
+            stamp += rclcpp::Duration::from_nanoseconds(timediff_lidar_wrt_imu_);
+            imu_input->header.stamp = stamp;
+        }
+
+        if (has_last_imu_timestamp_ && stamp < last_imu_timestamp_)
+        {
+            std::stringstream reason;
+            reason << "IMU timestamp moved backwards (previous: "
+                   << last_imu_timestamp_.nanoseconds()
+                   << " vs. received: " << stamp.nanoseconds() << " [ns])";
+            resetEstimatorState(reason.str(), ResetMode::kWarmRecovery);
+        }
+        last_imu_timestamp_ = stamp;
+        has_last_imu_timestamp_ = true;
+
+        if (imu_predicted_odometry_enabled_ && kf_for_preintegration_.has_value())
+        {
+            integrateIMU(*kf_for_preintegration_, *imu_input);
+        }
+
+        imu_buffer_.push_back(imu_input);
     }
 
-    if (has_last_imu_timestamp_ && stamp < last_imu_timestamp_)
+    if (process_on_callback_)
     {
-        std::stringstream reason;
-        reason << "IMU timestamp moved backwards (previous: "
-               << last_imu_timestamp_.nanoseconds()
-               << " vs. received: " << stamp.nanoseconds() << " [ns])";
-        resetEstimatorState(reason.str());
+        drainPendingPackages();
     }
-    last_imu_timestamp_ = stamp;
-    has_last_imu_timestamp_ = true;
-
-    if (imu_predicted_odometry_enabled_ && kf_for_preintegration_.has_value())
+    else
     {
-        integrateIMU(*kf_for_preintegration_, *imu_input);
+        sig_buffer_.notify_all();
     }
-
-    imu_buffer_.push_back(imu_input);
-    sig_buffer_.notify_all();
 }
 
 void SPARKFastLIO2::integrateIMU(esekfom::esekf<state_ikfom, 12, input_ikfom> &state,
@@ -654,6 +767,16 @@ void SPARKFastLIO2::calcHModel(state_ikfom &s, esekfom::dyn_share_datastruct<dou
     double match_start = omp_get_wtime();
     laser_cloud_ori_->clear();
     corr_normvec_->clear();
+    laser_cloud_ori_->reserve(feats_down_size_);
+    corr_normvec_->reserve(feats_down_size_);
+    if (static_cast<int>(res_last_.size()) < feats_down_size_)
+    {
+        res_last_.resize(feats_down_size_, 0.0f);
+    }
+    if (static_cast<int>(point_selected_surf_.size()) < feats_down_size_)
+    {
+        point_selected_surf_.resize(feats_down_size_, 0U);
+    }
     total_residual_ = 0.0;
     int nearest_candidate_num = 0;
     int plane_candidate_num   = 0;
@@ -722,8 +845,8 @@ void SPARKFastLIO2::calcHModel(state_ikfom &s, esekfom::dyn_share_datastruct<dou
     {
         if (point_selected_surf_[i])
         {
-            laser_cloud_ori_->points[effect_feat_num_] = feats_down_body_->points[i];
-            corr_normvec_->points[effect_feat_num_]    = normvec_->points[i];
+            laser_cloud_ori_->push_back(feats_down_body_->points[i]);
+            corr_normvec_->push_back(normvec_->points[i]);
             total_residual_ += res_last_[i];
             ++effect_feat_num_;
         }
@@ -797,8 +920,6 @@ void SPARKFastLIO2::calcHModel(state_ikfom &s, esekfom::dyn_share_datastruct<dou
 
 void SPARKFastLIO2::lasermapFovSegment()
 {
-    static bool localmap_initialized = false;
-
     cub_needrm_.clear();
     kdtree_delete_counter_ = 0;
     kdtree_delete_time_    = 0.0;
@@ -806,14 +927,14 @@ void SPARKFastLIO2::lasermapFovSegment()
 
     // `lidar_xyz`: LiDAR position w.r.t. world frame
     V3D lidar_xyz = kf_.get_lidar_position();
-    if (!localmap_initialized)
+    if (!localmap_initialized_)
     {
         for (int i = 0; i < 3; ++i)
         {
             localmap_points_.vertex_min[i] = lidar_xyz(i) - cube_len_ / 2.0;
             localmap_points_.vertex_max[i] = lidar_xyz(i) + cube_len_ / 2.0;
         }
-        localmap_initialized = true;
+        localmap_initialized_ = true;
         return;
     }
 
@@ -885,7 +1006,7 @@ void SPARKFastLIO2::mapIncremental()
             const PointVector &points_near = nearest_points_[i];
             bool need_add                  = true;
 
-            PointType mid_point;
+            PointType mid_point{};
             mid_point.x = std::floor(feats_down_world_->points[i].x / filter_size_map_min_) *
                               filter_size_map_min_ +
                           0.5 * filter_size_map_min_;
@@ -928,6 +1049,11 @@ void SPARKFastLIO2::mapIncremental()
             PointToAdd.push_back(feats_down_world_->points[i]);
         }
     }
+
+#ifdef SPARK_FAST_LIO_DETERMINISTIC_MAP_ORDER
+    std::sort(PointToAdd.begin(), PointToAdd.end(), pointLessXYZICurvature);
+    std::sort(PointNoNeedDownsample.begin(), PointNoNeedDownsample.end(), pointLessXYZICurvature);
+#endif
 
     double st_time  = omp_get_wtime();
     add_point_size_ = ikd_tree_.Add_Points(PointToAdd, true);
@@ -1200,7 +1326,12 @@ PoseStruct SPARKFastLIO2::transformPoseWrtLidarFrame(const state_ikfom &state) c
 
 void SPARKFastLIO2::main()
 {
-    if (syncPackages(Measures_, verbose_))
+    drainPendingPackages();
+}
+
+void SPARKFastLIO2::drainPendingPackages()
+{
+    while (syncPackages(Measures_, verbose_))
     {
         processLidarAndImu(Measures_);
     }
@@ -1373,7 +1504,17 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
 
     const auto kf_before_measurement = kf_;
     const auto imu_processor_before_measurement = imu_processor_->GetSnapshot();
+    const bool is_gravity_aligned_before = is_gravity_aligned_;
+    const Eigen::Matrix3d R_gravity_aligned_before = R_gravity_aligned_;
+    const auto global_gravity_directions_before = global_gravity_directions_;
+    const V3D mean_acc_stopped_before = mean_acc_stopped_;
+    const int num_consecutive_moving_frames_before = num_consecutive_moving_frames_;
     const auto restore_state_before_measurement = [&]() {
+        is_gravity_aligned_ = is_gravity_aligned_before;
+        R_gravity_aligned_ = R_gravity_aligned_before;
+        global_gravity_directions_ = global_gravity_directions_before;
+        mean_acc_stopped_ = mean_acc_stopped_before;
+        num_consecutive_moving_frames_ = num_consecutive_moving_frames_before;
         if (have_last_good_state_)
         {
             kf_           = last_good_kf_;
@@ -1417,6 +1558,7 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
     }
 
     latest_state_ = kf_.get_x();
+    flg_EKF_inited_ = (Measures.lidar_beg_time - first_lidar_time_) >= INIT_TIME;
 
     if (feats_undistort_->empty() || (feats_undistort_ == NULL))
     {
@@ -1437,7 +1579,7 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
                              latest_state_.vel[0],
                              latest_state_.vel[1],
                              latest_state_.vel[2]);
-        if (motion_quality_gate_enabled_ && flg_EKF_inited_)
+        if (motion_quality_gate_enabled_ && have_last_good_state_)
         {
             restore_state_before_measurement();
             publish_last_good_state();
@@ -1448,7 +1590,6 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
     latest_state_ = kf_.get_x();
     const state_ikfom propagated_state = latest_state_;
 
-    static int num_consecutive_moving_frames = 0;
     if (enable_gravity_alignment_ && !is_gravity_aligned_ && !base_frame_.empty())
     {
         if (!flg_EKF_inited_)
@@ -1464,19 +1605,22 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
                 RCLCPP_WARN_STREAM(this->get_logger(),
                                    "Waiting for motion to perform gravity alignment...now a robot "
                                    "has been stopped");
-                num_consecutive_moving_frames = 0;
+                num_consecutive_moving_frames_ = 0;
             }
             else
             {
-                num_consecutive_moving_frames = min(num_consecutive_moving_frames + 1, 100000);
+                num_consecutive_moving_frames_ = min(num_consecutive_moving_frames_ + 1, 100000);
             }
         }
     }
 
-    flg_EKF_inited_ = (Measures.lidar_beg_time - first_lidar_time_) < INIT_TIME ? false : true;
-
     down_size_filter_.setInputCloud(feats_undistort_);
     down_size_filter_.filter(*feats_down_body_);
+#ifdef SPARK_FAST_LIO_DETERMINISTIC_MAP_ORDER
+    std::sort(feats_down_body_->points.begin(),
+              feats_down_body_->points.end(),
+              pointLessXYZICurvature);
+#endif
     feats_down_size_ = feats_down_body_->points.size();
 
     if (ikd_tree_.Root_Node == nullptr)
@@ -1490,6 +1634,12 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
                 pointBodyToWorld(
                     &(feats_down_body_->points[i]), &(feats_down_world_->points[i]), latest_state_);
             }
+#ifdef SPARK_FAST_LIO_DETERMINISTIC_MAP_ORDER
+            std::sort(
+                feats_down_world_->points.begin(),
+                feats_down_world_->points.end(),
+                pointLessXYZICurvature);
+#endif
             ikd_tree_.Build(feats_down_world_->points);
         }
         return;
@@ -1518,7 +1668,7 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
                              latest_state_.vel[0],
                              latest_state_.vel[1],
                              latest_state_.vel[2]);
-        if (motion_quality_gate_enabled_ && flg_EKF_inited_)
+        if (motion_quality_gate_enabled_ && have_last_good_state_)
         {
             restore_state_before_measurement();
             publish_last_good_state();
@@ -1528,8 +1678,9 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
 
     normvec_->resize(feats_down_size_);
     feats_down_world_->resize(feats_down_size_);
-
     nearest_points_.resize(feats_down_size_);
+    res_last_.assign(feats_down_size_, 0.0f);
+    point_selected_surf_.assign(feats_down_size_, 0U);
 
     /*** iterated state estimation ***/
     double t_update_start = omp_get_wtime();
@@ -1540,7 +1691,7 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
     // NOTE(hlim): Introduce a delay using `num_moving_frames_thr_` to make sure
     // the gravity vectors are sufficiently updated.
     if (enable_gravity_alignment_ && !is_gravity_aligned_ && !base_frame_.empty() &&
-        (num_consecutive_moving_frames > num_moving_frames_thr_))
+        (num_consecutive_moving_frames_ > num_moving_frames_thr_))
     {
         const Eigen::Matrix3d offset_R_I_B =
             lidar_R_wrt_base_ * latest_state_.offset_R_L_I.inverse();
@@ -1596,10 +1747,12 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
         V3D(latest_state_.grav[0], latest_state_.grav[1], latest_state_.grav[2]);
     const double update_step = (latest_state_.pos - propagated_state.pos).norm();
     const double lio_velocity_norm = latest_state_.vel.norm();
+    // Frame-count gating instead of clock-based throttling: clock-driven
+    // throttling formats this line on a timing-dependent subset of frames,
+    // which perturbs the allocator and breaks bit-reproducible replay.
+    if (++lio_state_log_counter_ % 10 == 1)
     {
-        RCLCPP_INFO_THROTTLE(this->get_logger(),
-                             *this->get_clock(),
-                             1000,
+        RCLCPP_INFO(this->get_logger(),
                              "LIO state: pos=[%.3f, %.3f, %.3f] vel=[%.3f, %.3f, %.3f] "
                              "ekf_update_step=%.3f m rot_update=%.3f deg res_mean=%.5f "
                              "bg=[%.5f, %.5f, %.5f] ba=[%.5f, %.5f, %.5f] "

@@ -59,6 +59,7 @@ struct MeasureGroup
     MeasureGroup()
     {
         lidar_beg_time = 0.0;
+        lidar_end_time = 0.0;
         this->lidar.reset(new PointCloudXYZI());
     }
     double lidar_beg_time;

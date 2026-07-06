@@ -1,5 +1,6 @@
 #include "preprocess.h"
 
+#include <algorithm>
 #include <cmath>
 
 #include <pcl_conversions/pcl_conversions.h>
@@ -19,9 +20,11 @@ Preprocess::Preprocess()
     inf_bound         = 10;
     N_SCANS           = 6;
     SCAN_RATE         = 10;
+    time_unit         = MS;
+    time_unit_scale   = 1.0f;
     group_size        = 8;
     disA              = 0.01;
-    disA              = 0.1;  // B?
+    disB              = 0.1;
     p2l_ratio         = 225;
     limit_maxmid      = 6.25;
     limit_midmin      = 6.25;
@@ -33,6 +36,9 @@ Preprocess::Preprocess()
     edgeb             = 0.1;
     smallp_intersect  = 172.5;
     smallp_ratio      = 1.2;
+    vx                = 0.0;
+    vy                = 0.0;
+    vz                = 0.0;
     given_offset_time = false;
 
     jump_up_limit    = std::cos(jump_up_limit / 180 * M_PI);
@@ -50,7 +56,7 @@ void Preprocess::set(bool is_enabled, int lid_type, double bld, int pfilt_num)
     feature_enabled       = is_enabled;
     lidar_type            = lid_type;
     blind                 = bld;
-    point_filter_num      = pfilt_num;
+    point_filter_num      = std::max(1, pfilt_num);
 }
 
 #if defined(LIVOX_ROS_DRIVER_FOUND) && LIVOX_ROS_DRIVER_FOUND
@@ -298,6 +304,10 @@ void Preprocess::handleOusterPointCloud(const sensor_msgs::msg::PointCloud2 &msg
         {
             PointCloudXYZI &pl          = pl_buff[j];
             auto linesize               = pl.size();
+            if (linesize < 2)
+            {
+                continue;
+            }
             std::vector<orgtype> &types = typess[j];
             types.clear();
             types.resize(linesize);
@@ -386,6 +396,10 @@ void Preprocess::handleKimeraOusterPointCloud(const sensor_msgs::msg::PointCloud
         {
             PointCloudXYZI &pl          = pl_buff[j];
             auto linesize               = pl.size();
+            if (linesize < 2)
+            {
+                continue;
+            }
             std::vector<orgtype> &types = typess[j];
             types.clear();
             types.resize(linesize);
@@ -740,7 +754,8 @@ void Preprocess::give_feature(pcl::PointCloud<PointType> &pl, std::vector<orgtyp
         }
 
         Eigen::Vector3d vec_a(pl[i].x, pl[i].y, pl[i].z);
-        Eigen::Vector3d vecs[2];
+        Eigen::Vector3d vecs[2] = {Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero()};
+        bool has_neighbor[2] = {false, false};
 
         for (int j = 0; j < 2; ++j)
         {
@@ -763,10 +778,16 @@ void Preprocess::give_feature(pcl::PointCloud<PointType> &pl, std::vector<orgtyp
                 continue;
             }
 
-            vecs[j] = Eigen::Vector3d(pl[i + m].x, pl[i + m].y, pl[i + m].z);
-            vecs[j] = vecs[j] - vec_a;
+            vecs[j] = Eigen::Vector3d(pl[i + m].x, pl[i + m].y, pl[i + m].z) - vec_a;
+            const double neighbor_norm = vecs[j].norm();
+            if (neighbor_norm < 1.0e-12)
+            {
+                types[i].edj[j] = Nr_zero;
+                continue;
+            }
+            has_neighbor[j] = true;
 
-            types[i].angle[j] = vec_a.dot(vecs[j]) / vec_a.norm() / vecs[j].norm();
+            types[i].angle[j] = vec_a.dot(vecs[j]) / vec_a.norm() / neighbor_norm;
             if (types[i].angle[j] < jump_up_limit)
             {
                 types[i].edj[j] = Nr_180;
@@ -777,7 +798,15 @@ void Preprocess::give_feature(pcl::PointCloud<PointType> &pl, std::vector<orgtyp
             }
         }
 
-        types[i].intersect = vecs[Prev].dot(vecs[Next]) / vecs[Prev].norm() / vecs[Next].norm();
+        if (has_neighbor[Prev] && has_neighbor[Next])
+        {
+            types[i].intersect =
+                vecs[Prev].dot(vecs[Next]) / vecs[Prev].norm() / vecs[Next].norm();
+        }
+        else
+        {
+            types[i].intersect = 0.0;
+        }
         if (types[i].edj[Prev] == Nr_nor && types[i].edj[Next] == Nr_zero &&
             types[i].dista > 0.0225 && types[i].dista > 4 * types[i - 1].dista)
         {
@@ -875,7 +904,7 @@ void Preprocess::give_feature(pcl::PointCloud<PointType> &pl, std::vector<orgtyp
 
             if (j == uint(last_surface + point_filter_num - 1))
             {
-                PointType ap;
+                PointType ap{};
                 ap.x         = pl[j].x;
                 ap.y         = pl[j].y;
                 ap.z         = pl[j].z;
@@ -894,7 +923,7 @@ void Preprocess::give_feature(pcl::PointCloud<PointType> &pl, std::vector<orgtyp
             }
             if (last_surface != -1)
             {
-                PointType ap;
+                PointType ap{};
                 for (uint k = last_surface; k < j; ++k)
                 {
                     ap.x += pl[k].x;

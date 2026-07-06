@@ -13,7 +13,7 @@ using InternalPointType = pcl::PointXYZINormal;
 
 struct InternalPoint
 {
-    InternalPointType point;
+    InternalPointType point{};
     std::uint16_t ring = 0;
     std::size_t source_index = 0;
 };
@@ -30,6 +30,9 @@ struct InternalScan
 template <typename SrcPoint>
 inline void assignXYZI(const SrcPoint &src, InternalPointType &dst)
 {
+    dst           = InternalPointType{};
+    dst.data[3]   = 1.0f;
+    dst.data_n[3] = 0.0f;
     dst.normal_x  = 0;
     dst.normal_y  = 0;
     dst.normal_z  = 0;
@@ -37,5 +40,6 @@ inline void assignXYZI(const SrcPoint &src, InternalPointType &dst)
     dst.y         = src.y;
     dst.z         = src.z;
     dst.intensity = src.intensity;
+    dst.curvature = 0;
 }
 }  // namespace sensor_adapter

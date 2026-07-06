@@ -30,7 +30,7 @@
       motion_gate_max_pre_grav_residual: 8.0
       motion_gate_suspect_frame_step: 0.5  # [m] candidate odom step.
       motion_gate_max_update_step: 0.15    # [m] correction from IMU prediction to LiDAR update.
-      motion_gate_max_update_step_ratio: 0.10
+      motion_gate_max_update_step_ratio: 0.20
       motion_gate_min_effective_ratio: 0.10
       motion_gate_min_effective_features: 20
       motion_gate_reject_weak_lidar: true

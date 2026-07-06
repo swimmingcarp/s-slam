@@ -110,6 +110,25 @@ public:
     V3D cov_bias_acc;
     double first_lidar_time;
 
+    // Arm a warm re-initialization after a mid-run estimator reset: seeds
+    // gravity/biases/velocity (all expressed in the IMU body frame at re-init
+    // time) from the pre-reset state so recovery does not require the
+    // stationary window, which never comes while the platform is in flight.
+    void setWarmStartPrior(const V3D &gravity_body,
+                           const V3D &bg,
+                           const V3D &ba,
+                           const V3D &vel_body);
+
+    // True once initialization (cold or warm) has committed. This — not the
+    // caller's post-reset processing-progress flags — is the correct gate for
+    // capturing a warm re-init prior: it flips true the instant a warm
+    // re-initialization commits, closing the burst-reset window where a second
+    // reset would otherwise be misjudged as a cold start.
+    bool IsInitialized() const
+    {
+        return !imu_need_init_;
+    }
+
 private:
     void IMU_init(const MeasureGroup &meas,
                   esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state,
@@ -136,6 +155,13 @@ private:
     int init_iter_num   = 1;
     bool b_first_frame_ = true;
     bool imu_need_init_ = true;
+    // Warm-start prior; deliberately NOT cleared by Reset() so it survives the
+    // internal Reset() that IMU_init() performs on the first post-reset frame.
+    bool has_warm_start_prior_   = false;
+    V3D warm_start_gravity_body_ = V3D(0, 0, 0);
+    V3D warm_start_bg_           = V3D(0, 0, 0);
+    V3D warm_start_ba_           = V3D(0, 0, 0);
+    V3D warm_start_vel_body_     = V3D(0, 0, 0);
 };
 
 ImuProcess::ImuProcess()
@@ -150,11 +176,15 @@ ImuProcess::ImuProcess()
     Q               = process_noise_cov();
     cov_acc         = V3D(0.1, 0.1, 0.1);
     cov_gyr         = V3D(0.1, 0.1, 0.1);
+    cov_acc_scale   = cov_acc;
+    cov_gyr_scale   = cov_gyr;
     cov_bias_gyr    = V3D(0.0001, 0.0001, 0.0001);
     cov_bias_acc    = V3D(0.0001, 0.0001, 0.0001);
+    first_lidar_time = 0.0;
     mean_acc        = V3D(0, 0, -1.0);
     mean_gyr        = V3D(0, 0, 0);
     angvel_last     = Zero3d;
+    acc_s_last      = Zero3d;
     Lidar_T_wrt_IMU = Zero3d;
     Lidar_R_wrt_IMU = Eye3d;
     last_imu_.reset(new sensor_msgs::msg::Imu());
@@ -162,6 +192,18 @@ ImuProcess::ImuProcess()
 
 ImuProcess::~ImuProcess()
 {
+}
+
+void ImuProcess::setWarmStartPrior(const V3D &gravity_body,
+                                   const V3D &bg,
+                                   const V3D &ba,
+                                   const V3D &vel_body)
+{
+    warm_start_gravity_body_ = gravity_body;
+    warm_start_bg_           = bg;
+    warm_start_ba_           = ba;
+    warm_start_vel_body_     = vel_body;
+    has_warm_start_prior_    = true;
 }
 
 ImuProcess::Snapshot ImuProcess::GetSnapshot() const
@@ -230,10 +272,14 @@ void ImuProcess::Reset()
     mean_acc         = V3D(0, 0, -1.0);
     mean_gyr         = V3D(0, 0, 0);
     angvel_last      = Zero3d;
+    acc_s_last       = Zero3d;
+    cov_acc          = V3D(0.1, 0.1, 0.1);
+    cov_gyr          = V3D(0.1, 0.1, 0.1);
     imu_need_init_   = true;
     b_first_frame_   = true;
     start_timestamp_ = -1;
     last_lidar_end_time_ = -1;
+    first_lidar_time      = 0.0;
     init_begin_time_     = -1;
     init_end_time_       = -1;
     init_iter_num    = 1;
@@ -415,6 +461,7 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas,
     double dt = 0;
 
     input_ikfom in;
+    bool propagated = false;
     for (auto it_imu = v_imu.begin(); it_imu < (v_imu.end() - 1); ++it_imu)
     {
         auto &&head = *(it_imu);
@@ -455,6 +502,7 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas,
         Q.block<3, 3>(6, 6).diagonal() = cov_bias_gyr;
         Q.block<3, 3>(9, 9).diagonal() = cov_bias_acc;
         kf_state.predict(dt, Q, in);
+        propagated = true;
 
         /* save the poses at each IMU measurements */
         imu_state   = kf_state.get_x();
@@ -474,9 +522,12 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas,
     }
 
     /*** calculated the pos and attitude prediction at the frame-end ***/
-    double note = pcl_end_time > imu_end_time ? 1.0 : -1.0;
-    dt          = note * (pcl_end_time - imu_end_time);
-    kf_state.predict(dt, Q, in);
+    if (propagated)
+    {
+        double note = pcl_end_time > imu_end_time ? 1.0 : -1.0;
+        dt          = note * (pcl_end_time - imu_end_time);
+        kf_state.predict(dt, Q, in);
+    }
 
     imu_state            = kf_state.get_x();
     last_imu_            = meas.imu.back();
@@ -545,11 +596,63 @@ void ImuProcess::Process(const MeasureGroup &meas,
     if (imu_need_init_)
     {
         /// The very first lidar frame
+        state_ikfom state_before_init = kf_state.get_x();
+        esekfom::esekf<state_ikfom, 12, input_ikfom>::cov cov_before_init = kf_state.get_P();
         IMU_init(meas, kf_state, init_iter_num);
 
         imu_need_init_ = true;
 
         last_imu_ = meas.imu.back();
+
+        if (has_warm_start_prior_)
+        {
+            // Warm re-initialization after a mid-run reset. The platform may be
+            // moving (in flight), where the stationary window below never
+            // comes. Anchor the new world frame at the current body attitude
+            // (rot = identity) and seed gravity/biases/velocity from the
+            // pre-reset state; the gravity covariance is left large so LiDAR
+            // updates can absorb the attitude drift accumulated since the
+            // prior was captured.
+            state_ikfom init_state = kf_state.get_x();
+            init_state.grav        = S2(warm_start_gravity_body_);
+            init_state.bg          = warm_start_bg_;
+            init_state.ba          = warm_start_ba_;
+            init_state.vel         = warm_start_vel_body_;
+            init_state.offset_T_L_I = Lidar_T_wrt_IMU;
+            init_state.offset_R_L_I = Lidar_R_wrt_IMU;
+            kf_state.change_x(init_state);
+
+            esekfom::esekf<state_ikfom, 12, input_ikfom>::cov init_P = kf_state.get_P();
+            init_P.setIdentity();
+            init_P(6, 6) = init_P(7, 7) = init_P(8, 8) = 0.00001;
+            init_P(9, 9) = init_P(10, 10) = init_P(11, 11) = 0.00001;
+            init_P(15, 15) = init_P(16, 16) = init_P(17, 17) = 0.0001;
+            init_P(18, 18) = init_P(19, 19) = init_P(20, 20) = 0.001;
+            // Wider than the cold-init 1e-5: the prior gravity direction is
+            // stale by the reset-to-reinit gap.
+            init_P(21, 21) = init_P(22, 22) = 0.1;
+            kf_state.change_P(init_P);
+
+            imu_need_init_       = false;
+            last_lidar_end_time_ = meas.lidar_end_time;
+            cov_acc              = cov_acc_scale;
+            cov_gyr              = cov_gyr_scale;
+            has_warm_start_prior_ = false;
+            RCLCPP_WARN(rclcpp::get_logger("imu_processing"),
+                        "IMU warm re-initialization from pre-reset state (no stationary "
+                        "window required): grav_body=[%.4f, %.4f, %.4f] "
+                        "bg=[%.5f, %.5f, %.5f] vel_body=[%.3f, %.3f, %.3f]",
+                        warm_start_gravity_body_[0],
+                        warm_start_gravity_body_[1],
+                        warm_start_gravity_body_[2],
+                        warm_start_bg_[0],
+                        warm_start_bg_[1],
+                        warm_start_bg_[2],
+                        warm_start_vel_body_[0],
+                        warm_start_vel_body_[1],
+                        warm_start_vel_body_[2]);
+            return;
+        }
 
         state_ikfom imu_state = kf_state.get_x();
         const int init_samples      = std::max(0, init_iter_num - 1);
@@ -581,6 +684,17 @@ void ImuProcess::Process(const MeasureGroup &meas,
                         acc_std_norm,
                         gyr_std_norm);
             Reset();
+            kf_state.change_x(state_before_init);
+            kf_state.change_P(cov_before_init);
+            return;
+        }
+
+        if (!has_enough_imu)
+        {
+            // Do not commit provisional gravity/bias estimates until a full
+            // stationary window has passed the initialization checks.
+            kf_state.change_x(state_before_init);
+            kf_state.change_P(cov_before_init);
             return;
         }
 

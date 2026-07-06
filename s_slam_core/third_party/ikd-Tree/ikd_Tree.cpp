@@ -159,16 +159,20 @@ void KD_TREE<PointType>::start_thread() {
   pthread_mutex_init(&points_deleted_rebuild_mutex_lock, NULL);
   pthread_mutex_init(&working_flag_mutex, NULL);
   pthread_mutex_init(&search_flag_mutex, NULL);
+#ifndef IKD_TREE_DETERMINISTIC_REBUILD
   pthread_create(&rebuild_thread, NULL, multi_thread_ptr, (void *)this);
   printf("Multi thread started \n");
+#endif
 }
 
 template <typename PointType>
 void KD_TREE<PointType>::stop_thread() {
+#ifndef IKD_TREE_DETERMINISTIC_REBUILD
   pthread_mutex_lock(&termination_flag_mutex_lock);
   termination_flag = true;
   pthread_mutex_unlock(&termination_flag_mutex_lock);
   if (rebuild_thread) pthread_join(rebuild_thread, NULL);
+#endif
   pthread_mutex_destroy(&termination_flag_mutex_lock);
   pthread_mutex_destroy(&rebuild_logger_mutex_lock);
   pthread_mutex_destroy(&rebuild_ptr_mutex_lock);
@@ -620,6 +624,7 @@ void KD_TREE<PointType>::BuildTree(KD_TREE_NODE **root, int l, int r, PointVecto
 template <typename PointType>
 void KD_TREE<PointType>::Rebuild(KD_TREE_NODE **root) {
   KD_TREE_NODE *father_ptr;
+#ifndef IKD_TREE_DETERMINISTIC_REBUILD
   if ((*root)->TreeSize >= Multi_Thread_Rebuild_Point_Num) {
     if (!pthread_mutex_trylock(&rebuild_ptr_mutex_lock)) {
       if (Rebuild_Ptr == nullptr || ((*root)->TreeSize > (*Rebuild_Ptr)->TreeSize)) {
@@ -628,6 +633,7 @@ void KD_TREE<PointType>::Rebuild(KD_TREE_NODE **root) {
       pthread_mutex_unlock(&rebuild_ptr_mutex_lock);
     }
   } else {
+#endif
     father_ptr   = (*root)->father_ptr;
     int size_rec = (*root)->TreeSize;
     PCL_Storage.clear();
@@ -636,7 +642,9 @@ void KD_TREE<PointType>::Rebuild(KD_TREE_NODE **root) {
     BuildTree(root, 0, PCL_Storage.size() - 1, PCL_Storage);
     if (*root != nullptr) (*root)->father_ptr = father_ptr;
     if (*root == Root_Node) STATIC_ROOT_NODE->left_son_ptr = *root;
+#ifndef IKD_TREE_DETERMINISTIC_REBUILD
   }
+#endif
   return;
 }
 
@@ -935,9 +943,10 @@ void KD_TREE<PointType>::Search(KD_TREE_NODE *root,
   }
   if (!root->point_deleted) {
     float dist = calc_dist(point, root->point);
-    if (dist <= max_dist_sqr && (q.size() < k_nearest || dist < q.top().dist)) {
+    PointType_CMP current_point{root->point, dist};
+    if (dist <= max_dist_sqr &&
+        (q.size() < k_nearest || current_point.better_than(q.top()))) {
       if (q.size() >= k_nearest) q.pop();
-      PointType_CMP current_point{root->point, dist};
       q.push(current_point);
     }
   }
@@ -1486,15 +1495,21 @@ float KD_TREE<PointType>::calc_box_dist(KD_TREE_NODE *node, PointType point) {
 }
 template <typename PointType>
 bool KD_TREE<PointType>::point_cmp_x(PointType a, PointType b) {
-  return a.x < b.x;
+  if (a.x != b.x) return a.x < b.x;
+  if (a.y != b.y) return a.y < b.y;
+  return a.z < b.z;
 }
 template <typename PointType>
 bool KD_TREE<PointType>::point_cmp_y(PointType a, PointType b) {
-  return a.y < b.y;
+  if (a.y != b.y) return a.y < b.y;
+  if (a.z != b.z) return a.z < b.z;
+  return a.x < b.x;
 }
 template <typename PointType>
 bool KD_TREE<PointType>::point_cmp_z(PointType a, PointType b) {
-  return a.z < b.z;
+  if (a.z != b.z) return a.z < b.z;
+  if (a.x != b.x) return a.x < b.x;
+  return a.y < b.y;
 }
 
 // Manual heap

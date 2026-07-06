@@ -1,6 +1,8 @@
 #ifndef USE_IKFOM_H
 #define USE_IKFOM_H
 
+#include <omp.h>
+
 #include "esekfom/esekfom.hpp"
 
 using vect3 = MTK::vect<3, double>;
