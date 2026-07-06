@@ -100,6 +100,10 @@ writes:
 └── run_manifest.json
 ```
 
+`report.md` and `metrics.json` also include a frontend resource summary sampled
+during bag playback: CPU (cores and percent), resident memory, and thread count,
+each reported as average and peak, plus system CPU load for context.
+
 ## Add a New Replay Preset
 
 1. Add or copy a front-end config under `config/spark_fast_lio/<dataset>/` only

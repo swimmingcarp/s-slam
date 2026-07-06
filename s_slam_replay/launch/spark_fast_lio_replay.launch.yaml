@@ -21,6 +21,8 @@ launch:
         - { from: 'imu',   to: '$(var imu_topic)' }
 
       param:
+        - name: use_sim_time
+          value: true
         - name: "common.lidar_frame"
           value: "$(var lidar_frame)"
         - name: "common.imu_frame"
@@ -35,6 +37,16 @@ launch:
           value: false
 
         - from: $(var config_path)
+        - name: "common.process_on_callback"
+          value: true
+        - name: "publish.imu_predicted_odometry_enabled"
+          value: false
+        # Lossless replay transport: buffer entire bag backlogs so the processed
+        # frame set never depends on system load (reproducible reports).
+        - name: "common.lidar_qos_depth"
+          value: 600
+        - name: "common.imu_qos_depth"
+          value: 20000
 
   - executable:
       cmd: "ros2 run tf2_ros static_transform_publisher 0 0 0 0 0 0 $(var base_frame) $(var lidar_frame)"
