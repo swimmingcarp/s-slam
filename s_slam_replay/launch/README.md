@@ -26,3 +26,7 @@ commands should be documented only in the top-level README.
 Some Kimera-Multi recordings need frame overrides such as `lidar_frame` or
 `imu_frame`. Keep the canonical command lines and expected bag names in the
 top-level README so replay instructions stay in one place.
+
+Replay launch files may publish static mounting transforms such as
+`base_link -> lidar`. They must not publish static `odom -> base_link`,
+`base_link -> odom`, `map -> base_link`, or `base_link -> map` transforms.

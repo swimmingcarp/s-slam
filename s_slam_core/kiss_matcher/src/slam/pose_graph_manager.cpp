@@ -14,8 +14,10 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
     LoopDetectorConfig ld_config;
     auto &gc = lc_config.gicp_config_;
 
-    map_frame_             = declare_parameter<std::string>("map_frame", "map");
-    base_frame_            = declare_parameter<std::string>("base_frame", "base");
+    map_frame_              = declare_parameter<std::string>("map_frame", "map");
+    base_frame_             = declare_parameter<std::string>("base_frame", "base");
+    odom_frame_             = declare_parameter<std::string>("odom_frame", "odom");
+    publish_map_to_odom_tf_ = declare_parameter<bool>("publish_map_to_odom_tf", false);
     declare_parameter<double>("loop_pub_hz", 0.1);
     loop_detector_hz       = declare_parameter<double>("loop_detector_hz", 1.0);
     loop_nnsearch_hz       = declare_parameter<double>("loop_nnsearch_hz", 1.0);
@@ -566,19 +568,45 @@ void PoseGraphManager::visualizeCurrentData(const Eigen::Matrix4d &current_odom,
             eigenToPoseStamped(current_frame_.pose_corrected_, map_frame_);
         realtime_pose_pub_->publish(ps);
 
-        geometry_msgs::msg::TransformStamped transform_stamped;
-        transform_stamped.header.stamp    = timestamp;
-        transform_stamped.header.frame_id = map_frame_;
-        transform_stamped.child_frame_id  = base_frame_.empty() ? frame_id : base_frame_;
-        Eigen::Quaterniond q(current_frame_.pose_corrected_.block<3, 3>(0, 0));
-        transform_stamped.transform.translation.x = current_frame_.pose_corrected_(0, 3);
-        transform_stamped.transform.translation.y = current_frame_.pose_corrected_(1, 3);
-        transform_stamped.transform.translation.z = current_frame_.pose_corrected_(2, 3);
-        transform_stamped.transform.rotation.x    = q.x();
-        transform_stamped.transform.rotation.y    = q.y();
-        transform_stamped.transform.rotation.z    = q.z();
-        transform_stamped.transform.rotation.w    = q.w();
-        tf_broadcaster_->sendTransform(transform_stamped);
+        Eigen::Matrix4d tf_pose = current_frame_.pose_corrected_;
+        std::string child_frame = base_frame_.empty() ? frame_id : base_frame_;
+        bool should_publish_tf  = true;
+        if (publish_map_to_odom_tf_)
+        {
+            if (odom_frame_.empty() || odom_frame_ == map_frame_)
+            {
+                RCLCPP_WARN_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    5000,
+                    "Skipping map->odom TF publish: odom_frame is empty or equals map_frame.");
+                should_publish_tf = false;
+            }
+            else
+            {
+                // The pose graph estimates map->base. For the standard SLAM TF tree,
+                // publish map->odom and let the front end remain the sole owner of odom->base.
+                tf_pose     = current_frame_.pose_corrected_ * current_frame_.pose_.inverse();
+                child_frame = odom_frame_;
+            }
+        }
+
+        if (should_publish_tf)
+        {
+            geometry_msgs::msg::TransformStamped transform_stamped;
+            transform_stamped.header.stamp    = timestamp;
+            transform_stamped.header.frame_id = map_frame_;
+            transform_stamped.child_frame_id  = child_frame;
+            Eigen::Quaterniond q(tf_pose.block<3, 3>(0, 0));
+            transform_stamped.transform.translation.x = tf_pose(0, 3);
+            transform_stamped.transform.translation.y = tf_pose(1, 3);
+            transform_stamped.transform.translation.z = tf_pose(2, 3);
+            transform_stamped.transform.rotation.x    = q.x();
+            transform_stamped.transform.rotation.y    = q.y();
+            transform_stamped.transform.rotation.z    = q.z();
+            transform_stamped.transform.rotation.w    = q.w();
+            tf_broadcaster_->sendTransform(transform_stamped);
+        }
     }
 
     scan_pub_->publish(toROSMsg(

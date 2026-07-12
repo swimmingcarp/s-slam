@@ -41,11 +41,5 @@ launch:
         - from: $(var config_path)
 
   - executable:
-      # To transform odom frame (child_frame_id) to the base frame (frame_id)
-      # x y z roll pitch yaw order
+      # Static mounting transform: base frame -> LiDAR frame.
       cmd: "ros2 run tf2_ros static_transform_publisher 0.13 0.0 0.52 0.0 0.0 0.0 $(var base_frame) $(var robot_name)/velodyne_link"
-
-  - executable:
-      # To transform odom frame (child_frame_id) to the base frame (frame_id)
-      # x y z roll pitch yaw order
-      cmd: "ros2 run tf2_ros static_transform_publisher 0.0 0.0 0.0 3.1416 0.0 -1.5708 $(var base_frame) $(var map_frame)"

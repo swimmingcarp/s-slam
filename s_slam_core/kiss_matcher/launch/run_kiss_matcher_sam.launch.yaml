@@ -7,6 +7,8 @@ launch:
 
   - arg: {name: map_frame , default: 'map' , description: Global map frame ID}
   - arg: {name: base_frame, default: 'base', description: Robot's base frame ID}
+  - arg: {name: odom_frame, default: 'odom', description: Front-end local odometry frame ID}
+  - arg: {name: publish_map_to_odom_tf, default: "false", description: Publish map->odom instead of map->base TF}
 
   - arg: {name: odom_topic, default: "/odometry"}
   - arg: {name: scan_topic, default: "/cloud_registered"}
@@ -35,6 +37,10 @@ launch:
           value: "$(var map_frame)"
         - name: "base_frame"
           value: "$(var base_frame)"
+        - name: "odom_frame"
+          value: "$(var odom_frame)"
+        - name: "publish_map_to_odom_tf"
+          value: $(var publish_map_to_odom_tf)
 
         - name: "result.save_map_pcd"
           value: $(var save_map_pcd)

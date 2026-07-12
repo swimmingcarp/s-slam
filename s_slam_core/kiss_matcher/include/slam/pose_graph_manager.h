@@ -106,6 +106,7 @@ private:
 
     std::string map_frame_;
     std::string base_frame_;
+    std::string odom_frame_;
     std::string package_path_;
     std::string seq_name_;
 
@@ -154,6 +155,7 @@ private:
     nav_msgs::msg::Path odom_path_, corrected_path_;
 
     bool store_voxelized_scan_ = false;
+    bool publish_map_to_odom_tf_ = false;
 
     bool save_map_bag_         = false;
     bool save_map_pcd_         = false;

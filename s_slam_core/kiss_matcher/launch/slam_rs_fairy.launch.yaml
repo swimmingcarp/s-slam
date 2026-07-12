@@ -1,0 +1,65 @@
+---
+launch:
+  - arg: {name: frontend_config_path, default: $(find-pkg-share spark_fast_lio)/config/rs_fairy.yaml}
+  - arg: {name: backend_config_path, default: $(find-pkg-share kiss_matcher_ros)/config/slam_config.yaml}
+
+  - arg: {name: lidar_topic, default: "/rslidar_points"}
+  - arg: {name: imu_topic, default: "/rslidar_imu_data"}
+  - arg: {name: odom_topic, default: "/odometry"}
+  - arg: {name: scan_topic, default: "/cloud_registered"}
+
+  - arg: {name: map_frame, default: "map"}
+  - arg: {name: odom_frame, default: "odom"}
+  - arg: {name: base_frame, default: "base_link"}
+  - arg: {name: lidar_frame, default: "rslidar"}
+  - arg: {name: imu_frame, default: "rslidar_imu"}
+
+  - node:
+      pkg: spark_fast_lio
+      exec: spark_lio_mapping
+      name: lio_mapping
+      output: screen
+
+      remap:
+        - { from: "lidar", to: "$(var lidar_topic)" }
+        - { from: "imu", to: "$(var imu_topic)" }
+
+      param:
+        - from: $(var frontend_config_path)
+        - name: "common.lidar_frame"
+          value: "$(var lidar_frame)"
+        - name: "common.imu_frame"
+          value: "$(var imu_frame)"
+        - name: "common.map_frame"
+          value: "$(var odom_frame)"
+        - name: "common.base_frame"
+          value: "$(var base_frame)"
+        - name: "common.visualization_frame"
+          value: "base"
+        - name: "gravity_alignment.enable_gravity_alignment"
+          value: false
+
+  - node:
+      pkg: kiss_matcher_ros
+      exec: kiss_matcher_sam
+      name: kiss_matcher_sam
+      output: screen
+
+      remap:
+        - { from: "odom", to: "$(var odom_topic)" }
+        - { from: "cloud", to: "$(var scan_topic)" }
+
+      param:
+        - from: $(var backend_config_path)
+        - name: "map_frame"
+          value: "$(var map_frame)"
+        - name: "odom_frame"
+          value: "$(var odom_frame)"
+        - name: "base_frame"
+          value: "$(var base_frame)"
+        - name: "publish_map_to_odom_tf"
+          value: true
+
+  # Static mounting extrinsic only. Do not publish odom/base/map relations here.
+  - executable:
+      cmd: "ros2 run tf2_ros static_transform_publisher 0 0 0 0 0 0 $(var base_frame) $(var lidar_frame)"

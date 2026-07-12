@@ -38,3 +38,35 @@ kiss_matcher_ros
   inputs:  odom + cloud; launch files remap these relative names to front-end topics
   outputs: corrected path, global map, loop-closure markers, saved results
 ```
+
+## Live Fairy Bringup Contract
+
+Use the system launch when running the RoboSense Fairy front end and
+KISS-Matcher backend together:
+
+```bash
+ros2 launch kiss_matcher_ros slam_rs_fairy.launch.yaml
+```
+
+Default topic contract:
+
+```text
+SDK -> front end:
+  /rslidar_points
+  /rslidar_imu_data
+
+front end -> backend:
+  /odometry          -> backend relative topic odom
+  /cloud_registered  -> backend relative topic cloud
+```
+
+Default TF ownership:
+
+```text
+map -> odom         backend, dynamic
+odom -> base_link   front end, dynamic
+base_link -> lidar  static mounting transform
+```
+
+Do not publish a static transform between `odom` and `base_link`; that relation
+belongs to the front end.
