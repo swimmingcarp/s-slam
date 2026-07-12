@@ -95,6 +95,7 @@ public:
     void set_acc_cov(const V3D &scaler);
     void set_gyr_bias_cov(const V3D &b_g);
     void set_acc_bias_cov(const V3D &b_a);
+    void set_replay_mode(bool replay_mode);
     Eigen::Matrix<double, 12, 12> Q;
     void Process(const MeasureGroup &meas,
                  esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state,
@@ -155,6 +156,7 @@ private:
     int init_iter_num   = 1;
     bool b_first_frame_ = true;
     bool imu_need_init_ = true;
+    bool replay_mode_ = false;
     // Warm-start prior; deliberately NOT cleared by Reset() so it survives the
     // internal Reset() that IMU_init() performs on the first post-reset frame.
     bool has_warm_start_prior_   = false;
@@ -325,6 +327,11 @@ void ImuProcess::set_gyr_bias_cov(const V3D &b_g)
 void ImuProcess::set_acc_bias_cov(const V3D &b_a)
 {
     cov_bias_acc = b_a;
+}
+
+void ImuProcess::set_replay_mode(const bool replay_mode)
+{
+    replay_mode_ = replay_mode;
 }
 
 void ImuProcess::IMU_init(const MeasureGroup &meas,
@@ -671,7 +678,7 @@ void ImuProcess::Process(const MeasureGroup &meas,
                                    mean_gyr_norm <= kMaxInitMeanGyroNorm &&
                                    acc_std_norm <= kMaxInitAccStdNorm &&
                                    gyr_std_norm <= kMaxInitGyrStdNorm;
-        if (has_enough_imu && !is_stationary)
+        if (has_enough_imu && !replay_mode_ && !is_stationary)
         {
             RCLCPP_WARN(rclcpp::get_logger("imu_processing"),
                         "IMU initialization rejected: keep the sensor still "
@@ -687,6 +694,20 @@ void ImuProcess::Process(const MeasureGroup &meas,
             kf_state.change_x(state_before_init);
             kf_state.change_P(cov_before_init);
             return;
+        }
+        if (has_enough_imu && replay_mode_ && !is_stationary)
+        {
+            RCLCPP_WARN(rclcpp::get_logger("imu_processing"),
+                        "IMU initialization accepted without a stationary window "
+                        "(dataset/replay mode): samples=%d duration=%.3f s "
+                        "mean_acc_norm=%.6f mean_gyr_norm=%.6f acc_std_norm=%.6f "
+                        "gyr_std_norm=%.6f",
+                        init_samples,
+                        init_duration,
+                        mean_acc_norm,
+                        mean_gyr_norm,
+                        acc_std_norm,
+                        gyr_std_norm);
         }
 
         if (!has_enough_imu)

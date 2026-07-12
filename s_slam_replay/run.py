@@ -32,6 +32,8 @@ GENERATED_OUTPUTS = (
     "odom",
     "logs",
     "input_info.txt",
+    "odom_tum.txt",
+    "benchmark_ape.json",
     "metrics.json",
     "report.md",
     "run_manifest.json",
@@ -654,8 +656,74 @@ def analyze_input_via_sourced_python(
     raise RuntimeError(f"Could not find JSON input metrics in analyzer output:\n{output}")
 
 
+def benchmark_ape_via_sourced_python(
+    prefix: str,
+    odom_dir: Path,
+    topic: str,
+    gt_tum_path: Path,
+    output_dir: Path,
+    max_association_dt: float,
+) -> dict[str, Any]:
+    output = run_sourced_capture(
+        prefix,
+        [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "__benchmark_ape",
+            "--bag",
+            str(odom_dir),
+            "--topic",
+            topic,
+            "--gt-tum",
+            str(gt_tum_path),
+            "--output-dir",
+            str(output_dir),
+            "--max-association-dt",
+            str(max_association_dt),
+        ],
+        timeout=180.0,
+    )
+    for line in reversed(output.splitlines()):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            return json.loads(line)
+    raise RuntimeError(f"Could not find JSON benchmark metrics in analyzer output:\n{output}")
+
+
+def discover_gt_tum(input_path: Path, input_bags: list[Path], requested_gt_tum: str | None) -> Path | None:
+    if requested_gt_tum:
+        gt_path = expand_path(requested_gt_tum)
+        if not gt_path.is_file():
+            raise FileNotFoundError(f"GT TUM file not found: {gt_path}")
+        return gt_path
+
+    candidates: list[Path] = []
+    if input_path.is_dir():
+        candidates.append(input_path / "gt-tum.txt")
+        candidates.append(input_path.parent / "gt-tum.txt")
+    for bag in input_bags:
+        candidates.append(bag / "gt-tum.txt")
+        candidates.append(bag.parent / "gt-tum.txt")
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if resolved.is_file():
+            return resolved
+    return None
+
+
 def add_coverage_metrics(metrics: dict[str, Any], input_metrics: dict[str, Any]) -> None:
-    lidar_duration = float(input_metrics.get("input_lidar_header_duration_s", 0.0) or 0.0)
+    lidar_duration = float(
+        input_metrics.get(
+            "input_lidar_effective_duration_s",
+            input_metrics.get("input_lidar_header_duration_s", 0.0),
+        )
+        or 0.0
+    )
     odom_duration = float(metrics.get("odom_header_duration_s", 0.0) or 0.0)
     lidar_count = int(input_metrics.get("input_lidar_count", 0) or 0)
     syncable_lidar_count = int(input_metrics.get("input_lidar_syncable_count", 0) or 0)
@@ -671,14 +739,23 @@ def add_coverage_metrics(metrics: dict[str, Any], input_metrics: dict[str, Any])
     if lidar_count > 0:
         metrics["odom_missing_lidar_count"] = max(lidar_count - odom_count, 0)
 
-    if "odom_header_first_s" in metrics and "input_lidar_header_first_s" in input_metrics:
+    lidar_first_s = input_metrics.get(
+        "input_lidar_effective_first_s",
+        input_metrics.get("input_lidar_header_first_s"),
+    )
+    lidar_last_s = input_metrics.get(
+        "input_lidar_effective_last_s",
+        input_metrics.get("input_lidar_header_last_s"),
+    )
+
+    if "odom_header_first_s" in metrics and lidar_first_s is not None:
         metrics["odom_first_lidar_latency_s"] = round(
-            metrics["odom_header_first_s"] - input_metrics["input_lidar_header_first_s"],
+            metrics["odom_header_first_s"] - lidar_first_s,
             6,
         )
-    if "odom_header_last_s" in metrics and "input_lidar_header_last_s" in input_metrics:
+    if "odom_header_last_s" in metrics and lidar_last_s is not None:
         metrics["odom_tail_gap_s"] = round(
-            input_metrics["input_lidar_header_last_s"] - metrics["odom_header_last_s"],
+            lidar_last_s - metrics["odom_header_last_s"],
             6,
         )
 
@@ -980,8 +1057,12 @@ def write_report(
     )
     input_metric_order = (
         "input_lidar_count",
+        "input_lidar_coverage_time_source",
+        "input_lidar_effective_duration_s",
+        "input_lidar_effective_rate_hz",
         "input_lidar_header_duration_s",
-        "input_lidar_rate_hz",
+        "input_lidar_header_rate_hz",
+        "input_lidar_zero_header_count",
         "input_imu_count",
         "input_imu_header_duration_s",
         "input_imu_rate_hz",
@@ -1024,6 +1105,8 @@ def write_report(
         "odom_rate_hz",
         "odom_max_pos_norm_m",
         "odom_final_pos_norm_m",
+        "odom_path_length_m",
+        "odom_endpoint_path_ratio",
         "odom_max_step_m",
         "odom_max_speed_m_s",
         "odom_frozen_steps",
@@ -1053,6 +1136,61 @@ def write_report(
     )
     for key, value in log_metrics.items():
         report_lines.append(f"| `{key}` | `{value}` |")
+
+    if metrics.get("benchmark_status") == "evaluated":
+        report_lines.extend(
+            [
+                "",
+                "## Benchmark Against Ground Truth",
+                "",
+                "| Metric | Value |",
+                "|---|---:|",
+                f"| `gt_tum` | `{metrics['benchmark_gt_tum']}` |",
+                f"| `odom_tum` | `{metrics['benchmark_odom_tum']}` |",
+                f"| `associated_pairs` | `{metrics['benchmark_associated_pairs']}` |",
+                f"| `est_count` | `{metrics['benchmark_est_count']}` |",
+                f"| `gt_count` | `{metrics['benchmark_gt_count']}` |",
+                f"| `max_abs_time_diff_s` | `{metrics['benchmark_max_abs_time_diff_s']}` |",
+                f"| `est_length_m` | `{metrics['benchmark_est_length_m']}` |",
+                f"| `gt_length_m` | `{metrics['benchmark_gt_length_m']}` |",
+                f"| `ape_rmse_m` | `{metrics['benchmark_ape_rmse_m']}` |",
+                f"| `ape_mean_m` | `{metrics['benchmark_ape_mean_m']}` |",
+                f"| `ape_median_m` | `{metrics['benchmark_ape_median_m']}` |",
+                f"| `ape_p95_m` | `{metrics['benchmark_ape_p95_m']}` |",
+                f"| `ape_max_m` | `{metrics['benchmark_ape_max_m']}` |",
+                f"| `endpoint_error_m` | `{metrics['benchmark_endpoint_error_m']}` |",
+            ]
+        )
+    elif metrics.get("benchmark_status") == "skipped":
+        report_lines.extend(
+            [
+                "",
+                "## Benchmark Against Ground Truth",
+                "",
+                f"Skipped: {metrics.get('benchmark_skip_reason', 'no ground truth provided')}.",
+            ]
+        )
+        report_lines.extend(
+            [
+                "",
+                "## Odometry-Only Drift Summary",
+                "",
+                "No ground truth trajectory was found. The values below are relative "
+                "to the first odometry pose; `final_displacement_from_start_m` is a "
+                "drift proxy only for static or return-to-start bags.",
+                "",
+                "| Metric | Value |",
+                "|---|---:|",
+                f"| `final_displacement_from_start_m` | `{metrics['odom_final_pos_norm_m']}` |",
+                f"| `final_displacement_xyz_m` | `{metrics.get('odom_final_displacement_xyz_m', [])}` |",
+                f"| `max_displacement_from_start_m` | `{metrics['odom_max_pos_norm_m']}` |",
+                f"| `estimated_path_length_m` | `{metrics.get('odom_path_length_m', 0.0)}` |",
+                f"| `endpoint_to_path_ratio` | `{metrics.get('odom_endpoint_path_ratio', 0.0)}` |",
+                f"| `max_frame_step_m` | `{metrics['odom_max_step_m']}` |",
+                f"| `odom_count` | `{metrics['odom_count']}` |",
+                f"| `odom_rate_hz` | `{metrics['odom_rate_hz']}` |",
+            ]
+        )
 
     report_lines.append("")
     report_lines.append("## Resource Usage (Frontend)")
@@ -1366,6 +1504,20 @@ def run_replay(args: argparse.Namespace) -> int:
         }
     )
     metrics.update(endpoint_metrics)
+    gt_tum_path = discover_gt_tum(input_path, input_bags, args.gt_tum)
+    if gt_tum_path is not None:
+        benchmark_metrics = benchmark_ape_via_sourced_python(
+            prefix,
+            odom_dir,
+            args.odom_topic,
+            gt_tum_path,
+            output_dir,
+            args.max_association_dt,
+        )
+        metrics.update(benchmark_metrics)
+    else:
+        metrics["benchmark_status"] = "skipped"
+        metrics["benchmark_skip_reason"] = "no gt-tum.txt found near the input bag"
     status, status_reasons = replay_status_and_reasons(metrics, log_metrics, exit_codes)
     quality_warnings = replay_quality_warnings(metrics, log_metrics)
     metrics["status"] = status
@@ -1408,6 +1560,7 @@ def run_replay(args: argparse.Namespace) -> int:
         "workspace_setup": str(workspace_setup),
         "exit_codes": exit_codes,
         "endpoint_monitor": endpoint_metrics,
+        "gt_tum": str(gt_tum_path) if gt_tum_path is not None else None,
         "clock": {
             "publisher_node": player_nodes[0] if player_nodes else None,
             "rate_hz": DEFAULT_REPLAY_CLOCK_HZ,
@@ -1460,6 +1613,16 @@ def run_replay(args: argparse.Namespace) -> int:
         f"odom_large_steps={metrics['odom_large_steps']}, "
         f"endpoint_violations={metrics.get('endpoint_monitor_violations', 0)}"
     )
+    if metrics.get("benchmark_status") == "evaluated":
+        print(
+            "Benchmark: "
+            f"ape_rmse={metrics['benchmark_ape_rmse_m']:.4f} m, "
+            f"ape_max={metrics['benchmark_ape_max_m']:.4f} m, "
+            f"endpoint={metrics['benchmark_endpoint_error_m']:.4f} m, "
+            f"pairs={metrics['benchmark_associated_pairs']}"
+        )
+    else:
+        print(f"Benchmark: skipped ({metrics.get('benchmark_skip_reason', 'no ground truth')})")
     print("Status reasons: " + "; ".join(status_reasons))
     print("Quality warnings: " + ("; ".join(quality_warnings) if quality_warnings else "none"))
     if "frontend_cpu_cores_peak" in resource_metrics:
@@ -1572,10 +1735,16 @@ def pointcloud_time_bounds_s(msg: Any, header_time_s: float) -> tuple[float, flo
 
     min_value = float(finite_values.min())
     max_value = float(finite_values.max())
+    span = max_value - min_value
 
     # RoboSense Fairy publishes absolute per-point seconds in `timestamp`.
     # Other datasets commonly publish relative scan offsets in seconds or ms.
     if min_value > header_time_s - 1.0 and max_value < header_time_s + 2.0:
+        return min_value, max_value, f"absolute:{time_field.name}"
+    # Some RoboSense SDK warmup frames have header.stamp=0 while the per-point
+    # `timestamp` field is still a valid absolute LiDAR-clock second. Detect that
+    # by the scan-like span instead of anchoring only to the bad header stamp.
+    if min_value > 1000.0 and 0.001 <= span <= 1.0:
         return min_value, max_value, f"absolute:{time_field.name}"
 
     if max(abs(min_value), abs(max_value)) <= 1.0:
@@ -1612,6 +1781,7 @@ def read_input_topic_metrics(bag_paths: list[Path], lidar_topic: str, imu_topic:
     lidar_time_bounds: list[tuple[float, float]] = []
     lidar_scan_durations: list[float] = []
     lidar_time_modes: dict[str, int] = {}
+    lidar_zero_header_count = 0
 
     for bag_path in bag_paths:
         reader = rosbag2_py.SequentialReader()
@@ -1641,6 +1811,8 @@ def read_input_topic_metrics(bag_paths: list[Path], lidar_topic: str, imu_topic:
             entry["count"] += 1
 
             if topic_name == lidar_topic:
+                if header_time <= 0.0:
+                    lidar_zero_header_count += 1
                 bounds = pointcloud_time_bounds_s(msg, header_time)
                 if bounds is not None:
                     scan_begin_s, scan_end_s, mode = bounds
@@ -1665,7 +1837,9 @@ def read_input_topic_metrics(bag_paths: list[Path], lidar_topic: str, imu_topic:
         metrics[f"{prefix}_count"] = count
         metrics[f"{prefix}_storage_duration_s"] = round_or_none(storage_duration)
         metrics[f"{prefix}_header_duration_s"] = round_or_none(header_duration)
-        metrics[f"{prefix}_rate_hz"] = round(topic_rate(count, header_duration), 6)
+        header_rate_hz = round(topic_rate(count, header_duration), 6)
+        metrics[f"{prefix}_header_rate_hz"] = header_rate_hz
+        metrics[f"{prefix}_rate_hz"] = header_rate_hz
         if entry["storage_first"] is not None:
             metrics[f"{prefix}_storage_first_s"] = round(entry["storage_first"], 6)
         if entry["storage_last"] is not None:
@@ -1678,6 +1852,17 @@ def read_input_topic_metrics(bag_paths: list[Path], lidar_topic: str, imu_topic:
     imu_first_s = stats["input_imu"]["header_first"]
     imu_last_s = stats["input_imu"]["header_last"]
     if lidar_time_bounds:
+        lidar_effective_first_s = min(scan_begin_s for scan_begin_s, _scan_end_s in lidar_time_bounds)
+        lidar_effective_last_s = max(scan_end_s for _scan_begin_s, scan_end_s in lidar_time_bounds)
+        lidar_effective_duration_s = lidar_effective_last_s - lidar_effective_first_s
+        metrics["input_lidar_coverage_time_source"] = "point_timestamp"
+        metrics["input_lidar_effective_first_s"] = round(lidar_effective_first_s, 6)
+        metrics["input_lidar_effective_last_s"] = round(lidar_effective_last_s, 6)
+        metrics["input_lidar_effective_duration_s"] = round(lidar_effective_duration_s, 6)
+        metrics["input_lidar_effective_rate_hz"] = round(
+            topic_rate(len(lidar_time_bounds), lidar_effective_duration_s),
+            6,
+        )
         metrics["input_lidar_time_field_modes"] = dict(sorted(lidar_time_modes.items()))
         metrics["input_lidar_scan_duration_min_s"] = round(min(lidar_scan_durations), 6)
         metrics["input_lidar_scan_duration_median_s"] = round(median(lidar_scan_durations), 6)
@@ -1696,6 +1881,9 @@ def read_input_topic_metrics(bag_paths: list[Path], lidar_topic: str, imu_topic:
             metrics["input_lidar_syncable_count"] = syncable_count
             metrics["input_lidar_unsyncable_head_count"] = unsyncable_head_count
             metrics["input_lidar_unsyncable_tail_count"] = unsyncable_tail_count
+    else:
+        metrics["input_lidar_coverage_time_source"] = "header_stamp"
+    metrics["input_lidar_zero_header_count"] = lidar_zero_header_count
     return metrics
 
 
@@ -1732,6 +1920,7 @@ def analyze_odom_bag(args: argparse.Namespace) -> int:
 
     max_step = 0.0
     max_speed = 0.0
+    path_length = 0.0
     frozen_steps = 0
     large_steps = 0
     nonfinite_samples = 0
@@ -1743,6 +1932,7 @@ def analyze_odom_bag(args: argparse.Namespace) -> int:
     for (t0, _ht0, p0), (t1, _ht1, p1) in zip(samples, samples[1:]):
         step = norm3((p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]))
         dt = t1 - t0
+        path_length += step
         max_step = max(max_step, step)
         if dt > 0.0:
             max_speed = max(max_speed, step / dt)
@@ -1762,8 +1952,11 @@ def analyze_odom_bag(args: argparse.Namespace) -> int:
         "odom_rate_hz": round(rate, 6),
         "odom_first": [round(value, 6) for value in first],
         "odom_last": [round(value, 6) for value in samples[-1][2]],
+        "odom_final_displacement_xyz_m": [round(value, 6) for value in rel_positions[-1]],
         "odom_max_pos_norm_m": round(max_norm, 6),
         "odom_final_pos_norm_m": round(final_norm, 6),
+        "odom_path_length_m": round(path_length, 6),
+        "odom_endpoint_path_ratio": round(final_norm / path_length, 6) if path_length > 0.0 else 0.0,
         "odom_max_step_m": round(max_step, 6),
         "odom_max_speed_m_s": round(max_speed, 6),
         "odom_frozen_steps": frozen_steps,
@@ -1788,6 +1981,149 @@ def analyze_input_bags(args: argparse.Namespace) -> int:
     return 0
 
 
+def benchmark_ape(args: argparse.Namespace) -> int:
+    import numpy as np
+    import rosbag2_py
+    from nav_msgs.msg import Odometry
+    from rclpy.serialization import deserialize_message
+
+    odom_bag = expand_path(args.bag)
+    gt_tum = expand_path(args.gt_tum)
+    output_dir = expand_path(args.output_dir)
+    odom_tum = output_dir / "odom_tum.txt"
+    benchmark_json = output_dir / "benchmark_ape.json"
+
+    if not has_metadata(odom_bag):
+        raise FileNotFoundError(f"Odometry bag metadata.yaml not found: {odom_bag}")
+    if not gt_tum.is_file():
+        raise FileNotFoundError(f"GT TUM file not found: {gt_tum}")
+
+    reader = rosbag2_py.SequentialReader()
+    reader.open(
+        rosbag2_py.StorageOptions(uri=str(odom_bag), storage_id="sqlite3"),
+        rosbag2_py.ConverterOptions(
+            input_serialization_format="cdr",
+            output_serialization_format="cdr",
+        ),
+    )
+    topic_types = {item.name: item.type for item in reader.get_all_topics_and_types()}
+    if args.topic not in topic_types:
+        available = ", ".join(sorted(topic_types))
+        raise RuntimeError(f"Topic {args.topic!r} not found. Available topics: {available}")
+    if topic_types[args.topic] != "nav_msgs/msg/Odometry":
+        raise RuntimeError(
+            f"Topic {args.topic!r} has type {topic_types[args.topic]!r}, expected nav_msgs/msg/Odometry"
+        )
+
+    est_rows: list[tuple[float, float, float, float, float, float, float, float]] = []
+    while reader.has_next():
+        topic_name, data, _timestamp_ns = reader.read_next()
+        if topic_name != args.topic:
+            continue
+        msg = deserialize_message(data, Odometry)
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1.0e-9
+        pos = msg.pose.pose.position
+        quat = msg.pose.pose.orientation
+        row = (stamp, pos.x, pos.y, pos.z, quat.x, quat.y, quat.z, quat.w)
+        if stamp > 0.0 and all(math.isfinite(value) for value in row):
+            est_rows.append(row)
+
+    if not est_rows:
+        raise RuntimeError("No valid odometry samples found for benchmark")
+    odom_tum.write_text(
+        "\n".join(
+            "%.9f %.9f %.9f %.9f %.9f %.9f %.9f %.9f" % row
+            for row in est_rows
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    gt_rows: list[tuple[float, float, float, float, float, float, float, float]] = []
+    for line in gt_tum.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        values = tuple(float(item) for item in line.split()[:8])
+        if len(values) == 8 and all(math.isfinite(value) for value in values):
+            gt_rows.append(values)  # type: ignore[arg-type]
+    if not gt_rows:
+        raise RuntimeError(f"No valid TUM poses found in {gt_tum}")
+
+    est = np.asarray(est_rows, dtype=np.float64)
+    gt = np.asarray(gt_rows, dtype=np.float64)
+    gt_times = gt[:, 0]
+    pairs: list[tuple[int, int]] = []
+    time_diffs: list[float] = []
+    for est_index, stamp in enumerate(est[:, 0]):
+        gt_index = int(np.searchsorted(gt_times, stamp))
+        candidates: list[int] = []
+        if gt_index < len(gt_times):
+            candidates.append(gt_index)
+        if gt_index > 0:
+            candidates.append(gt_index - 1)
+        if not candidates:
+            continue
+        best = min(candidates, key=lambda index: abs(gt_times[index] - stamp))
+        time_diff = float(abs(gt_times[best] - stamp))
+        if time_diff <= args.max_association_dt:
+            pairs.append((est_index, best))
+            time_diffs.append(time_diff)
+
+    if len(pairs) < 3:
+        raise RuntimeError(
+            f"Not enough associated poses for APE: {len(pairs)} "
+            f"(max dt {args.max_association_dt}s)"
+        )
+
+    est_xyz = est[[est_index for est_index, _gt_index in pairs], 1:4]
+    gt_xyz = gt[[gt_index for _est_index, gt_index in pairs], 1:4]
+
+    est_mean = est_xyz.mean(axis=0)
+    gt_mean = gt_xyz.mean(axis=0)
+    est_centered = est_xyz - est_mean
+    gt_centered = gt_xyz - gt_mean
+    covariance = est_centered.T @ gt_centered / est_xyz.shape[0]
+    u_matrix, _singular_values, vt_matrix = np.linalg.svd(covariance)
+    reflection_guard = np.eye(3)
+    if np.linalg.det(vt_matrix.T @ u_matrix.T) < 0.0:
+        reflection_guard[2, 2] = -1.0
+    rotation = vt_matrix.T @ reflection_guard @ u_matrix.T
+    translation = gt_mean - rotation @ est_mean
+    aligned_est_xyz = (rotation @ est_xyz.T).T + translation
+
+    errors = np.linalg.norm(aligned_est_xyz - gt_xyz, axis=1)
+    est_steps = np.linalg.norm(np.diff(est_xyz, axis=0), axis=1)
+    gt_steps = np.linalg.norm(np.diff(gt_xyz, axis=0), axis=1)
+
+    metrics = {
+        "benchmark_status": "evaluated",
+        "benchmark_gt_tum": str(gt_tum),
+        "benchmark_odom_tum": str(odom_tum),
+        "benchmark_ape_json": str(benchmark_json),
+        "benchmark_alignment": "se3_no_scale",
+        "benchmark_max_association_dt_s": round(args.max_association_dt, 6),
+        "benchmark_associated_pairs": len(pairs),
+        "benchmark_est_count": int(est.shape[0]),
+        "benchmark_gt_count": int(gt.shape[0]),
+        "benchmark_mean_abs_time_diff_s": round(float(np.mean(time_diffs)), 6),
+        "benchmark_max_abs_time_diff_s": round(float(np.max(time_diffs)), 6),
+        "benchmark_est_length_m": round(float(np.sum(est_steps)), 6),
+        "benchmark_gt_length_m": round(float(np.sum(gt_steps)), 6),
+        "benchmark_ape_rmse_m": round(float(np.sqrt(np.mean(errors * errors))), 6),
+        "benchmark_ape_mean_m": round(float(np.mean(errors)), 6),
+        "benchmark_ape_median_m": round(float(np.median(errors)), 6),
+        "benchmark_ape_std_m": round(float(np.std(errors)), 6),
+        "benchmark_ape_p95_m": round(float(np.percentile(errors, 95)), 6),
+        "benchmark_ape_max_m": round(float(np.max(errors)), 6),
+        "benchmark_endpoint_error_m": round(float(errors[-1]), 6),
+        "benchmark_se3_rotation_row_major": [round(float(value), 9) for value in rotation.reshape(-1)],
+        "benchmark_se3_translation": [round(float(value), 9) for value in translation],
+    }
+    benchmark_json.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps(metrics, sort_keys=True))
+    return 0
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     if argv and argv[0] == "__analyze_odom":
         parser = argparse.ArgumentParser(description="Analyze a recorded /odometry bag")
@@ -1804,6 +2140,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         parser.add_argument("--bag", action="append", required=True)
         parser.add_argument("--lidar-topic", required=True)
         parser.add_argument("--imu-topic", required=True)
+        return parser.parse_args(argv)
+
+    if argv and argv[0] == "__benchmark_ape":
+        parser = argparse.ArgumentParser(description="Benchmark odometry against a TUM ground-truth file")
+        parser.add_argument("__command")
+        parser.add_argument("--bag", required=True)
+        parser.add_argument("--topic", default="/odometry")
+        parser.add_argument("--gt-tum", required=True)
+        parser.add_argument("--output-dir", required=True)
+        parser.add_argument("--max-association-dt", type=float, default=0.05)
         return parser.parse_args(argv)
 
     parser = argparse.ArgumentParser(description=__doc__)
@@ -1836,6 +2182,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--settle-time", type=float, default=2.0)
     parser.add_argument("--large-step-threshold", type=float, default=0.5)
     parser.add_argument("--frozen-eps", type=float, default=1.0e-4)
+    parser.add_argument(
+        "--gt-tum",
+        help="Advanced override for non-standard ground-truth TUM locations. By default, run.py auto-detects gt-tum.txt near the input bag.",
+    )
+    parser.add_argument("--max-association-dt", type=float, default=0.05)
     parser.add_argument("--no-cleanup", action="store_true", help="Do not kill old replay/frontend processes")
     return parser.parse_args(argv)
 
@@ -1846,6 +2197,8 @@ def main() -> int:
         return analyze_odom_bag(args)
     if getattr(args, "__command", None) == "__analyze_input":
         return analyze_input_bags(args)
+    if getattr(args, "__command", None) == "__benchmark_ape":
+        return benchmark_ape(args)
     return run_replay(args)
 
 

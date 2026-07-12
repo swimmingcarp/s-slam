@@ -136,6 +136,7 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
 
     runtime_pos_log_       = declare_parameter<bool>("runtime_pos_log_enabled", false);
     extrinsic_est_enabled_ = declare_parameter<bool>("mapping.extrinsic_est_enabled", false);
+    const bool replay_mode = declare_parameter<bool>("replay_mode", false);
     extrinsics_timeout_s_  = declare_parameter<double>("extrinsics_timeout_s", 10.0);
     pcd_save_enabled_      = declare_parameter<bool>("pcd_save.pcd_save_enabled", false);
     pcd_save_interval_     = declare_parameter<int>("pcd_save.interval", -1);
@@ -214,6 +215,7 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     imu_processor_->set_acc_cov(Eigen::Vector3d(acc_cov_, acc_cov_, acc_cov_));
     imu_processor_->set_gyr_bias_cov(Eigen::Vector3d(b_gyr_cov_, b_gyr_cov_, b_gyr_cov_));
     imu_processor_->set_acc_bias_cov(Eigen::Vector3d(b_acc_cov_, b_acc_cov_, b_acc_cov_));
+    imu_processor_->set_replay_mode(replay_mode);
 
     down_size_filter_.setLeafSize(filter_size_map_min_, filter_size_map_min_, filter_size_map_min_);
 

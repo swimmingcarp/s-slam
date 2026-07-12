@@ -1,0 +1,60 @@
+/**:
+  ros__parameters:
+    common:
+      imu_qos_depth: 2000
+      lidar_qos_depth: 50
+      process_on_callback: true
+
+    preprocess:
+      # Oxford Spires /hesai/pandar publishes x/y/z/intensity/timestamp/ring.
+      # The RoboSense adapter handles the same absolute timestamp + ring contract.
+      lidar_type: 5
+      scan_line: 64
+      scan_rate: 10
+      timestamp_unit: 0
+      blind: 0.5
+      blind_for_human_pilots: 0.0
+
+    # Oxford sequences can start in motion. Keep this true only for dataset replay.
+    replay_mode: true
+
+    mapping:
+      acc_cov: 0.1
+      gyr_cov: 0.1
+      b_acc_cov: 0.003
+      b_gyr_cov: 0.001
+      fov_degree: 360.0
+      det_range: 80.0
+      extrinsic_est_enabled: false
+      motion_quality_gate_enabled: false
+
+      # Oxford Spires configs/sensor.yaml: T_cam_lidar and T_cam_imu are both
+      # transforms into the front camera frame. FAST-LIO uses LiDAR w.r.t. IMU:
+      # inv(T_cam_imu) * T_cam_lidar.
+      extrinsic_T: [ -0.0006517087, -0.0155103426, 0.0846326578 ]
+      extrinsic_R: [ -0.0166380457, -0.9998601056, 0.0017159809,
+                      0.9998552573, -0.0166318136, 0.0035843144,
+                     -0.0035552731, 0.0017753685, 0.9999921040 ]
+
+    filter_size_map: 0.3
+
+    publish:
+      path_enabled: true
+      scan_publish_enabled: true
+      dense_publish_enabled: true
+      scan_lidar_frame_publish_enabled: true
+      scan_body_frame_publish_enabled: true
+      scan_base_frame_publish_enabled: false
+      imu_predicted_odometry_enabled: false
+
+    pcd_save:
+      pcd_save_enabled: false
+      interval: -1
+
+    verbose: false
+    runtime_pos_log_enabled: false
+    pcl_verbose: false
+    point_filter_num_for_preprocessing: 1
+    point_filter_num: 4
+    max_iteration: 4
+    cube_side_length: 1000.0
