@@ -15,12 +15,17 @@
       blind_for_human_pilots: 0.0  # unused by the RoboSense point cloud handler (no human-pilot rejection on a UAV)
 
     mapping:
-      # Runtime EKF process noise. These are larger than static IMU noise because
-      # replay tests showed that smaller values over-trust IMU propagation on Fairy.
-      # Keep gate and LiDAR geometry unchanged; this was the most repeatable
-      # low-noise candidate across pitch, turn, and shake replay bags.
+      # Runtime EKF process noise. acc_cov stays large: the Fairy accel has a real
+      # -2.2% scale error and ~0.05 m/s^2 in-flight bias shifts, so LiDAR must own
+      # position. gyr_cov must not be large: the gyro is measured excellent
+      # (<0.6 deg attitude drift over 57 s dead-reckoning) and needs authority when
+      # registration degrades (inverted flight, near-field-only returns).
+      # gyr_cov=0.85 lost 75 deg attitude in inverted flight: live case 03 ended
+      # 2.19 m from a 6 mm ICP-verified return point; 0.001 closes it at 0.09 m
+      # with cases 00/01/02 unchanged. 0.0001 over-trusts the gyro and regresses
+      # fast-yaw case 01 by 3x, so do not lower further without new evidence.
       acc_cov: 8.0
-      gyr_cov: 0.85
+      gyr_cov: 0.001
       b_acc_cov: 0.001
       b_gyr_cov: 0.0001
       fov_degree: 360.0           # Fairy: 360 deg horizontal FOV
