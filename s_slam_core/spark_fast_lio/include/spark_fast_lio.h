@@ -323,7 +323,7 @@ private:
     int num_gravity_measurements_thr_ = 10;
     std::vector<std::uint8_t> point_selected_surf_;
     bool lidar_pushed_ = false;
-    bool flg_first_scan_ = true;
+    bool is_first_lidar_scan_ = true;
     bool flg_exit_ = false;
     bool flg_EKF_inited_ = false;
     bool timediff_set_ = false;
@@ -346,8 +346,8 @@ private:
     std::deque<std::shared_ptr<const sensor_msgs::msg::Imu>> imu_buffer_;
     std::deque<sensor_msgs::msg::Imu> imu_integration_queue_;
 
-    PointCloudXYZI::Ptr cloud_undistort_;
-    PointCloudXYZI::Ptr feats_undistort_;
+    PointCloudXYZI::Ptr full_points_;
+    PointCloudXYZI::Ptr sampled_points_;
     PointCloudXYZI::Ptr feats_down_body_;
     PointCloudXYZI::Ptr feats_down_world_;
     PointCloudXYZI::Ptr surface_normals_;

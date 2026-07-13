@@ -234,8 +234,8 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
         max_iterations_,
         epsi);
 
-    cloud_undistort_.reset(new PointCloudXYZI());
-    feats_undistort_.reset(new PointCloudXYZI());
+    full_points_.reset(new PointCloudXYZI());
+    sampled_points_.reset(new PointCloudXYZI());
     feats_down_body_.reset(new PointCloudXYZI());
     feats_down_world_.reset(new PointCloudXYZI());
     surface_normals_.reset(new PointCloudXYZI());
@@ -327,14 +327,14 @@ void SPARKFastLIO2::resetEstimatorState(const std::string &reason, const ResetMo
     lidar_mean_scantime_ = 0.0;
     scan_num_ = 0;
     first_lidar_time_ = 0.0;
-    flg_first_scan_ = true;
+    is_first_lidar_scan_ = true;
     flg_EKF_inited_ = false;
     has_last_lidar_timestamp_ = false;
     has_last_imu_timestamp_ = false;
     last_not_enough_imu_log_timestamp_ns_ = -1;
 
-    cloud_undistort_->clear();
-    feats_undistort_->clear();
+    full_points_->clear();
+    sampled_points_->clear();
     feats_down_body_->clear();
     feats_down_world_->clear();
     cloud_to_be_saved_->clear();
@@ -1191,7 +1191,7 @@ void SPARKFastLIO2::publishFrameWorld(
     }
 
     // choose which cloud to publish
-    PointCloudXYZI::Ptr laserCloudFullRes(dense_publish_enabled_ ? cloud_undistort_ : feats_down_body_);
+    PointCloudXYZI::Ptr laserCloudFullRes(dense_publish_enabled_ ? full_points_ : feats_down_body_);
 
     int size = laserCloudFullRes->points.size();
     // allocate world frames
@@ -1232,12 +1232,12 @@ void SPARKFastLIO2::publishFrameWorld(
     // Optionally save accumulated point clouds.
     if (pcd_save_enabled_)
     {
-        int nsize = cloud_undistort_->points.size();
+        int nsize = full_points_->points.size();
         PointCloudXYZI::Ptr laserCloudWorld2(new PointCloudXYZI(nsize, 1));
 
         for (int i = 0; i < nsize; ++i)
         {
-            pclPointBodyToWorld(&cloud_undistort_->points[i], &laserCloudWorld2->points[i]);
+            pclPointBodyToWorld(&full_points_->points[i], &laserCloudWorld2->points[i]);
         }
         if (pcd_save_interval_ > 0)
         {
@@ -1265,7 +1265,7 @@ void SPARKFastLIO2::publishFrame(
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubCloud,
     const std::string &frame)
 {
-    int size = cloud_undistort_->points.size();
+    int size = full_points_->points.size();
     PointCloudXYZI::Ptr laserCloudTransformed(new PointCloudXYZI(size, 1));
     sensor_msgs::msg::PointCloud2 cloud_msg;
 
@@ -1274,7 +1274,7 @@ void SPARKFastLIO2::publishFrame(
         // direct copy
         for (int i = 0; i < size; ++i)
         {
-            laserCloudTransformed->points[i] = cloud_undistort_->points[i];
+            laserCloudTransformed->points[i] = full_points_->points[i];
         }
         pcl::toROSMsg(*laserCloudTransformed, cloud_msg);
         cloud_msg.header.stamp    = rclcpp::Time(lidar_end_time_ * 1e9);
@@ -1284,7 +1284,7 @@ void SPARKFastLIO2::publishFrame(
     {
         for (int i = 0; i < size; ++i)
         {
-            pclPointBodyLidarToIMU(&cloud_undistort_->points[i], &laserCloudTransformed->points[i]);
+            pclPointBodyLidarToIMU(&full_points_->points[i], &laserCloudTransformed->points[i]);
         }
         pcl::toROSMsg(*laserCloudTransformed, cloud_msg);
         cloud_msg.header.stamp    = rclcpp::Time(lidar_end_time_ * 1e9);
@@ -1294,7 +1294,7 @@ void SPARKFastLIO2::publishFrame(
     {
         for (int i = 0; i < size; ++i)
         {
-            pclPointBodyLidarToBase(&cloud_undistort_->points[i],
+            pclPointBodyLidarToBase(&full_points_->points[i],
                                     &laserCloudTransformed->points[i]);
         }
         pcl::toROSMsg(*laserCloudTransformed, cloud_msg);
@@ -1490,33 +1490,35 @@ bool SPARKFastLIO2::isMotionStopped(const V3D &acc_ref,
 
 void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
 {
-    if (flg_first_scan_)
+    if (is_first_lidar_scan_)
     {
         first_lidar_time_                = Measures.lidar_beg_time;
         imu_processor_->first_lidar_time = first_lidar_time_;
-        flg_first_scan_                  = false;
+        is_first_lidar_scan_             = false;
         return;
     }
 
-    // NOTE(hlim): Place resampling outside `Process` function to get full cloud point,
-    // i.e., `cloud_undistort_`: raw undistorted cloud points
-    // & `feats_undistort_`: Undistorted cloud points for pose estimation module
-    cloud_undistort_->clear();
-    feats_undistort_->clear();
+    // Keep the IMU-processed full cloud for dense publishing/PCD saving, then sample
+    // it here so scan matching uses the same corrected points at a lower rate.
+    full_points_->clear();
+    sampled_points_->clear();
 
-    const auto kf_before_measurement = kf_;
-    const auto imu_processor_before_measurement = imu_processor_->GetSnapshot();
-    const bool is_gravity_aligned_before = is_gravity_aligned_;
-    const Eigen::Matrix3d R_gravity_aligned_before = R_gravity_aligned_;
-    const auto global_gravity_directions_before = global_gravity_directions_;
-    const V3D mean_acc_stopped_before = mean_acc_stopped_;
-    const int num_consecutive_moving_frames_before = num_consecutive_moving_frames_;
-    const auto restore_state_before_measurement = [&]() {
-        is_gravity_aligned_ = is_gravity_aligned_before;
-        R_gravity_aligned_ = R_gravity_aligned_before;
-        global_gravity_directions_ = global_gravity_directions_before;
-        mean_acc_stopped_ = mean_acc_stopped_before;
-        num_consecutive_moving_frames_ = num_consecutive_moving_frames_before;
+    const auto rollback_kf = kf_;
+    const auto rollback_imu_snapshot = imu_processor_->GetSnapshot();
+    const bool rollback_gravity_aligned = is_gravity_aligned_;
+    const Eigen::Matrix3d rollback_gravity_rotation = R_gravity_aligned_;
+    const auto rollback_gravity_directions = global_gravity_directions_;
+    const V3D rollback_static_acc_mean = mean_acc_stopped_;
+    const int rollback_moving_frame_count = num_consecutive_moving_frames_;
+
+    const auto restore_rollback_state = [&]()
+    {
+        is_gravity_aligned_ = rollback_gravity_aligned;
+        R_gravity_aligned_ = rollback_gravity_rotation;
+        global_gravity_directions_ = rollback_gravity_directions;
+        mean_acc_stopped_ = rollback_static_acc_mean;
+        num_consecutive_moving_frames_ = rollback_moving_frame_count;
+
         if (have_last_good_state_)
         {
             kf_           = last_good_kf_;
@@ -1527,20 +1529,23 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
             }
             else
             {
-                imu_processor_->RestoreSnapshot(imu_processor_before_measurement);
+                imu_processor_->RestoreSnapshot(rollback_imu_snapshot);
             }
         }
         else
         {
-            kf_ = kf_before_measurement;
-            imu_processor_->RestoreSnapshot(imu_processor_before_measurement);
+            kf_ = rollback_kf;
+            imu_processor_->RestoreSnapshot(rollback_imu_snapshot);
             latest_state_     = kf_.get_x();
             latest_state_.pos = R_gravity_aligned_ * latest_state_.pos;
             latest_state_.rot = R_gravity_aligned_ * latest_state_.rot;
         }
+
         kf_for_preintegration_ = kf_;
     };
-    const auto publish_last_good_state = [&]() {
+
+    const auto publish_last_good_state = [&]()
+    {
         if (have_last_good_state_)
         {
             const auto stamp = rclcpp::Time(lidar_end_time_ * 1e9);
@@ -1548,30 +1553,30 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
         }
     };
 
-    imu_processor_->Process(Measures, kf_, cloud_undistort_);
-    feats_undistort_->reserve(cloud_undistort_->size() / point_filter_num_);
+    imu_processor_->Process(Measures, kf_, full_points_);
+    sampled_points_->reserve(full_points_->size() / point_filter_num_);
 
-    for (size_t i = 0; i < cloud_undistort_->points.size(); ++i)
+    for (size_t i = 0; i < full_points_->points.size(); ++i)
     {
         if (i % point_filter_num_ == 0)
         {
-            feats_undistort_->push_back(cloud_undistort_->points[i]);
+            sampled_points_->push_back(full_points_->points[i]);
         }
     }
 
     latest_state_ = kf_.get_x();
     flg_EKF_inited_ = (Measures.lidar_beg_time - first_lidar_time_) >= INIT_TIME;
 
-    if (feats_undistort_->empty() || (feats_undistort_ == NULL))
+    if (sampled_points_->empty() || (sampled_points_ == NULL))
     {
         RCLCPP_WARN_THROTTLE(this->get_logger(),
                              *this->get_clock(),
                              1000,
-                             "No point, skip this scan! cloud_undistort=%zu "
-                             "feats_undistort=%zu raw_lidar=%zu imu=%zu scan_dt=%.3f ms "
+                             "No point, skip this scan! full_points=%zu "
+                             "sampled_points=%zu raw_lidar=%zu imu=%zu scan_dt=%.3f ms "
                              "pos=[%.3f, %.3f, %.3f] vel=[%.3f, %.3f, %.3f]",
-                             cloud_undistort_->size(),
-                             feats_undistort_->size(),
+                             full_points_->size(),
+                             sampled_points_->size(),
                              Measures.lidar ? Measures.lidar->size() : 0,
                              Measures.imu.size(),
                              (Measures.lidar_end_time - Measures.lidar_beg_time) * 1000.0,
@@ -1583,7 +1588,7 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
                              latest_state_.vel[2]);
         if (motion_quality_gate_enabled_ && have_last_good_state_)
         {
-            restore_state_before_measurement();
+            restore_rollback_state();
             publish_last_good_state();
         }
         return;
@@ -1616,7 +1621,7 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
         }
     }
 
-    down_size_filter_.setInputCloud(feats_undistort_);
+    down_size_filter_.setInputCloud(sampled_points_);
     down_size_filter_.filter(*feats_down_body_);
 #ifdef SPARK_FAST_LIO_DETERMINISTIC_MAP_ORDER
     std::sort(feats_down_body_->points.begin(),
@@ -1654,12 +1659,12 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
         RCLCPP_WARN_THROTTLE(this->get_logger(),
                              *this->get_clock(),
                              1000,
-                             "No point, skip this scan! cloud_undistort=%zu "
-                             "feats_undistort=%zu feats_down=%d raw_lidar=%zu imu=%zu "
+                             "No point, skip this scan! full_points=%zu "
+                             "sampled_points=%zu feats_down=%d raw_lidar=%zu imu=%zu "
                              "scan_dt=%.3f ms pos=[%.3f, %.3f, %.3f] "
                              "vel=[%.3f, %.3f, %.3f]",
-                             cloud_undistort_->size(),
-                             feats_undistort_->size(),
+                             full_points_->size(),
+                             sampled_points_->size(),
                              feats_down_size_,
                              Measures.lidar ? Measures.lidar->size() : 0,
                              Measures.imu.size(),
@@ -1672,7 +1677,7 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
                              latest_state_.vel[2]);
         if (motion_quality_gate_enabled_ && have_last_good_state_)
         {
-            restore_state_before_measurement();
+            restore_rollback_state();
             publish_last_good_state();
         }
         return;
@@ -1845,7 +1850,7 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
     {
         ++motion_gate_reject_count_;
         ++motion_gate_consecutive_reject_count_;
-        restore_state_before_measurement();
+        restore_rollback_state();
         RCLCPP_WARN(this->get_logger(),
                     "Motion quality gate rejected scan #%d: consecutive=%d dt=%.3f s step=%.3f m "
                     "speed=%.3f m/s ekf_update_step=%.3f m update_step_ratio=%.3f "
