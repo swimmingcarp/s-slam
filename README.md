@@ -181,8 +181,16 @@ For another LiDAR, pass the matching `spark_fast_lio` config:
 ```
 
 The command starts the front end, replays the bag, records `/odometry`, and
-writes `report.md`, `metrics.json`, logs, and the output odometry bag under the
-requested output directory.
+writes the replay report under `<output_dir>`.
+
+Oxford example:
+
+```bash
+./s_slam_replay/run.py \
+  --input ~/workspace/datalake/oxford_spires_observatory-quarter-01/1710338090_2024-03-13-13-54-51 \
+  --output ~/workspace/output/oxford_spires_observatory-quarter-01_replay_report \
+  --config s_slam_replay/config/spark_fast_lio/oxford_spires_hesai.yaml
+```
 
 If LiDAR and IMU were recorded into separate sibling bag directories, pass their
 parent directory as `<rosbag_dir>`.

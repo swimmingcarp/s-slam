@@ -21,6 +21,7 @@ launch:
         - { from: 'imu',   to: '$(var imu_topic)' }
 
       param:
+        - from: $(var config_path)
         - name: use_sim_time
           value: true
         - name: "common.lidar_frame"
@@ -35,8 +36,6 @@ launch:
           value: "$(var visualization_frame)"
         - name: "gravity_alignment.enable_gravity_alignment"
           value: false
-
-        - from: $(var config_path)
         - name: "common.process_on_callback"
           value: true
         - name: "publish.imu_predicted_odometry_enabled"

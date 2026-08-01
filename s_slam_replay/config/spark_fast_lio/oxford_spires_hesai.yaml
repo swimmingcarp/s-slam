@@ -1,6 +1,16 @@
 /**:
   ros__parameters:
     common:
+      # Oxford uses dataset-specific frame names. `run.py` reads these values
+      # for its minimal command, rather than falling back to Fairy defaults.
+      map_frame: odom
+      base_frame: base_link
+      lidar_frame: pandar
+      imu_frame: imu_sensor_frame
+
+      # Oxford GT poses are in the base frame, but FAST-LIO must publish the
+      # LiDAR pose here so the replay benchmark can apply T_base_lidar below.
+      visualization_frame: lidar
       imu_qos_depth: 2000
       lidar_qos_depth: 50
       process_on_callback: true
@@ -17,6 +27,13 @@
 
     # Oxford sequences can start in motion. Keep this true only for dataset replay.
     replay_mode: true
+
+    sensor:
+      # Oxford Spires configs/sensor.yaml: GT poses are base-frame poses, while
+      # replay with visualization_frame:=lidar records /odometry in the LiDAR
+      # child frame. The replay benchmark uses this fixed dataset calibration
+      # to compare the same body frame.
+      T_base_lidar_t_xyz_q_xyzw: [0.0, 0.0, 0.124, 0.0, 0.0, 1.0, 0.0]
 
     mapping:
       acc_cov: 0.1
