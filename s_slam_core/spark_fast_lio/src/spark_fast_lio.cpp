@@ -60,7 +60,13 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     lidar_T_wrt_base_ = Zero3d;
     lidar_R_wrt_base_ = Eye3d;
 
-    path_enabled_                     = declare_parameter<bool>("publish.path_enabled", true);
+    path_enabled_ = declare_parameter<bool>("publish.path_enabled", true);
+    path_history_duration_s_ =
+        declare_parameter<double>("publish.path_history_duration_sec", 600.0);
+    if (path_history_duration_s_ < 0.0)
+    {
+        throw std::invalid_argument("publish.path_history_duration_sec must be non-negative");
+    }
     scan_publish_enabled_             = declare_parameter<bool>("publish.scan_publish_enabled", false);
     dense_publish_enabled_            = declare_parameter<bool>("publish.dense_publish_enabled", false);
     scan_lidar_frame_publish_enabled_ = declare_parameter<bool>("publish.scan_lidar_frame_publish_enabled", false);
@@ -801,16 +807,15 @@ void SPARKFastLIO2::calcHModel(state_ikfom &s, esekfom::dyn_share_datastruct<dou
         point_world.z         = p_global(2);
         point_world.intensity = point_body.intensity;
 
-        vector<float> pointSearchSqDis(NUM_MATCH_POINTS);
-
         auto &points_near = nearest_points_[i];
+        thread_local std::vector<float> point_search_sq_dis;
 
         if (ekfom_data.converge)
         {
             /** Find the closest surfaces in the map **/
-            ikd_tree_.Nearest_Search(point_world, NUM_MATCH_POINTS, points_near, pointSearchSqDis);
+            ikd_tree_.Nearest_Search(point_world, NUM_MATCH_POINTS, points_near, point_search_sq_dis);
             point_selected_surf_[i] = points_near.size() < NUM_MATCH_POINTS        ? false
-                                      : pointSearchSqDis[NUM_MATCH_POINTS - 1] > 5 ? false
+                                      : point_search_sq_dis[NUM_MATCH_POINTS - 1] > 5 ? false
                                                                                    : true;
         }
 
@@ -1141,6 +1146,18 @@ void SPARKFastLIO2::publishPath(const state_ikfom &state)
     if (path_publish_counter_ % 10 == 0)
     {
         path_msg_.poses.push_back(msg_body_pose_);
+        const rclcpp::Time newest_pose_time(msg_body_pose_.header.stamp);
+        const rclcpp::Time cutoff =
+            newest_pose_time - rclcpp::Duration::from_seconds(path_history_duration_s_);
+        const auto oldest_pose = std::lower_bound(
+            path_msg_.poses.begin(),
+            path_msg_.poses.end(),
+            cutoff,
+            [](const geometry_msgs::msg::PoseStamped &pose, const rclcpp::Time &time)
+            {
+                return rclcpp::Time(pose.header.stamp) < time;
+            });
+        path_msg_.poses.erase(path_msg_.poses.begin(), oldest_pose);
         pub_path_->publish(path_msg_);
     }
 }

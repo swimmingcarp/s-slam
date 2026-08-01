@@ -365,9 +365,14 @@ void KD_TREE<PointType>::Nearest_Search(PointType point,
                                         PointVector &Nearest_Points,
                                         vector<float> &Point_Distance,
                                         float max_dist) {
-  MANUAL_HEAP q(2 * k_nearest);
+  using HeapStorage = vector<PointType_CMP, Eigen::aligned_allocator<PointType_CMP>>;
+  thread_local HeapStorage heap_storage;
+  const int heap_capacity = max(1, 2 * k_nearest);
+  if (static_cast<int>(heap_storage.size()) < heap_capacity) {
+    heap_storage.resize(heap_capacity);
+  }
+  MANUAL_HEAP q(heap_storage.data(), heap_capacity);
   q.clear();
-  vector<float>().swap(Point_Distance);
   if (Rebuild_Ptr == nullptr || *Rebuild_Ptr != Root_Node) {
     Search(Root_Node, k_nearest, point, q, max_dist);
   } else {
@@ -385,9 +390,11 @@ void KD_TREE<PointType>::Nearest_Search(PointType point,
     pthread_mutex_unlock(&search_flag_mutex);
   }
   int k_found = min(k_nearest, int(q.size()));
-  PointVector().swap(Nearest_Points);
-  vector<float>().swap(Point_Distance);
-  for (int i = 0; i < k_found; i++) {
+  Nearest_Points.clear();
+  Point_Distance.clear();
+  Nearest_Points.reserve(k_found);
+  Point_Distance.reserve(k_found);
+  for (int i = 0; i < k_found; ++i) {
     Nearest_Points.insert(Nearest_Points.begin(), q.top().point);
     Point_Distance.insert(Point_Distance.begin(), q.top().dist);
     q.pop();

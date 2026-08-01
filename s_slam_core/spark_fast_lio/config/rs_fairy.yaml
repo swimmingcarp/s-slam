@@ -56,6 +56,7 @@
 
     publish:
       path_enabled: true
+      path_history_duration_sec: 600.0  # Bound visualization history; full trajectory is recorded from /odometry.
       scan_publish_enabled: true
       dense_publish_enabled: true
       scan_lidar_frame_publish_enabled: true

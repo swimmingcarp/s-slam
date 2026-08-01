@@ -99,15 +99,8 @@ class KD_TREE {
 
   class MANUAL_HEAP {
    public:
-    MANUAL_HEAP(int max_capacity = 100)
-
-    {
-      cap       = max_capacity;
-      heap      = new PointType_CMP[max_capacity];
-      heap_size = 0;
-    }
-
-    ~MANUAL_HEAP() { delete[] heap; }
+    MANUAL_HEAP(PointType_CMP *storage, int max_capacity)
+        : heap(storage), heap_size(0), cap(max_capacity) {}
     void pop() {
       if (heap_size == 0) return;
       heap[0] = heap[heap_size - 1];
@@ -130,7 +123,7 @@ class KD_TREE {
     }
 
    private:
-    PointType_CMP *heap;
+    PointType_CMP *heap = nullptr;
     void MoveDown(int heap_index) {
       int l             = heap_index * 2 + 1;
       PointType_CMP tmp = heap[heap_index];

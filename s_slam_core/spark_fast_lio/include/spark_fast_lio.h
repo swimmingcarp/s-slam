@@ -239,6 +239,7 @@ private:
     bool time_sync_enabled_                = false;
     bool extrinsic_est_enabled_            = false;
     bool path_enabled_                     = true;
+    double path_history_duration_s_        = 600.0;
     bool scan_publish_enabled_             = false;
     bool dense_publish_enabled_            = false;
     bool scan_lidar_frame_publish_enabled_ = false;
