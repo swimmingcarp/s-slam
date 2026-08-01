@@ -124,6 +124,9 @@ private:
                              bool insert_into_map,
                              bool append_path);
 
+    bool topicSubscribed(
+        const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr &publisher) const;
+
     void publishFrameWorld(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubCloud);
 
     void publishFrame(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubCloud,

@@ -1182,6 +1182,14 @@ void SPARKFastLIO2::publishCurrentFrame(const state_ikfom &state,
     }
 }
 
+bool SPARKFastLIO2::topicSubscribed(
+    const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr &publisher) const
+{
+    return publisher &&
+           (publisher->get_subscription_count() > 0 ||
+            publisher->get_intra_process_subscription_count() > 0);
+}
+
 void SPARKFastLIO2::publishFrameWorld(
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubCloud)
 {
@@ -1190,44 +1198,48 @@ void SPARKFastLIO2::publishFrameWorld(
         return;
     }
 
-    // choose which cloud to publish
-    PointCloudXYZI::Ptr laserCloudFullRes(dense_publish_enabled_ ? full_points_ : feats_down_body_);
-
-    int size = laserCloudFullRes->points.size();
-    // allocate world frames
-    PointCloudXYZI::Ptr laserCloudWorld(new PointCloudXYZI(size, 1));
-    PointCloudXYZI::Ptr laserCloudTmp(new PointCloudXYZI(size, 1));
-
-    for (int i = 0; i < size; ++i)
+    if (topicSubscribed(pubCloud))
     {
-        if (viz_frame_ == "imu")
+        // choose which cloud to publish
+        PointCloudXYZI::Ptr laserCloudFullRes(
+            dense_publish_enabled_ ? full_points_ : feats_down_body_);
+
+        int size = laserCloudFullRes->points.size();
+        // allocate world frames
+        PointCloudXYZI::Ptr laserCloudWorld(new PointCloudXYZI(size, 1));
+        PointCloudXYZI::Ptr laserCloudTmp(new PointCloudXYZI(size, 1));
+
+        for (int i = 0; i < size; ++i)
         {
-            pclPointBodyToWorld(&laserCloudFullRes->points[i], &laserCloudWorld->points[i]);
+            if (viz_frame_ == "imu")
+            {
+                pclPointBodyToWorld(&laserCloudFullRes->points[i], &laserCloudWorld->points[i]);
+            }
+            else if (viz_frame_ == "lidar")
+            {
+                pclPointBodyToWorld(&laserCloudFullRes->points[i], &laserCloudTmp->points[i]);
+                pclPointIMUToLiDAR(&laserCloudTmp->points[i], &laserCloudWorld->points[i]);
+            }
+            else if (viz_frame_ == "base")
+            {
+                pclPointBodyToWorld(&laserCloudFullRes->points[i], &laserCloudTmp->points[i]);
+                pclPointIMUToBase(&laserCloudTmp->points[i], &laserCloudWorld->points[i]);
+            }
+            else
+            {
+                throw std::invalid_argument("Invalid visualization frame has been given");
+            }
         }
-        else if (viz_frame_ == "lidar")
-        {
-            pclPointBodyToWorld(&laserCloudFullRes->points[i], &laserCloudTmp->points[i]);
-            pclPointIMUToLiDAR(&laserCloudTmp->points[i], &laserCloudWorld->points[i]);
-        }
-        else if (viz_frame_ == "base")
-        {
-            pclPointBodyToWorld(&laserCloudFullRes->points[i], &laserCloudTmp->points[i]);
-            pclPointIMUToBase(&laserCloudTmp->points[i], &laserCloudWorld->points[i]);
-        }
-        else
-        {
-            throw std::invalid_argument("Invalid visualization frame has been given");
-        }
+
+        sensor_msgs::msg::PointCloud2 cloud_msg;
+        pcl::toROSMsg(*laserCloudWorld, cloud_msg);
+        // use lidar_end_time_ for the timestamp
+        cloud_msg.header.stamp    = rclcpp::Time(lidar_end_time_ * 1e9);  // from seconds
+        cloud_msg.header.frame_id = map_frame_;
+
+        pubCloud->publish(cloud_msg);
+        publish_count_ -= PUBFRAME_PERIOD;
     }
-
-    sensor_msgs::msg::PointCloud2 cloud_msg;
-    pcl::toROSMsg(*laserCloudWorld, cloud_msg);
-    // use lidar_end_time_ for the timestamp
-    cloud_msg.header.stamp    = rclcpp::Time(lidar_end_time_ * 1e9);  // from seconds
-    cloud_msg.header.frame_id = map_frame_;
-
-    pubCloud->publish(cloud_msg);
-    publish_count_ -= PUBFRAME_PERIOD;
 
     // Optionally save accumulated point clouds.
     if (pcd_save_enabled_)
@@ -1265,6 +1277,11 @@ void SPARKFastLIO2::publishFrame(
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubCloud,
     const std::string &frame)
 {
+    if (!topicSubscribed(pubCloud))
+    {
+        return;
+    }
+
     int size = full_points_->points.size();
     PointCloudXYZI::Ptr laserCloudTransformed(new PointCloudXYZI(size, 1));
     sensor_msgs::msg::PointCloud2 cloud_msg;
