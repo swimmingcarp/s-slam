@@ -259,10 +259,6 @@ private:
     std::vector<float> res_last_;
     float det_range_ = 300.0f;
 
-    std::mutex mtx_buffer_;
-    std::condition_variable sig_buffer_;
-
-    std::string root_dir_ = ROOT_DIR;
     std::string map_file_path_;
     std::string save_dir_;
     std::string sequence_name_;
@@ -292,27 +288,22 @@ private:
     double motion_gate_min_effective_ratio_   = 0.25;
     bool motion_gate_reject_weak_lidar_       = true;
 
-    double filter_size_map_smaller_ = 0.0;
     double filter_size_map_min_     = 0.0;
     double fov_deg_                 = 0.0;
     double cube_len_                = 0.0;
-    double total_distance_          = 0.0;
     double lidar_end_time_          = 0.0;
     double first_lidar_time_        = 0.0;
 
     int effect_feat_num_  = 0;
-    int time_log_counter_     = 0;
     int scan_count_           = 0;
     int path_publish_counter_ = 0;
 
     int iterCount_                = 0;
     int feats_down_size_          = 0;
     int max_iterations_       = 0;
-    int laserCloudValidNum_       = 0;
     int pcd_save_interval_        = -1;
     int pcd_index_                = 0;
     int point_filter_num_         = 4;  // empirically, 4 showed the best performance
-    int feats_down_size_neighbor_ = numeric_limits<int>::max();
     int motion_gate_min_effective_features_ = 100;
     int motion_gate_reject_count_           = 0;
     int motion_gate_consecutive_reject_count_ = 0;
@@ -326,7 +317,6 @@ private:
     std::vector<std::uint8_t> point_selected_surf_;
     bool lidar_pushed_ = false;
     bool is_first_lidar_scan_ = true;
-    bool flg_exit_ = false;
     bool flg_EKF_inited_ = false;
     bool timediff_set_ = false;
     int num_consecutive_moving_frames_ = 0;
@@ -337,7 +327,6 @@ private:
     std::vector<BoxPointType> cub_needrm_;
 
     std::vector<PointVector> nearest_points_;
-    std::vector<double> g_base_vec_{0.0, 0.0, -1.0};
     std::vector<double> extrinT_{0.0, 0.0, 0.0};
     std::vector<double> extrinR_{1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
     double extrinsics_timeout_s_ = 10.0;
@@ -352,7 +341,6 @@ private:
     PointCloudXYZI::Ptr sampled_points_;
     PointCloudXYZI::Ptr feats_down_body_;
     PointCloudXYZI::Ptr feats_down_world_;
-    PointCloudXYZI::Ptr surface_normals_;
     PointCloudXYZI::Ptr normvec_;
     PointCloudXYZI::Ptr laser_cloud_ori_;
     PointCloudXYZI::Ptr corr_normvec_;
@@ -366,8 +354,6 @@ private:
     V3D g_base_;
     V3D mean_acc_stopped_;
     V3D position_last_;
-    V3D lidar_T_wrt_imu_;
-    M3D lidar_R_wrt_imu_;
     M3D R_gravity_aligned_;
 
     /*** Only used for integration with the Hydra system ***/

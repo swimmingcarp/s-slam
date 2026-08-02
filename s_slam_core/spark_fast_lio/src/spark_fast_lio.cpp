@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 
@@ -45,16 +46,11 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
       last_lidar_timestamp_(0, 0, RCL_ROS_TIME),
       last_imu_timestamp_(0, 0, RCL_ROS_TIME)
 {
-    preprocessor_  = std::make_shared<Preprocess>();
-    imu_processor_ = std::make_shared<ImuProcess>();
-
     xaxis_point_body_ << LIDAR_SP_LEN, 0.0, 0.0;
     xaxis_point_world_ << LIDAR_SP_LEN, 0.0, 0.0;
     g_base_            = Zero3d;
     mean_acc_stopped_  = Zero3d;
     position_last_     = Zero3d;
-    lidar_T_wrt_imu_   = Zero3d;
-    lidar_R_wrt_imu_   = Eye3d;
     R_gravity_aligned_ = Eye3d;
 
     lidar_T_wrt_base_ = Zero3d;
@@ -153,9 +149,19 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     extrinT_ = declare_parameter<std::vector<double>>("mapping.extrinsic_T", extrinT_);
     extrinR_ = declare_parameter<std::vector<double>>("mapping.extrinsic_R", extrinR_);
 
-    auto g_vec =
+    const auto g_vec =
         declare_parameter<std::vector<double>>("gravity_alignment.g_base", {0.0, 0.0, -1.0});
+    if (g_vec.size() != 3 ||
+        !std::all_of(g_vec.begin(), g_vec.end(), [](const double value) { return std::isfinite(value); }))
+    {
+        throw std::invalid_argument(
+            "gravity_alignment.g_base must contain exactly three finite values");
+    }
     g_base_ << g_vec[0], g_vec[1], g_vec[2];
+    if (g_base_.norm() <= std::numeric_limits<double>::epsilon())
+    {
+        throw std::invalid_argument("gravity_alignment.g_base must be non-zero");
+    }
 
     rclcpp::QoS lidar_qos(rclcpp::KeepLast(static_cast<size_t>(lidar_qos_depth_)));
     lidar_qos.reliable();
@@ -200,7 +206,13 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
         declare_parameter<double>("preprocess.blind_for_human_pilots", 1.5);
     preprocessor_->lidar_type =
         declare_parameter<int>("preprocess.lidar_type", static_cast<int>(AVIA));
-    preprocessor_->N_SCANS = declare_parameter<int>("preprocess.scan_line", 16);
+    const int scan_line_count = declare_parameter<int>("preprocess.scan_line", 16);
+    if (scan_line_count <= 0 || scan_line_count > Preprocess::kMaxScanLines)
+    {
+        throw std::invalid_argument("preprocess.scan_line must be between 1 and " +
+                                    std::to_string(Preprocess::kMaxScanLines));
+    }
+    preprocessor_->N_SCANS = scan_line_count;
     preprocessor_->time_unit =
         declare_parameter<int>("preprocess.timestamp_unit", static_cast<int>(US));
     preprocessor_->SCAN_RATE = declare_parameter<int>("preprocess.scan_rate", 10);
@@ -244,7 +256,6 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     sampled_points_.reset(new PointCloudXYZI());
     feats_down_body_.reset(new PointCloudXYZI());
     feats_down_world_.reset(new PointCloudXYZI());
-    surface_normals_.reset(new PointCloudXYZI());
     normvec_.reset(new PointCloudXYZI());
     laser_cloud_ori_.reset(new PointCloudXYZI());
     corr_normvec_.reset(new PointCloudXYZI());
@@ -632,10 +643,6 @@ void SPARKFastLIO2::standardLiDARCallback(const sensor_msgs::msg::PointCloud2 &m
     {
         drainPendingPackages();
     }
-    else
-    {
-        sig_buffer_.notify_all();
-    }
 }
 
 #if defined(LIVOX_ROS_DRIVER_FOUND) && LIVOX_ROS_DRIVER_FOUND
@@ -685,10 +692,6 @@ void SPARKFastLIO2::livoxLiDARCallback(const livox_ros_driver2::msg::CustomMsg::
     {
         drainPendingPackages();
     }
-    else
-    {
-        sig_buffer_.notify_all();
-    }
 }
 #endif
 
@@ -727,10 +730,6 @@ void SPARKFastLIO2::imuCallback(const sensor_msgs::msg::Imu::ConstSharedPtr msg)
     if (process_on_callback_)
     {
         drainPendingPackages();
-    }
-    else
-    {
-        sig_buffer_.notify_all();
     }
 }
 

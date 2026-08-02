@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <string>
 #include <vector>
 
@@ -60,7 +61,7 @@ enum E_jump
     Nr_blind
 };
 
-struct orgtype
+struct PointFeatureInfo
 {
     double range;
     double dista;
@@ -68,7 +69,7 @@ struct orgtype
     double intersect;
     E_jump edj[2];
     Feature ftype;
-    orgtype()
+    PointFeatureInfo()
     {
         range     = 0;
         dista     = 0;
@@ -84,8 +85,9 @@ struct orgtype
 class Preprocess
 {
 public:
+    static constexpr int kMaxScanLines = 128;
+
     Preprocess();
-    ~Preprocess();
 
 #if defined(LIVOX_ROS_DRIVER_FOUND) && LIVOX_ROS_DRIVER_FOUND
     void process(const livox_ros_driver2::msg::CustomMsg &msg, PointCloudXYZI::Ptr &pcl_out);
@@ -110,8 +112,9 @@ public:
 
     // sensor_msgs::PointCloud2::ConstPtr pointcloud;
     PointCloudXYZI pl_full, pl_corn, pl_surf, pl_from_pilots;
-    PointCloudXYZI pl_buff[128];       // maximum 128 line lidar
-    std::vector<orgtype> typess[128];  // maximum 128 line lidar
+    PointCloudXYZI pl_buff[kMaxScanLines];       // maximum supported LiDAR scan lines
+    // Per-scan-line point feature information, up to kMaxScanLines LiDAR lines.
+    std::array<std::vector<PointFeatureInfo>, kMaxScanLines> scan_line_feature_infos_;
     float time_unit_scale;
     int lidar_type, point_filter_num, N_SCANS, SCAN_RATE, time_unit;
     double blind, blind_for_human_pilots;
@@ -127,15 +130,23 @@ private:
     void handleVelodynePointCloud(const sensor_msgs::msg::PointCloud2 &msg);
     void handleRoboSensePointCloud(const sensor_msgs::msg::PointCloud2 &msg,
                                    PointCloudXYZI &output);
-    void give_feature(PointCloudXYZI &pl, std::vector<orgtype> &types);
+    void give_feature(PointCloudXYZI &pl,
+                      std::vector<PointFeatureInfo> &point_feature_infos);
     void pub_func(PointCloudXYZI &pl, const rclcpp::Time &ct);
-    int plane_judge(const PointCloudXYZI &pl, std::vector<orgtype> &types, uint i, uint &i_nex, Eigen::Vector3d &curr_direct);
+    int plane_judge(const PointCloudXYZI &pl,
+                    std::vector<PointFeatureInfo> &point_feature_infos,
+                    uint i,
+                    uint &i_nex,
+                    Eigen::Vector3d &curr_direct);
     bool small_plane(const PointCloudXYZI &pl,
-                     std::vector<orgtype> &types,
+                     std::vector<PointFeatureInfo> &point_feature_infos,
                      uint i_cur,
                      uint &i_nex,
                      Eigen::Vector3d &curr_direct);
-    bool edge_jump_judge(const PointCloudXYZI &pl, std::vector<orgtype> &types, uint i, Surround nor_dir);
+    bool edge_jump_judge(const PointCloudXYZI &pl,
+                         std::vector<PointFeatureInfo> &point_feature_infos,
+                         uint i,
+                         Surround nor_dir);
 
     int group_size;
     double disA, disB, inf_bound;

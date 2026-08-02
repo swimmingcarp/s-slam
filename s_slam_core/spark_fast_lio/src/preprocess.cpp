@@ -47,10 +47,6 @@ Preprocess::Preprocess()
     smallp_intersect = std::cos(smallp_intersect / 180 * M_PI);
 }
 
-Preprocess::~Preprocess()
-{
-}
-
 void Preprocess::set(bool is_enabled, int lid_type, double bld, int pfilt_num)
 {
     feature_enabled       = is_enabled;
@@ -211,20 +207,20 @@ void Preprocess::handleAviaPointCloud(const livox_ros_driver2::msg::CustomMsg &m
             }
             pcl::PointCloud<PointType> &pl = pl_buff[j];
             plsize                         = pl.size();
-            std::vector<orgtype> &types    = typess[j];
-            types.clear();
-            types.resize(plsize);
+            auto &point_feature_infos = scan_line_feature_infos_[j];
+            point_feature_infos.clear();
+            point_feature_infos.resize(plsize);
             --plsize;
             for (uint i = 0; i < plsize; ++i)
             {
-                types[i].range = sqrt(pl[i].x * pl[i].x + pl[i].y * pl[i].y);
+                point_feature_infos[i].range = sqrt(pl[i].x * pl[i].x + pl[i].y * pl[i].y);
                 vx             = pl[i].x - pl[i + 1].x;
                 vy             = pl[i].y - pl[i + 1].y;
                 vz             = pl[i].z - pl[i + 1].z;
-                types[i].dista = sqrt(vx * vx + vy * vy + vz * vz);
+                point_feature_infos[i].dista = sqrt(vx * vx + vy * vy + vz * vz);
             }
-            types[plsize].range = sqrt(pl[plsize].x * pl[plsize].x + pl[plsize].y * pl[plsize].y);
-            give_feature(pl, types);
+            point_feature_infos[plsize].range = sqrt(pl[plsize].x * pl[plsize].x + pl[plsize].y * pl[plsize].y);
+            give_feature(pl, point_feature_infos);
             // pl_surf += pl;
         }
         time += omp_get_wtime() - t0;
@@ -313,21 +309,21 @@ void Preprocess::handleOusterPointCloud(const sensor_msgs::msg::PointCloud2 &msg
             {
                 continue;
             }
-            std::vector<orgtype> &types = typess[j];
-            types.clear();
-            types.resize(linesize);
+            auto &point_feature_infos = scan_line_feature_infos_[j];
+            point_feature_infos.clear();
+            point_feature_infos.resize(linesize);
             --linesize;
             for (uint i = 0; i < linesize; ++i)
             {
-                types[i].range = sqrt(pl[i].x * pl[i].x + pl[i].y * pl[i].y);
+                point_feature_infos[i].range = sqrt(pl[i].x * pl[i].x + pl[i].y * pl[i].y);
                 vx             = pl[i].x - pl[i + 1].x;
                 vy             = pl[i].y - pl[i + 1].y;
                 vz             = pl[i].z - pl[i + 1].z;
-                types[i].dista = vx * vx + vy * vy + vz * vz;
+                point_feature_infos[i].dista = vx * vx + vy * vy + vz * vz;
             }
-            types[linesize].range =
+            point_feature_infos[linesize].range =
                 sqrt(pl[linesize].x * pl[linesize].x + pl[linesize].y * pl[linesize].y);
-            give_feature(pl, types);
+            give_feature(pl, point_feature_infos);
         }
     }
     else
@@ -405,21 +401,21 @@ void Preprocess::handleKimeraOusterPointCloud(const sensor_msgs::msg::PointCloud
             {
                 continue;
             }
-            std::vector<orgtype> &types = typess[j];
-            types.clear();
-            types.resize(linesize);
+            auto &point_feature_infos = scan_line_feature_infos_[j];
+            point_feature_infos.clear();
+            point_feature_infos.resize(linesize);
             --linesize;
             for (uint i = 0; i < linesize; ++i)
             {
-                types[i].range = sqrt(pl[i].x * pl[i].x + pl[i].y * pl[i].y);
+                point_feature_infos[i].range = sqrt(pl[i].x * pl[i].x + pl[i].y * pl[i].y);
                 vx             = pl[i].x - pl[i + 1].x;
                 vy             = pl[i].y - pl[i + 1].y;
                 vz             = pl[i].z - pl[i + 1].z;
-                types[i].dista = vx * vx + vy * vy + vz * vz;
+                point_feature_infos[i].dista = vx * vx + vy * vy + vz * vz;
             }
-            types[linesize].range =
+            point_feature_infos[linesize].range =
                 sqrt(pl[linesize].x * pl[linesize].x + pl[linesize].y * pl[linesize].y);
-            give_feature(pl, types);
+            give_feature(pl, point_feature_infos);
         }
     }
     else
@@ -487,21 +483,21 @@ void Preprocess::handleVelodynePointCloud(const sensor_msgs::msg::PointCloud2 &m
             {
                 continue;
             }
-            std::vector<orgtype> &types = typess[j];
-            types.clear();
-            types.resize(linesize);
+            auto &point_feature_infos = scan_line_feature_infos_[j];
+            point_feature_infos.clear();
+            point_feature_infos.resize(linesize);
             --linesize;
             for (uint i = 0; i < linesize; ++i)
             {
-                types[i].range = sqrt(pl[i].x * pl[i].x + pl[i].y * pl[i].y);
+                point_feature_infos[i].range = sqrt(pl[i].x * pl[i].x + pl[i].y * pl[i].y);
                 vx             = pl[i].x - pl[i + 1].x;
                 vy             = pl[i].y - pl[i + 1].y;
                 vz             = pl[i].z - pl[i + 1].z;
-                types[i].dista = vx * vx + vy * vy + vz * vz;
+                point_feature_infos[i].dista = vx * vx + vy * vy + vz * vz;
             }
-            types[linesize].range =
+            point_feature_infos[linesize].range =
                 sqrt(pl[linesize].x * pl[linesize].x + pl[linesize].y * pl[linesize].y);
-            give_feature(pl, types);
+            give_feature(pl, point_feature_infos);
         }
     }
     else
@@ -591,27 +587,28 @@ void Preprocess::handleRoboSensePointCloud(const sensor_msgs::msg::PointCloud2 &
         {
             continue;
         }
-        std::vector<orgtype> &types = typess[j];
-        types.clear();
-        types.resize(linesize);
+        auto &point_feature_infos = scan_line_feature_infos_[j];
+        point_feature_infos.clear();
+        point_feature_infos.resize(linesize);
         --linesize;
         for (uint i = 0; i < linesize; ++i)
         {
-            types[i].range = sqrt(pl[i].x * pl[i].x + pl[i].y * pl[i].y);
+            point_feature_infos[i].range = sqrt(pl[i].x * pl[i].x + pl[i].y * pl[i].y);
             vx             = pl[i].x - pl[i + 1].x;
             vy             = pl[i].y - pl[i + 1].y;
             vz             = pl[i].z - pl[i + 1].z;
-            types[i].dista = vx * vx + vy * vy + vz * vz;
+            point_feature_infos[i].dista = vx * vx + vy * vy + vz * vz;
         }
-        types[linesize].range =
+        point_feature_infos[linesize].range =
             sqrt(pl[linesize].x * pl[linesize].x + pl[linesize].y * pl[linesize].y);
-        give_feature(pl, types);
+        give_feature(pl, point_feature_infos);
     }
 
     output = pl_surf;
 }
 
-void Preprocess::give_feature(pcl::PointCloud<PointType> &pl, std::vector<orgtype> &types)
+void Preprocess::give_feature(pcl::PointCloud<PointType> &pl,
+                              std::vector<PointFeatureInfo> &point_feature_infos)
 {
     auto plsize = pl.size();
     size_t plsize2;
@@ -622,11 +619,11 @@ void Preprocess::give_feature(pcl::PointCloud<PointType> &pl, std::vector<orgtyp
     }
     uint head = 0;
 
-    while (head < types.size() && types[head].range < blind)
+    while (head < point_feature_infos.size() && point_feature_infos[head].range < blind)
     {
         ++head;
     }
-    if (head >= types.size())
+    if (head >= point_feature_infos.size())
     {
         return;
     }
@@ -644,12 +641,12 @@ void Preprocess::give_feature(pcl::PointCloud<PointType> &pl, std::vector<orgtyp
 
     for (uint i = head; i < plsize2; ++i)
     {
-        if (types[i].range < blind)
+        if (point_feature_infos[i].range < blind)
         {
             continue;
         }
 
-        plane_type = plane_judge(pl, types, i, i_nex, curr_direct);
+        plane_type = plane_judge(pl, point_feature_infos, i, i_nex, curr_direct);
 
         if (plane_type == 1)
         {
@@ -657,11 +654,11 @@ void Preprocess::give_feature(pcl::PointCloud<PointType> &pl, std::vector<orgtyp
             {
                 if (j != i && j != i_nex)
                 {
-                    types[j].ftype = Real_Plane;
+                    point_feature_infos[j].ftype = Real_Plane;
                 }
                 else
                 {
-                    types[j].ftype = Poss_Plane;
+                    point_feature_infos[j].ftype = Poss_Plane;
                 }
             }
 
@@ -671,11 +668,11 @@ void Preprocess::give_feature(pcl::PointCloud<PointType> &pl, std::vector<orgtyp
                 double mod = last_direct.transpose() * curr_direct;
                 if (mod > -0.707 && mod < 0.707)
                 {
-                    types[i].ftype = Edge_Plane;
+                    point_feature_infos[i].ftype = Edge_Plane;
                 }
                 else
                 {
-                    types[i].ftype = Real_Plane;
+                    point_feature_infos[i].ftype = Real_Plane;
                 }
             }
 
@@ -699,7 +696,7 @@ void Preprocess::give_feature(pcl::PointCloud<PointType> &pl, std::vector<orgtyp
         //       uint i_nex_tem2 = i_nex_tem;
         //       Eigen::Vector3d curr_direct2;
 
-        //       uint ttem = plane_judge(pl, types, j, i_nex_tem, curr_direct2);
+        //       uint ttem = plane_judge(pl, point_feature_infos, j, i_nex_tem, curr_direct2);
 
         //       if(ttem != 1)
         //       {
@@ -719,11 +716,11 @@ void Preprocess::give_feature(pcl::PointCloud<PointType> &pl, std::vector<orgtyp
         //       {
         //         if(k != i_nex_tem)
         //         {
-        //           types[k].ftype = Real_Plane;
+        //           point_feature_infos[k].ftype = Real_Plane;
         //         }
         //         else
         //         {
-        //           types[k].ftype = Poss_Plane;
+        //           point_feature_infos[k].ftype = Poss_Plane;
         //         }
         //       }
         //       i = i_nex_tem-1;
@@ -741,12 +738,12 @@ void Preprocess::give_feature(pcl::PointCloud<PointType> &pl, std::vector<orgtyp
     plsize2 = plsize > 3 ? plsize - 3 : 0;
     for (uint i = head + 3; i < plsize2; ++i)
     {
-        if (types[i].range < blind || types[i].ftype >= Real_Plane)
+        if (point_feature_infos[i].range < blind || point_feature_infos[i].ftype >= Real_Plane)
         {
             continue;
         }
 
-        if (types[i - 1].dista < 1e-16 || types[i].dista < 1e-16)
+        if (point_feature_infos[i - 1].dista < 1e-16 || point_feature_infos[i].dista < 1e-16)
         {
             continue;
         }
@@ -763,15 +760,15 @@ void Preprocess::give_feature(pcl::PointCloud<PointType> &pl, std::vector<orgtyp
                 m = 1;
             }
 
-            if (types[i + m].range < blind)
+            if (point_feature_infos[i + m].range < blind)
             {
-                if (types[i].range > inf_bound)
+                if (point_feature_infos[i].range > inf_bound)
                 {
-                    types[i].edj[j] = Nr_inf;
+                    point_feature_infos[i].edj[j] = Nr_inf;
                 }
                 else
                 {
-                    types[i].edj[j] = Nr_blind;
+                    point_feature_infos[i].edj[j] = Nr_blind;
                 }
                 continue;
             }
@@ -780,72 +777,72 @@ void Preprocess::give_feature(pcl::PointCloud<PointType> &pl, std::vector<orgtyp
             const double neighbor_norm = vecs[j].norm();
             if (neighbor_norm < 1.0e-12)
             {
-                types[i].edj[j] = Nr_zero;
+                point_feature_infos[i].edj[j] = Nr_zero;
                 continue;
             }
             has_neighbor[j] = true;
 
-            types[i].angle[j] = vec_a.dot(vecs[j]) / vec_a.norm() / neighbor_norm;
-            if (types[i].angle[j] < jump_up_limit)
+            point_feature_infos[i].angle[j] = vec_a.dot(vecs[j]) / vec_a.norm() / neighbor_norm;
+            if (point_feature_infos[i].angle[j] < jump_up_limit)
             {
-                types[i].edj[j] = Nr_180;
+                point_feature_infos[i].edj[j] = Nr_180;
             }
-            else if (types[i].angle[j] > jump_down_limit)
+            else if (point_feature_infos[i].angle[j] > jump_down_limit)
             {
-                types[i].edj[j] = Nr_zero;
+                point_feature_infos[i].edj[j] = Nr_zero;
             }
         }
 
         if (has_neighbor[Prev] && has_neighbor[Next])
         {
-            types[i].intersect =
+            point_feature_infos[i].intersect =
                 vecs[Prev].dot(vecs[Next]) / vecs[Prev].norm() / vecs[Next].norm();
         }
         else
         {
-            types[i].intersect = 0.0;
+            point_feature_infos[i].intersect = 0.0;
         }
-        if (types[i].edj[Prev] == Nr_nor && types[i].edj[Next] == Nr_zero &&
-            types[i].dista > 0.0225 && types[i].dista > 4 * types[i - 1].dista)
+        if (point_feature_infos[i].edj[Prev] == Nr_nor && point_feature_infos[i].edj[Next] == Nr_zero &&
+            point_feature_infos[i].dista > 0.0225 && point_feature_infos[i].dista > 4 * point_feature_infos[i - 1].dista)
         {
-            if (types[i].intersect > cos160)
+            if (point_feature_infos[i].intersect > cos160)
             {
-                if (edge_jump_judge(pl, types, i, Prev))
+                if (edge_jump_judge(pl, point_feature_infos, i, Prev))
                 {
-                    types[i].ftype = Edge_Jump;
+                    point_feature_infos[i].ftype = Edge_Jump;
                 }
             }
         }
-        else if (types[i].edj[Prev] == Nr_zero && types[i].edj[Next] == Nr_nor &&
-                 types[i - 1].dista > 0.0225 && types[i - 1].dista > 4 * types[i].dista)
+        else if (point_feature_infos[i].edj[Prev] == Nr_zero && point_feature_infos[i].edj[Next] == Nr_nor &&
+                 point_feature_infos[i - 1].dista > 0.0225 && point_feature_infos[i - 1].dista > 4 * point_feature_infos[i].dista)
         {
-            if (types[i].intersect > cos160)
+            if (point_feature_infos[i].intersect > cos160)
             {
-                if (edge_jump_judge(pl, types, i, Next))
+                if (edge_jump_judge(pl, point_feature_infos, i, Next))
                 {
-                    types[i].ftype = Edge_Jump;
+                    point_feature_infos[i].ftype = Edge_Jump;
                 }
             }
         }
-        else if (types[i].edj[Prev] == Nr_nor && types[i].edj[Next] == Nr_inf)
+        else if (point_feature_infos[i].edj[Prev] == Nr_nor && point_feature_infos[i].edj[Next] == Nr_inf)
         {
-            if (edge_jump_judge(pl, types, i, Prev))
+            if (edge_jump_judge(pl, point_feature_infos, i, Prev))
             {
-                types[i].ftype = Edge_Jump;
+                point_feature_infos[i].ftype = Edge_Jump;
             }
         }
-        else if (types[i].edj[Prev] == Nr_inf && types[i].edj[Next] == Nr_nor)
+        else if (point_feature_infos[i].edj[Prev] == Nr_inf && point_feature_infos[i].edj[Next] == Nr_nor)
         {
-            if (edge_jump_judge(pl, types, i, Next))
+            if (edge_jump_judge(pl, point_feature_infos, i, Next))
             {
-                types[i].ftype = Edge_Jump;
+                point_feature_infos[i].ftype = Edge_Jump;
             }
         }
-        else if (types[i].edj[Prev] > Nr_nor && types[i].edj[Next] > Nr_nor)
+        else if (point_feature_infos[i].edj[Prev] > Nr_nor && point_feature_infos[i].edj[Next] > Nr_nor)
         {
-            if (types[i].ftype == Nor)
+            if (point_feature_infos[i].ftype == Nor)
             {
-                types[i].ftype = Wire;
+                point_feature_infos[i].ftype = Wire;
             }
         }
     }
@@ -854,38 +851,38 @@ void Preprocess::give_feature(pcl::PointCloud<PointType> &pl, std::vector<orgtyp
     double ratio;
     for (uint i = head + 1; i < plsize2; ++i)
     {
-        if (types[i].range < blind || types[i - 1].range < blind || types[i + 1].range < blind)
+        if (point_feature_infos[i].range < blind || point_feature_infos[i - 1].range < blind || point_feature_infos[i + 1].range < blind)
         {
             continue;
         }
 
-        if (types[i - 1].dista < 1e-8 || types[i].dista < 1e-8)
+        if (point_feature_infos[i - 1].dista < 1e-8 || point_feature_infos[i].dista < 1e-8)
         {
             continue;
         }
 
-        if (types[i].ftype == Nor)
+        if (point_feature_infos[i].ftype == Nor)
         {
-            if (types[i - 1].dista > types[i].dista)
+            if (point_feature_infos[i - 1].dista > point_feature_infos[i].dista)
             {
-                ratio = types[i - 1].dista / types[i].dista;
+                ratio = point_feature_infos[i - 1].dista / point_feature_infos[i].dista;
             }
             else
             {
-                ratio = types[i].dista / types[i - 1].dista;
+                ratio = point_feature_infos[i].dista / point_feature_infos[i - 1].dista;
             }
 
-            if (types[i].intersect < smallp_intersect && ratio < smallp_ratio)
+            if (point_feature_infos[i].intersect < smallp_intersect && ratio < smallp_ratio)
             {
-                if (types[i - 1].ftype == Nor)
+                if (point_feature_infos[i - 1].ftype == Nor)
                 {
-                    types[i - 1].ftype = Real_Plane;
+                    point_feature_infos[i - 1].ftype = Real_Plane;
                 }
-                if (types[i + 1].ftype == Nor)
+                if (point_feature_infos[i + 1].ftype == Nor)
                 {
-                    types[i + 1].ftype = Real_Plane;
+                    point_feature_infos[i + 1].ftype = Real_Plane;
                 }
-                types[i].ftype = Real_Plane;
+                point_feature_infos[i].ftype = Real_Plane;
             }
         }
     }
@@ -893,7 +890,7 @@ void Preprocess::give_feature(pcl::PointCloud<PointType> &pl, std::vector<orgtyp
     int last_surface = -1;
     for (uint j = head; j < plsize; ++j)
     {
-        if (types[j].ftype == Poss_Plane || types[j].ftype == Real_Plane)
+        if (point_feature_infos[j].ftype == Poss_Plane || point_feature_infos[j].ftype == Real_Plane)
         {
             if (last_surface == -1)
             {
@@ -915,7 +912,7 @@ void Preprocess::give_feature(pcl::PointCloud<PointType> &pl, std::vector<orgtyp
         }
         else
         {
-            if (types[j].ftype == Edge_Jump || types[j].ftype == Edge_Plane)
+            if (point_feature_infos[j].ftype == Edge_Jump || point_feature_infos[j].ftype == Edge_Plane)
             {
                 pl_corn.push_back(pl[j]);
             }
@@ -953,12 +950,12 @@ void Preprocess::pub_func(PointCloudXYZI &pl, const rclcpp::Time &ct)
 }
 
 int Preprocess::plane_judge(const PointCloudXYZI &pl,
-                            std::vector<orgtype> &types,
+                            std::vector<PointFeatureInfo> &point_feature_infos,
                             uint i_cur,
                             uint &i_nex,
                             Eigen::Vector3d &curr_direct)
 {
-    double group_dis = disA * types[i_cur].range + disB;
+    double group_dis = disA * point_feature_infos[i_cur].range + disB;
     group_dis        = group_dis * group_dis;
     // i_nex = i_cur;
 
@@ -968,12 +965,12 @@ int Preprocess::plane_judge(const PointCloudXYZI &pl,
 
     for (i_nex = i_cur; i_nex < i_cur + group_size; ++i_nex)
     {
-        if (types[i_nex].range < blind)
+        if (point_feature_infos[i_nex].range < blind)
         {
             curr_direct.setZero();
             return 2;
         }
-        disarr.push_back(types[i_nex].dista);
+        disarr.push_back(point_feature_infos[i_nex].dista);
     }
 
     for (;;)
@@ -983,7 +980,7 @@ int Preprocess::plane_judge(const PointCloudXYZI &pl,
             break;
         }
 
-        if (types[i_nex].range < blind)
+        if (point_feature_infos[i_nex].range < blind)
         {
             curr_direct.setZero();
             return 2;
@@ -996,7 +993,7 @@ int Preprocess::plane_judge(const PointCloudXYZI &pl,
         {
             break;
         }
-        disarr.push_back(types[i_nex].dista);
+        disarr.push_back(point_feature_infos[i_nex].dista);
         ++i_nex;
     }
 
@@ -1076,26 +1073,26 @@ int Preprocess::plane_judge(const PointCloudXYZI &pl,
 }
 
 bool Preprocess::edge_jump_judge(const PointCloudXYZI &pl,
-                                 std::vector<orgtype> &types,
+                                 std::vector<PointFeatureInfo> &point_feature_infos,
                                  uint i,
                                  Surround nor_dir)
 {
     if (nor_dir == 0)
     {
-        if (types[i - 1].range < blind || types[i - 2].range < blind)
+        if (point_feature_infos[i - 1].range < blind || point_feature_infos[i - 2].range < blind)
         {
             return false;
         }
     }
     else if (nor_dir == 1)
     {
-        if (types[i + 1].range < blind || types[i + 2].range < blind)
+        if (point_feature_infos[i + 1].range < blind || point_feature_infos[i + 2].range < blind)
         {
             return false;
         }
     }
-    double d1 = types[i + nor_dir - 1].dista;
-    double d2 = types[i + 3 * nor_dir - 2].dista;
+    double d1 = point_feature_infos[i + nor_dir - 1].dista;
+    double d2 = point_feature_infos[i + 3 * nor_dir - 2].dista;
     double d;
 
     if (d1 < d2)
