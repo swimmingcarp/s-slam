@@ -53,6 +53,14 @@ test numbers or a replay look.
 
 ## Measurement Discipline
 
+- Choose replay acceptance metrics from the purpose of the change. For a
+  frontend correctness or recovery fix, compare trajectory state on recorded
+  bags (final displacement, path, frame step, jumps, frozen/divergent state)
+  and ATE/RTE on ground-truth benchmarks; the intended functional metric must
+  improve, while other correctness metrics must not regress outside a stated
+  tolerance. Do not treat CPU or RSS as an acceptance metric. For a performance
+  optimization, resource metrics must improve and trajectory/functional behavior
+  must remain unchanged.
 - Keep performance and correctness reports separate. Performance measures CPU,
   RSS, thread count, wall time, callback time, and queue latency. Correctness
   measures recorded odometry state, drift proxies, actual frame steps,

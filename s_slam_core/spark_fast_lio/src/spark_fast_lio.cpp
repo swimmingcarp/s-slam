@@ -1526,15 +1526,18 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
     full_points_->clear();
     sampled_points_->clear();
 
-    const auto rollback_kf = kf_;
-    const auto rollback_imu_snapshot = imu_processor_->GetSnapshot();
     const bool rollback_gravity_aligned = is_gravity_aligned_;
     const Eigen::Matrix3d rollback_gravity_rotation = R_gravity_aligned_;
     const auto rollback_gravity_directions = global_gravity_directions_;
     const V3D rollback_static_acc_mean = mean_acc_stopped_;
     const int rollback_moving_frame_count = num_consecutive_moving_frames_;
 
-    const auto restore_rollback_state = [&]()
+    imu_processor_->Process(Measures, kf_, full_points_);
+    // A rejected LiDAR correction must retain this frame's IMU propagation. Rolling
+    // back to last_good would discard elapsed motion for every rejected frame.
+    const auto propagated_kf = kf_;
+    const auto propagated_imu_snapshot = imu_processor_->GetSnapshot();
+    const auto restore_propagated_state = [&]()
     {
         is_gravity_aligned_ = rollback_gravity_aligned;
         R_gravity_aligned_ = rollback_gravity_rotation;
@@ -1542,41 +1545,20 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
         mean_acc_stopped_ = rollback_static_acc_mean;
         num_consecutive_moving_frames_ = rollback_moving_frame_count;
 
-        if (have_last_good_state_)
-        {
-            kf_           = last_good_kf_;
-            latest_state_ = last_good_state_;
-            if (last_good_imu_processor_snapshot_.has_value())
-            {
-                imu_processor_->RestoreSnapshot(*last_good_imu_processor_snapshot_);
-            }
-            else
-            {
-                imu_processor_->RestoreSnapshot(rollback_imu_snapshot);
-            }
-        }
-        else
-        {
-            kf_ = rollback_kf;
-            imu_processor_->RestoreSnapshot(rollback_imu_snapshot);
-            latest_state_     = kf_.get_x();
-            latest_state_.pos = R_gravity_aligned_ * latest_state_.pos;
-            latest_state_.rot = R_gravity_aligned_ * latest_state_.rot;
-        }
-
+        kf_ = propagated_kf;
+        imu_processor_->RestoreSnapshot(propagated_imu_snapshot);
+        latest_state_     = kf_.get_x();
+        latest_state_.pos = R_gravity_aligned_ * latest_state_.pos;
+        latest_state_.rot = R_gravity_aligned_ * latest_state_.rot;
         kf_for_preintegration_ = kf_;
     };
 
-    const auto publish_last_good_state = [&]()
+    const auto publish_propagated_state = [&]()
     {
-        if (have_last_good_state_)
-        {
-            const auto stamp = rclcpp::Time(lidar_end_time_ * 1e9);
-            publishCurrentFrame(latest_state_, stamp, false, false);
-        }
+        const auto stamp = rclcpp::Time(lidar_end_time_ * 1e9);
+        publishCurrentFrame(latest_state_, stamp, false, false);
     };
 
-    imu_processor_->Process(Measures, kf_, full_points_);
     PointCloudXYZI::ConstPtr matching_points = full_points_;
     if (point_filter_num_ > 1)
     {
@@ -1612,8 +1594,7 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
                              latest_state_.vel[2]);
         if (motion_quality_gate_enabled_ && have_last_good_state_)
         {
-            restore_rollback_state();
-            publish_last_good_state();
+            publish_propagated_state();
         }
         return;
     }
@@ -1701,8 +1682,7 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
                              latest_state_.vel[2]);
         if (motion_quality_gate_enabled_ && have_last_good_state_)
         {
-            restore_rollback_state();
-            publish_last_good_state();
+            publish_propagated_state();
         }
         return;
     }
@@ -1874,7 +1854,7 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
     {
         ++motion_gate_reject_count_;
         ++motion_gate_consecutive_reject_count_;
-        restore_rollback_state();
+        restore_propagated_state();
         RCLCPP_WARN(this->get_logger(),
                     "Motion quality gate rejected scan #%d: consecutive=%d dt=%.3f s step=%.3f m "
                     "speed=%.3f m/s ekf_update_step=%.3f m update_step_ratio=%.3f "
@@ -1882,7 +1862,7 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
                     "feats_down=%d effect=%d effective_ratio=%.3f imu=%zu "
                     "scan_dt=%.3f ms finite_state=%d weak_lidar=%d high_pre_grav=%d "
                     "high_post_grav=%d weak_update=%d large_correction=%d "
-                    "unsupported_recovery=%d restored_last_good=%d published_last_good=%d",
+                    "unsupported_recovery=%d restored_propagation=1 published_propagation=1",
                     motion_gate_reject_count_,
                     motion_gate_consecutive_reject_count_,
                     lio_debug_dt,
@@ -1904,10 +1884,8 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
                     high_post_gravity_residual ? 1 : 0,
                     weak_lidar_update ? 1 : 0,
                     suspicious_large_correction ? 1 : 0,
-                    unsupported_recovery_step ? 1 : 0,
-                    have_last_good_state_ ? 1 : 0,
-                    have_last_good_state_ ? 1 : 0);
-        publish_last_good_state();
+                    unsupported_recovery_step ? 1 : 0);
+        publish_propagated_state();
         return;
     }
 
