@@ -81,6 +81,11 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     base_frame_    = declare_parameter<std::string>("common.base_frame", "");
     imu_frame_     = declare_parameter<std::string>("common.imu_frame", "imu");
     viz_frame_     = declare_parameter<std::string>("common.visualization_frame", "imu");
+    if (viz_frame_ != "imu" && viz_frame_ != "lidar" && viz_frame_ != "base")
+    {
+        throw std::invalid_argument(
+            "common.visualization_frame must be one of: imu, lidar, base");
+    }
     time_sync_enabled_ = declare_parameter<bool>("common.time_sync_enabled", false);
     process_on_callback_ = declare_parameter<bool>("common.process_on_callback", false);
     imu_qos_depth_     = declare_parameter<int>("common.imu_qos_depth", 1000);
