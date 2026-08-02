@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import hashlib
+import heapq
 import json
 import math
 import os
@@ -47,7 +48,6 @@ DEFAULT_FRONTEND_LAUNCH = "s_slam_replay spark_fast_lio_replay.launch.yaml"
 DEFAULT_CLEANUP_TIMEOUT_S = 10.0
 DEFAULT_RECORD_START_TIMEOUT_S = 10.0
 DEFAULT_PLAYER_READY_TIMEOUT_S = 30.0
-DEFAULT_PLAY_START_LEAD_S = 3.0
 DEFAULT_DRAIN_SILENCE_S = 4.0
 DEFAULT_DRAIN_TIMEOUT_S = 300.0
 DEFAULT_RUN_LOCK_TIMEOUT_S = 600.0
@@ -130,28 +130,17 @@ def format_duration(seconds: float | None) -> str:
     return f"{whole_seconds:d}s"
 
 
-def sourced_command(prefix: str, argv: list[str], *, start_at_epoch: float | None = None) -> str:
-    wait_until = ""
-    if start_at_epoch is not None:
-        wait_script = (
-            "import time; "
-            f"target={start_at_epoch:.9f}; "
-            "delay=target-time.time(); "
-            "time.sleep(delay if delay > 0.0 else 0.0)"
-        )
-        wait_until = f" && {shlex.quote(sys.executable)} -c {shlex.quote(wait_script)}"
-    return f"{prefix}{wait_until} && exec {shlex.join(argv)}"
+def sourced_command(prefix: str, argv: list[str]) -> str:
+    return f"{prefix} && exec {shlex.join(argv)}"
 
 
 def run_sourced_capture(
     prefix: str,
     argv: list[str],
     timeout: float = 30.0,
-    *,
-    start_at_epoch: float | None = None,
 ) -> str:
     result = subprocess.run(
-        ["bash", "-lc", sourced_command(prefix, argv, start_at_epoch=start_at_epoch)],
+        ["bash", "-lc", sourced_command(prefix, argv)],
         check=False,
         text=True,
         stdout=subprocess.PIPE,
@@ -179,12 +168,10 @@ def start_sourced_process(
     prefix: str,
     argv: list[str],
     log_path: Path,
-    *,
-    start_at_epoch: float | None = None,
 ) -> subprocess.Popen[Any]:
     log_file = log_path.open("w", encoding="utf-8", errors="replace")
     return subprocess.Popen(
-        ["bash", "-lc", sourced_command(prefix, argv, start_at_epoch=start_at_epoch)],
+        ["bash", "-lc", sourced_command(prefix, argv)],
         stdout=log_file,
         stderr=subprocess.STDOUT,
         text=True,
@@ -232,6 +219,7 @@ def cleanup_old_processes() -> None:
         "[s]park_lio_mapping",
         "[r]os2 bag play",
         "[r]os2 bag record",
+        "[r]un.py __play_merged",
     ):
         subprocess.run(["pkill", "-f", pattern], check=False)
 
@@ -703,6 +691,171 @@ def build_bag_play_schedule(input_bags: list[Path]) -> list[tuple[Path, float, f
         start_offset = max(0.0, start_time - first_start) if start_time is not None else 0.0
         schedule.append((bag, start_offset, start_time))
     return sorted(schedule, key=lambda item: (item[1], str(item[0])))
+
+
+def play_merged_bags(args: argparse.Namespace) -> int:
+    """Publish a deterministic, time-merged LiDAR/IMU stream from split bags."""
+    import rclpy
+    import rosbag2_py
+    from rclpy.duration import Duration
+    from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+    from rclpy.serialization import deserialize_message
+    from rosbag2_interfaces.srv import Resume
+    from rosgraph_msgs.msg import Clock
+    from sensor_msgs.msg import Imu, PointCloud2
+
+    if not math.isfinite(args.replay_rate) or args.replay_rate <= 0.0:
+        raise ValueError("--replay-rate must be positive")
+    if not math.isfinite(args.clock_rate) or args.clock_rate <= 0.0:
+        raise ValueError("--clock-rate must be positive")
+
+    message_types = {
+        args.lidar_topic: PointCloud2,
+        args.imu_topic: Imu,
+    }
+    readers: list[Any] = []
+    queued_messages: list[tuple[int, int, int, int, str, bytes]] = []
+    sequence = 0
+
+    def enqueue_next(reader_index: int) -> None:
+        nonlocal sequence
+        reader = readers[reader_index]
+        while reader.has_next():
+            topic, serialized, timestamp_ns = reader.read_next()
+            if topic not in message_types:
+                continue
+            # If rosbag storage timestamps tie, publish IMU first so the scan
+            # boundary sees the same deterministic input ordering every run.
+            topic_order = 0 if topic == args.imu_topic else 1
+            heapq.heappush(
+                queued_messages,
+                (int(timestamp_ns), topic_order, reader_index, sequence, topic, serialized),
+            )
+            sequence += 1
+            return
+
+    for reader_index, bag_path in enumerate(args.bag):
+        reader = rosbag2_py.SequentialReader()
+        reader.open(
+            rosbag2_py.StorageOptions(uri=str(expand_path(bag_path)), storage_id=""),
+            rosbag2_py.ConverterOptions(
+                input_serialization_format="cdr",
+                output_serialization_format="cdr",
+            ),
+        )
+        reader.set_filter(rosbag2_py.StorageFilter(topics=sorted(message_types)))
+        readers.append(reader)
+        enqueue_next(reader_index)
+
+    if not queued_messages:
+        raise RuntimeError("No LiDAR or IMU messages found in the input bags")
+
+    first_timestamp_ns = queued_messages[0][0]
+    input_qos = QoSProfile(
+        history=HistoryPolicy.KEEP_LAST,
+        depth=10,
+        reliability=ReliabilityPolicy.RELIABLE,
+        durability=DurabilityPolicy.VOLATILE,
+    )
+    clock_qos = QoSProfile(
+        history=HistoryPolicy.KEEP_LAST,
+        depth=1,
+        reliability=ReliabilityPolicy.RELIABLE,
+        durability=DurabilityPolicy.VOLATILE,
+    )
+
+    rclpy.init()
+    node = rclpy.create_node(args.node_name)
+    lidar_publisher = node.create_publisher(PointCloud2, args.lidar_topic, input_qos)
+    imu_publisher = node.create_publisher(Imu, args.imu_topic, input_qos)
+    clock_publisher = node.create_publisher(Clock, "/clock", clock_qos)
+    publishers = {
+        args.lidar_topic: lidar_publisher,
+        args.imu_topic: imu_publisher,
+    }
+    resume_requested = False
+
+    def request_resume(_request: Resume.Request, response: Resume.Response) -> Resume.Response:
+        nonlocal resume_requested
+        resume_requested = True
+        return response
+
+    resume_service = node.create_service(Resume, "~/resume", request_resume)
+
+    def publish_clock(timestamp_ns: int) -> None:
+        clock = Clock()
+        clock.clock.sec = timestamp_ns // 1_000_000_000
+        clock.clock.nanosec = timestamp_ns % 1_000_000_000
+        clock_publisher.publish(clock)
+
+    try:
+        match_deadline: float | None = None
+        playback_start: float | None = None
+        next_clock_publish = 0.0
+        clock_period = 1.0 / args.clock_rate
+        while rclpy.ok():
+            rclpy.spin_once(node, timeout_sec=0.001)
+            now = time.monotonic()
+            if not resume_requested:
+                continue
+
+            if playback_start is None:
+                if match_deadline is None:
+                    match_deadline = now + args.match_timeout
+                subscription_counts = {
+                    topic: publisher.get_subscription_count()
+                    for topic, publisher in publishers.items()
+                }
+                if all(count > 0 for count in subscription_counts.values()):
+                    playback_start = now
+                    next_clock_publish = now
+                    publish_clock(first_timestamp_ns)
+                    node.get_logger().info(
+                        "Input subscriptions matched; deterministic merged playback started: "
+                        f"lidar={subscription_counts[args.lidar_topic]}, "
+                        f"imu={subscription_counts[args.imu_topic]}"
+                    )
+                elif now >= match_deadline:
+                    node.get_logger().error(
+                        "Timed out waiting for matched input subscriptions: "
+                        f"lidar={subscription_counts[args.lidar_topic]}, "
+                        f"imu={subscription_counts[args.imu_topic]}"
+                    )
+                    return 1
+                continue
+
+            elapsed_ns = int((now - playback_start) * args.replay_rate * 1_000_000_000)
+            simulated_timestamp_ns = first_timestamp_ns + elapsed_ns
+            if now >= next_clock_publish:
+                publish_clock(simulated_timestamp_ns)
+                next_clock_publish = now + clock_period
+
+            while queued_messages and queued_messages[0][0] <= simulated_timestamp_ns:
+                _timestamp_ns, _topic_order, reader_index, _sequence, topic, serialized = heapq.heappop(
+                    queued_messages
+                )
+                publishers[topic].publish(deserialize_message(serialized, message_types[topic]))
+                enqueue_next(reader_index)
+
+            if not queued_messages:
+                publish_clock(simulated_timestamp_ns)
+                for publisher in publishers.values():
+                    publisher.wait_for_all_acked(Duration(seconds=10.0))
+                node.get_logger().info("Deterministic merged playback complete")
+                return 0
+
+            next_message_time = (
+                playback_start
+                + (queued_messages[0][0] - first_timestamp_ns) / 1_000_000_000 / args.replay_rate
+            )
+            time.sleep(max(0.0, min(clock_period, next_message_time - time.monotonic())))
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        resume_service.destroy()
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 def odom_bag_size_mb(odom_dir: Path) -> float:
@@ -2568,90 +2721,72 @@ def run_replay(args: argparse.Namespace) -> int:
         console("Odometry recorder ready")
         time.sleep(args.record_start_wait)
 
-        player_nodes = [f"s_slam_replay_player_{run_id}_{index}" for index, _item in enumerate(bag_play_schedule)]
-        play_topics: list[list[str]] = []
-        play_log_paths: list[Path] = []
-        topic_to_nodes: dict[str, list[str]] = {lidar_topic: [], imu_topic: []}
-        for index, (bag, start_offset, _start_time) in enumerate(bag_play_schedule):
-            player_node = player_nodes[index]
+        play_topics: dict[str, list[str]] = {}
+        selected_input_topics: set[str] = set()
+        for bag, _start_offset, _start_time in bag_play_schedule:
             topics_for_bag = [
                 topic for topic in (lidar_topic, imu_topic) if topic in bag_topic_types.get(bag, {})
             ]
             if not topics_for_bag:
                 raise RuntimeError(f"Bag {bag} does not contain {lidar_topic} or {imu_topic}")
-            play_topics.append(topics_for_bag)
-            for topic in topics_for_bag:
-                topic_to_nodes[topic].append(player_node)
-
-        for topic, nodes in topic_to_nodes.items():
-            if len(nodes) != 1:
-                raise RuntimeError(
-                    f"Input topic {topic} must be published by exactly one input bag, "
-                    f"but matched players={nodes}."
-                )
-
-        for index, (bag, _start_offset, _start_time) in enumerate(bag_play_schedule):
-            player_node = player_nodes[index]
-            topics_for_bag = play_topics[index]
-            play_log_path = logs_dir / f"play_{index}.log"
-            play_log_paths.append(play_log_path)
-            console(
-                "Starting bag player: "
-                f"bag={bag.name}, topics={','.join(topics_for_bag)}, node={player_node}"
-            )
-            play_args = [
-                "ros2",
-                "bag",
-                "play",
-                str(bag),
-                "--topics",
-                *topics_for_bag,
-                "--read-ahead-queue-size",
-                str(args.read_ahead_queue_size),
-                "--start-paused",
-                "--disable-keyboard-controls",
-                "--remap",
-                f"__node:={player_node}",
-            ]
-            if index == 0:
-                play_args.extend(["--clock", str(DEFAULT_REPLAY_CLOCK_HZ)])
-            if args.replay_rate != 1.0:
-                play_args.extend(["--rate", str(args.replay_rate)])
-            play_processes.append(
-                start_sourced_process(
-                    prefix,
-                    play_args,
-                    play_log_path,
-                )
+            play_topics[str(bag)] = topics_for_bag
+            selected_input_topics.update(topics_for_bag)
+        if selected_input_topics != {lidar_topic, imu_topic}:
+            raise RuntimeError(
+                "Input bags do not provide both selected topics: "
+                f"found={sorted(selected_input_topics)}, required={[lidar_topic, imu_topic]}"
             )
 
-        for player_node in player_nodes:
-            player_index = player_nodes.index(player_node)
-            wait_for_service(
-                prefix,
-                f"/{player_node}/resume",
-                DEFAULT_PLAYER_READY_TIMEOUT_S,
-                process=play_processes[player_index],
-                process_name=player_node,
-                log_path=play_log_paths[player_index],
-            )
-        console("Bag players are ready")
+        player_nodes = [f"s_slam_replay_player_{run_id}"]
+        player_node = player_nodes[0]
+        play_log_path = logs_dir / "play_merged.log"
+        console(
+            "Starting merged bag player: "
+            f"bags={len(bag_play_schedule)}, topics={lidar_topic},{imu_topic}, node={player_node}"
+        )
+        play_args = [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "__play_merged",
+            "--node-name",
+            player_node,
+            "--lidar-topic",
+            lidar_topic,
+            "--imu-topic",
+            imu_topic,
+            "--replay-rate",
+            str(args.replay_rate),
+            "--clock-rate",
+            str(DEFAULT_REPLAY_CLOCK_HZ),
+            "--match-timeout",
+            str(DEFAULT_PLAYER_READY_TIMEOUT_S),
+        ]
+        for bag, _start_offset, _start_time in bag_play_schedule:
+            play_args.extend(["--bag", str(bag)])
+        play_processes.append(start_sourced_process(prefix, play_args, play_log_path))
+
+        wait_for_service(
+            prefix,
+            f"/{player_node}/resume",
+            DEFAULT_PLAYER_READY_TIMEOUT_S,
+            process=play_processes[0],
+            process_name=player_node,
+            log_path=play_log_path,
+        )
+        console("Merged bag player is ready")
         expected_input_publishers_by_topic = {
-            topic: {f"/{nodes[0]}"}
-            for topic, nodes in topic_to_nodes.items()
+            topic: {f"/{player_node}"}
+            for topic in (lidar_topic, imu_topic)
         }
         wait_for_topic_publishers_exact(
             prefix,
             expected_input_publishers_by_topic,
             DEFAULT_PLAYER_READY_TIMEOUT_S,
-            processes_by_node={
-                player_node: (play_processes[index], play_log_paths[index])
-                for index, player_node in enumerate(player_nodes)
-            },
+            processes_by_node={player_node: (play_processes[0], play_log_path)},
         )
-        console("Bag player publishers verified")
+        console("Merged bag player publishers verified")
 
-        play_wall_start = time.time() + DEFAULT_PLAY_START_LEAD_S
+        play_wall_start = time.time()
         monitor.start()
         endpoint_monitor = EndpointMonitor(
             prefix,
@@ -2659,47 +2794,24 @@ def run_replay(args: argparse.Namespace) -> int:
             play_processes,
         )
         endpoint_monitor.start()
-        resume_calls: list[dict[str, Any]] = [{} for _item in bag_play_schedule]
-        resume_errors: list[BaseException] = []
-
-        def resume_player(index: int, start_offset: float) -> None:
-            target_time = play_wall_start + start_offset / max(args.replay_rate, 1.0e-6)
-            try:
-                run_sourced_capture(
-                    prefix,
-                    [
-                        "ros2",
-                        "service",
-                        "call",
-                        f"/{player_nodes[index]}/resume",
-                        "rosbag2_interfaces/srv/Resume",
-                    ],
-                    timeout=10.0 + start_offset / max(args.replay_rate, 1.0e-6),
-                    start_at_epoch=target_time,
-                )
-                resume_calls[index] = {
-                    "node": player_nodes[index],
-                    "target_wall_time_s": round(target_time, 6),
-                    "returned_wall_time_s": round(time.time(), 6),
-                }
-            except BaseException as exc:
-                resume_errors.append(exc)
-
-        resume_threads = [
-            threading.Thread(
-                target=resume_player,
-                args=(index, start_offset),
-                name=f"resume-{index}",
-            )
-            for index, (_bag, start_offset, _start_time) in enumerate(bag_play_schedule)
+        run_sourced_capture(
+            prefix,
+            [
+                "ros2",
+                "service",
+                "call",
+                f"/{player_node}/resume",
+                "rosbag2_interfaces/srv/Resume",
+            ],
+        )
+        resume_calls = [
+            {
+                "node": player_node,
+                "requested_wall_time_s": round(play_wall_start, 6),
+                "returned_wall_time_s": round(time.time(), 6),
+            }
         ]
-        for thread in resume_threads:
-            thread.start()
-        for thread in resume_threads:
-            thread.join()
-        if resume_errors:
-            raise RuntimeError(f"Failed to resume bag player: {resume_errors[0]}")
-        console("Bag playback resumed")
+        console("Merged bag playback resumed; waiting for matched input subscriptions")
 
         exit_codes["play"] = wait_for_play_processes_with_progress(
             play_processes,
@@ -2806,9 +2918,7 @@ def run_replay(args: argparse.Namespace) -> int:
         "benchmark_estimate_frame_to_gt_transform_source": estimate_frame_to_gt_transform_source,
         "run_id": run_id,
         "player_nodes": player_nodes,
-        "play_topics": {
-            str(bag): topics for (bag, _start_offset, _start_time), topics in zip(bag_play_schedule, play_topics)
-        },
+        "play_topics": play_topics,
         "resume_calls": resume_calls,
         "topic_types": topic_types,
         "frames": {
@@ -3683,6 +3793,18 @@ def benchmark_ape(args: argparse.Namespace) -> int:
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
+    if argv and argv[0] == "__play_merged":
+        parser = argparse.ArgumentParser(description="Publish a deterministic merged LiDAR/IMU replay stream")
+        parser.add_argument("__command")
+        parser.add_argument("--bag", action="append", required=True)
+        parser.add_argument("--node-name", required=True)
+        parser.add_argument("--lidar-topic", required=True)
+        parser.add_argument("--imu-topic", required=True)
+        parser.add_argument("--replay-rate", type=float, required=True)
+        parser.add_argument("--clock-rate", type=float, required=True)
+        parser.add_argument("--match-timeout", type=float, required=True)
+        return parser.parse_args(argv)
+
     if argv and argv[0] == "__analyze_odom":
         parser = argparse.ArgumentParser(description="Analyze a recorded /odometry bag")
         parser.add_argument("__command")
@@ -3771,6 +3893,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args(sys.argv[1:])
+    if getattr(args, "__command", None) == "__play_merged":
+        return play_merged_bags(args)
     if getattr(args, "__command", None) == "__analyze_odom":
         return analyze_odom_bag(args)
     if getattr(args, "__command", None) == "__analyze_input":
