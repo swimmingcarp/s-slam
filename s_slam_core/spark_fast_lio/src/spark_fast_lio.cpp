@@ -343,6 +343,7 @@ void SPARKFastLIO2::resetEstimatorState(const std::string &reason, const ResetMo
     lidar_end_time_ = 0.0;
     lidar_mean_scantime_ = 0.0;
     scan_num_ = 0;
+    imu_gap_lidar_skip_count_ = 0;
     first_lidar_time_ = 0.0;
     is_first_lidar_scan_ = true;
     flg_EKF_inited_ = false;
@@ -1479,6 +1480,17 @@ bool SPARKFastLIO2::syncPackages(MeasureGroup &meas, bool verbose)
         return false;
     }
 
+    const auto consume_lidar = [&]()
+    {
+        lidar_buffer_.pop_front();
+        time_buffer_.pop_front();
+        if (!lidar_end_time_buffer_.empty())
+        {
+            lidar_end_time_buffer_.pop_front();
+        }
+        lidar_pushed_ = false;
+    };
+
     /*** push imu data, and pop from imu buffer ***/
     double imu_time = rclcpp::Time(imu_buffer_.front()->header.stamp).seconds();
     meas.imu.clear();
@@ -1493,13 +1505,25 @@ bool SPARKFastLIO2::syncPackages(MeasureGroup &meas, bool verbose)
         imu_buffer_.pop_front();
     }
 
-    lidar_buffer_.pop_front();
-    time_buffer_.pop_front();
-    if (!lidar_end_time_buffer_.empty())
+    if (meas.imu.empty())
     {
-        lidar_end_time_buffer_.pop_front();
+        // The next available IMU is already after this scan. The scan cannot be
+        // undistorted safely, so do not pass an empty IMU package to ESKF.
+        ++imu_gap_lidar_skip_count_;
+        RCLCPP_WARN_THROTTLE(this->get_logger(),
+                             *this->get_clock(),
+                             1000,
+                             "Skipping LiDAR scan due to IMU coverage gap: count=%d "
+                             "lidar=[%.6f, %.6f] next_imu=%.6f",
+                             imu_gap_lidar_skip_count_,
+                             meas.lidar_beg_time,
+                             lidar_end_time_,
+                             imu_time);
+        consume_lidar();
+        return false;
     }
-    lidar_pushed_ = false;
+
+    consume_lidar();
 
     return true;
 }

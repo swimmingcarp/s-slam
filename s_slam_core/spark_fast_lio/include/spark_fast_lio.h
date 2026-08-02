@@ -297,6 +297,7 @@ private:
     int effect_feat_num_  = 0;
     int scan_count_           = 0;
     int path_publish_counter_ = 0;
+    int imu_gap_lidar_skip_count_ = 0;
 
     int iterCount_                = 0;
     int feats_down_size_          = 0;
