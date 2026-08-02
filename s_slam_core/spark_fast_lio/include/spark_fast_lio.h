@@ -26,7 +26,6 @@
 
 #define INIT_TIME (0.1)
 #define LASER_POINT_COV (0.001)
-#define PUBFRAME_PERIOD (20)
 #define MOV_THRESHOLD (1.5)
 
 #if defined(LIVOX_ROS_DRIVER_FOUND) && LIVOX_ROS_DRIVER_FOUND
@@ -304,7 +303,6 @@ private:
     int effect_feat_num_  = 0;
     int time_log_counter_     = 0;
     int scan_count_           = 0;
-    int publish_count_        = 0;
     int path_publish_counter_ = 0;
 
     int iterCount_                = 0;

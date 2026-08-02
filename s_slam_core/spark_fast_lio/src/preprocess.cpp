@@ -535,19 +535,16 @@ void Preprocess::handleRoboSensePointCloud(const sensor_msgs::msg::PointCloud2 &
 
     if (!feature_enabled)
     {
-        // Without feature extraction (!feature_enabled), fast-lio only needs the filtered cloud,
-        // avoid materializing InternalScan/InternalPoint here. If feature_enabled, we still need
-        // InternalPoint for ring grouping and source-index filtering.
-        if (!robosense_fairy_adapter_.convertToFilteredCloud(msg,
-                                                             output,
-                                                             static_cast<std::uint16_t>(N_SCANS),
-                                                             point_filter_num,
-                                                             blind,
-                                                             scan_start_time_,
-                                                             scan_end_time_))
-        {
-            return;
-        }
+        // When !feature_enabled, FAST-LIO needs only the filtered output cloud.
+        // Avoid materializing InternalScan/InternalPoint; the feature-enabled path below
+        // preserves them for ring grouping and source-index filtering.
+        robosense_fairy_adapter_.convertToFilteredCloud(msg,
+                                                        output,
+                                                        static_cast<std::uint16_t>(N_SCANS),
+                                                        point_filter_num,
+                                                        blind,
+                                                        scan_start_time_,
+                                                        scan_end_time_);
         return;
     }
 
@@ -571,72 +568,44 @@ void Preprocess::handleRoboSensePointCloud(const sensor_msgs::msg::PointCloud2 &
         return point.ring < static_cast<std::uint16_t>(N_SCANS);
     };
 
-    if (feature_enabled)
+    for (int i = 0; i < N_SCANS; ++i)
     {
-        for (int i = 0; i < N_SCANS; ++i)
-        {
-            pl_buff[i].clear();
-            pl_buff[i].reserve(plsize);
-        }
-
-        for (const auto &src : scan.points)
-        {
-            if (!inConfiguredScan(src))
-            {
-                continue;
-            }
-            pl_buff[src.ring].points.push_back(src.point);
-        }
-
-        for (int j = 0; j < N_SCANS; ++j)
-        {
-            PointCloudXYZI &pl = pl_buff[j];
-            auto linesize      = pl.size();
-            if (linesize < 2)
-            {
-                continue;
-            }
-            std::vector<orgtype> &types = typess[j];
-            types.clear();
-            types.resize(linesize);
-            --linesize;
-            for (uint i = 0; i < linesize; ++i)
-            {
-                types[i].range = sqrt(pl[i].x * pl[i].x + pl[i].y * pl[i].y);
-                vx             = pl[i].x - pl[i + 1].x;
-                vy             = pl[i].y - pl[i + 1].y;
-                vz             = pl[i].z - pl[i + 1].z;
-                types[i].dista = vx * vx + vy * vy + vz * vz;
-            }
-            types[linesize].range =
-                sqrt(pl[linesize].x * pl[linesize].x + pl[linesize].y * pl[linesize].y);
-            give_feature(pl, types);
-        }
+        pl_buff[i].clear();
+        pl_buff[i].reserve(plsize);
     }
-    else
+
+    for (const auto &src : scan.points)
     {
-        for (const auto &src : scan.points)
+        if (!inConfiguredScan(src))
         {
-            if (src.source_index % static_cast<std::size_t>(point_filter_num) != 0)
-            {
-                continue;
-            }
-            if (!inConfiguredScan(src))
-            {
-                continue;
-            }
-
-            const auto &added_pt = src.point;
-
-            double dist2 =
-                added_pt.x * added_pt.x + added_pt.y * added_pt.y + added_pt.z * added_pt.z;
-            if (dist2 > (blind * blind))
-            {
-                // NOTE: no human-pilot-zone rejection for a UAV (drone has no
-                // operator carrying the sensor); `blind` handles self-returns.
-                pl_surf.points.push_back(added_pt);
-            }
+            continue;
         }
+        pl_buff[src.ring].points.push_back(src.point);
+    }
+
+    for (int j = 0; j < N_SCANS; ++j)
+    {
+        PointCloudXYZI &pl = pl_buff[j];
+        auto linesize      = pl.size();
+        if (linesize < 2)
+        {
+            continue;
+        }
+        std::vector<orgtype> &types = typess[j];
+        types.clear();
+        types.resize(linesize);
+        --linesize;
+        for (uint i = 0; i < linesize; ++i)
+        {
+            types[i].range = sqrt(pl[i].x * pl[i].x + pl[i].y * pl[i].y);
+            vx             = pl[i].x - pl[i + 1].x;
+            vy             = pl[i].y - pl[i + 1].y;
+            vz             = pl[i].z - pl[i + 1].z;
+            types[i].dista = vx * vx + vy * vy + vz * vz;
+        }
+        types[linesize].range =
+            sqrt(pl[linesize].x * pl[linesize].x + pl[linesize].y * pl[linesize].y);
+        give_feature(pl, types);
     }
 
     output = pl_surf;

@@ -694,8 +694,6 @@ void SPARKFastLIO2::livoxLiDARCallback(const livox_ros_driver2::msg::CustomMsg::
 
 void SPARKFastLIO2::imuCallback(const sensor_msgs::msg::Imu::ConstSharedPtr msg)
 {
-    ++publish_count_;
-
     rclcpp::Time stamp = msg->header.stamp;
     {
         std::lock_guard<std::mutex> lk(buffer_mutex_);
@@ -1255,7 +1253,6 @@ void SPARKFastLIO2::publishFrameWorld(
         cloud_msg.header.frame_id = map_frame_;
 
         pubCloud->publish(cloud_msg);
-        publish_count_ -= PUBFRAME_PERIOD;
     }
 
     // Optionally save accumulated point clouds.
@@ -1299,40 +1296,33 @@ void SPARKFastLIO2::publishFrame(
         return;
     }
 
-    int size = full_points_->points.size();
-    PointCloudXYZI::Ptr laserCloudTransformed(new PointCloudXYZI(size, 1));
     sensor_msgs::msg::PointCloud2 cloud_msg;
 
     if (frame == "lidar")
     {
-        // direct copy
-        for (int i = 0; i < size; ++i)
-        {
-            laserCloudTransformed->points[i] = full_points_->points[i];
-        }
-        pcl::toROSMsg(*laserCloudTransformed, cloud_msg);
-        cloud_msg.header.stamp    = rclcpp::Time(lidar_end_time_ * 1e9);
+        pcl::toROSMsg(*full_points_, cloud_msg);
         cloud_msg.header.frame_id = lidar_frame_;
     }
     else if (frame == "imu")
     {
+        const int size = full_points_->points.size();
+        PointCloudXYZI::Ptr transformed_cloud(new PointCloudXYZI(size, 1));
         for (int i = 0; i < size; ++i)
         {
-            pclPointBodyLidarToIMU(&full_points_->points[i], &laserCloudTransformed->points[i]);
+            pclPointBodyLidarToIMU(&full_points_->points[i], &transformed_cloud->points[i]);
         }
-        pcl::toROSMsg(*laserCloudTransformed, cloud_msg);
-        cloud_msg.header.stamp    = rclcpp::Time(lidar_end_time_ * 1e9);
+        pcl::toROSMsg(*transformed_cloud, cloud_msg);
         cloud_msg.header.frame_id = imu_frame_;
     }
     else if (frame == "base")
     {
+        const int size = full_points_->points.size();
+        PointCloudXYZI::Ptr transformed_cloud(new PointCloudXYZI(size, 1));
         for (int i = 0; i < size; ++i)
         {
-            pclPointBodyLidarToBase(&full_points_->points[i],
-                                    &laserCloudTransformed->points[i]);
+            pclPointBodyLidarToBase(&full_points_->points[i], &transformed_cloud->points[i]);
         }
-        pcl::toROSMsg(*laserCloudTransformed, cloud_msg);
-        cloud_msg.header.stamp    = rclcpp::Time(lidar_end_time_ * 1e9);
+        pcl::toROSMsg(*transformed_cloud, cloud_msg);
         cloud_msg.header.frame_id = base_frame_;
     }
     else
@@ -1340,8 +1330,8 @@ void SPARKFastLIO2::publishFrame(
         throw std::invalid_argument("Invalid frame has been given");
     }
 
+    cloud_msg.header.stamp = rclcpp::Time(lidar_end_time_ * 1e9);
     pubCloud->publish(cloud_msg);
-    publish_count_ -= PUBFRAME_PERIOD;
 }
 
 PoseStruct SPARKFastLIO2::transformPoseWrtLidarFrame(const state_ikfom &state) const
