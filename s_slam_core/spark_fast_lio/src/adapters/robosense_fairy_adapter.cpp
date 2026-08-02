@@ -70,6 +70,94 @@ bool RoboSenseFairyAdapter::convert(const sensor_msgs::msg::PointCloud2 &msg, In
     return true;
 }
 
+bool RoboSenseFairyAdapter::convertToFilteredCloud(
+    const sensor_msgs::msg::PointCloud2 &msg,
+    pcl::PointCloud<InternalPointType> &output,
+    const std::uint16_t scan_line_count,
+    const int point_filter_num,
+    const double blind,
+    double &scan_start_time,
+    double &scan_end_time) const
+{
+    output.clear();
+    scan_start_time = -1.0;
+    scan_end_time   = -1.0;
+
+    if (!validateContract(msg))
+    {
+        return false;
+    }
+
+    pcl::PointCloud<rslidar_ros::Point> raw_points;
+    pcl::fromROSMsg(msg, raw_points);
+    if (raw_points.points.empty())
+    {
+        return false;
+    }
+
+    const std::size_t point_stride = static_cast<std::size_t>(std::max(1, point_filter_num));
+    const double blind_squared     = blind * blind;
+    double first_timestamp         = std::numeric_limits<double>::max();
+    double last_timestamp          = -std::numeric_limits<double>::max();
+    std::size_t output_size        = 0;
+
+    for (std::size_t index = 0; index < raw_points.points.size(); ++index)
+    {
+        const auto &point = raw_points.points[index];
+        if (!hasValidTimestamp(point) || !hasFiniteXYZ(point))
+        {
+            continue;
+        }
+
+        first_timestamp = std::min(first_timestamp, point.timestamp);
+        last_timestamp  = std::max(last_timestamp, point.timestamp);
+        if (index % point_stride != 0 || point.ring >= scan_line_count)
+        {
+            continue;
+        }
+
+        const double distance_squared =
+            point.x * point.x + point.y * point.y + point.z * point.z;
+        if (distance_squared > blind_squared)
+        {
+            ++output_size;
+        }
+    }
+
+    if (first_timestamp == std::numeric_limits<double>::max())
+    {
+        RCLCPP_ERROR(rclcpp::get_logger("Preprocess"),
+                     "RoboSense XYZIRT point cloud has no finite point with a valid per-point "
+                     "timestamp. Drop this scan.");
+        return false;
+    }
+
+    scan_start_time = first_timestamp;
+    scan_end_time   = last_timestamp;
+    output.reserve(output_size);
+
+    for (std::size_t index = 0; index < raw_points.points.size(); ++index)
+    {
+        const auto &point = raw_points.points[index];
+        if (!hasValidTimestamp(point) || !hasFiniteXYZ(point) ||
+            index % point_stride != 0 || point.ring >= scan_line_count)
+        {
+            continue;
+        }
+
+        InternalPointType converted_point;
+        fillPoint(point, scan_start_time, converted_point);
+        const double distance_squared = converted_point.x * converted_point.x +
+                                        converted_point.y * converted_point.y +
+                                        converted_point.z * converted_point.z;
+        if (distance_squared > blind_squared)
+        {
+            output.points.push_back(converted_point);
+        }
+    }
+    return true;
+}
+
 bool RoboSenseFairyAdapter::validateContract(const sensor_msgs::msg::PointCloud2 &msg) const
 {
     using sensor_msgs::msg::PointField;

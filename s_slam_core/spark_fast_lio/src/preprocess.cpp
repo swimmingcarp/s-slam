@@ -103,13 +103,18 @@ void Preprocess::process(const sensor_msgs::msg::PointCloud2 &msg, PointCloudXYZ
             handleVelodynePointCloud(msg);
             break;
         case ROBOSENSE:
-            handleRoboSensePointCloud(msg);
+            handleRoboSensePointCloud(msg, *pcl_out);
             break;
         default:
             RCLCPP_FATAL(rclcpp::get_logger("Preprocess"), "Error LiDAR Type");
             break;
     }
-    *pcl_out = pl_surf;
+
+    // RoboSense writes its filtered points directly to pcl_out.
+    if (lidar_type != ROBOSENSE)
+    {
+        *pcl_out = pl_surf;
+    }
 }
 
 bool Preprocess::is_from_pilot_zone(const float &pt_x,
@@ -522,8 +527,30 @@ void Preprocess::handleVelodynePointCloud(const sensor_msgs::msg::PointCloud2 &m
     }
 }
 
-void Preprocess::handleRoboSensePointCloud(const sensor_msgs::msg::PointCloud2 &msg)
+void Preprocess::handleRoboSensePointCloud(const sensor_msgs::msg::PointCloud2 &msg,
+                                           PointCloudXYZI &output)
 {
+    scan_start_time_ = -1.0;
+    scan_end_time_   = -1.0;
+
+    if (!feature_enabled)
+    {
+        // Without feature extraction (!feature_enabled), fast-lio only needs the filtered cloud,
+        // avoid materializing InternalScan/InternalPoint here. If feature_enabled, we still need
+        // InternalPoint for ring grouping and source-index filtering.
+        if (!robosense_fairy_adapter_.convertToFilteredCloud(msg,
+                                                             output,
+                                                             static_cast<std::uint16_t>(N_SCANS),
+                                                             point_filter_num,
+                                                             blind,
+                                                             scan_start_time_,
+                                                             scan_end_time_))
+        {
+            return;
+        }
+        return;
+    }
+
     pl_surf.clear();
     pl_corn.clear();
     pl_full.clear();
@@ -611,6 +638,8 @@ void Preprocess::handleRoboSensePointCloud(const sensor_msgs::msg::PointCloud2 &
             }
         }
     }
+
+    output = pl_surf;
 }
 
 void Preprocess::give_feature(pcl::PointCloud<PointType> &pl, std::vector<orgtype> &types)

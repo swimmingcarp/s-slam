@@ -125,7 +125,8 @@ private:
     void handleOusterPointCloud(const sensor_msgs::msg::PointCloud2 &msg);
     void handleKimeraOusterPointCloud(const sensor_msgs::msg::PointCloud2 &msg);
     void handleVelodynePointCloud(const sensor_msgs::msg::PointCloud2 &msg);
-    void handleRoboSensePointCloud(const sensor_msgs::msg::PointCloud2 &msg);
+    void handleRoboSensePointCloud(const sensor_msgs::msg::PointCloud2 &msg,
+                                   PointCloudXYZI &output);
     void give_feature(PointCloudXYZI &pl, std::vector<orgtype> &types);
     void pub_func(PointCloudXYZI &pl, const rclcpp::Time &ct);
     int plane_judge(const PointCloudXYZI &pl, std::vector<orgtype> &types, uint i, uint &i_nex, Eigen::Vector3d &curr_direct);

@@ -1588,29 +1588,30 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
     };
 
     imu_processor_->Process(Measures, kf_, full_points_);
-    sampled_points_->reserve(full_points_->size() / point_filter_num_);
-
-    for (size_t i = 0; i < full_points_->points.size(); ++i)
+    PointCloudXYZI::ConstPtr matching_points = full_points_;
+    if (point_filter_num_ > 1)
     {
-        if (i % point_filter_num_ == 0)
+        sampled_points_->reserve(full_points_->size() / point_filter_num_);
+        for (size_t i = 0; i < full_points_->points.size(); i += point_filter_num_)
         {
             sampled_points_->push_back(full_points_->points[i]);
         }
+        matching_points = sampled_points_;
     }
 
     latest_state_ = kf_.get_x();
     flg_EKF_inited_ = (Measures.lidar_beg_time - first_lidar_time_) >= INIT_TIME;
 
-    if (sampled_points_->empty() || (sampled_points_ == NULL))
+    if (matching_points->empty())
     {
         RCLCPP_WARN_THROTTLE(this->get_logger(),
                              *this->get_clock(),
                              1000,
                              "No point, skip this scan! full_points=%zu "
-                             "sampled_points=%zu raw_lidar=%zu imu=%zu scan_dt=%.3f ms "
+                             "matching_points=%zu raw_lidar=%zu imu=%zu scan_dt=%.3f ms "
                              "pos=[%.3f, %.3f, %.3f] vel=[%.3f, %.3f, %.3f]",
                              full_points_->size(),
-                             sampled_points_->size(),
+                             matching_points->size(),
                              Measures.lidar ? Measures.lidar->size() : 0,
                              Measures.imu.size(),
                              (Measures.lidar_end_time - Measures.lidar_beg_time) * 1000.0,
@@ -1655,7 +1656,7 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures)
         }
     }
 
-    down_size_filter_.setInputCloud(sampled_points_);
+    down_size_filter_.setInputCloud(matching_points);
     down_size_filter_.filter(*feats_down_body_);
 #ifdef SPARK_FAST_LIO_DETERMINISTIC_MAP_ORDER
     std::sort(feats_down_body_->points.begin(),
