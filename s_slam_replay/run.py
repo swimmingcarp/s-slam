@@ -753,7 +753,7 @@ def play_merged_bags(args: argparse.Namespace) -> int:
     first_timestamp_ns = queued_messages[0][0]
     input_qos = QoSProfile(
         history=HistoryPolicy.KEEP_LAST,
-        depth=10,
+        depth=20_000,
         reliability=ReliabilityPolicy.RELIABLE,
         durability=DurabilityPolicy.VOLATILE,
     )
