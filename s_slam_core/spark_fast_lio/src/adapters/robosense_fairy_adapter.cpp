@@ -44,7 +44,7 @@ bool RoboSenseFairyAdapter::convert(const sensor_msgs::msg::PointCloud2 &msg, In
 
     if (scan_start_time == std::numeric_limits<double>::max())
     {
-        RCLCPP_ERROR(rclcpp::get_logger("Preprocess"),
+        RCLCPP_ERROR(rclcpp::get_logger("LidarProcessor"),
                      "RoboSense XYZIRT point cloud has no finite point with a valid per-point "
                      "timestamp. Drop this scan.");
         return false;
@@ -126,7 +126,7 @@ bool RoboSenseFairyAdapter::convertToFilteredCloud(
 
     if (first_timestamp == std::numeric_limits<double>::max())
     {
-        RCLCPP_ERROR(rclcpp::get_logger("Preprocess"),
+        RCLCPP_ERROR(rclcpp::get_logger("LidarProcessor"),
                      "RoboSense XYZIRT point cloud has no finite point with a valid per-point "
                      "timestamp. Drop this scan.");
         return false;
@@ -188,7 +188,7 @@ bool RoboSenseFairyAdapter::validateContract(const sensor_msgs::msg::PointCloud2
     if (!ok)
     {
         RCLCPP_ERROR(
-            rclcpp::get_logger("Preprocess"),
+            rclcpp::get_logger("LidarProcessor"),
             "RoboSense Fairy point cloud must be rslidar_sdk POINT_TYPE=XYZIRT "
             "(missing/wrong fields: %s). Drop this scan.",
             missing.str().c_str());

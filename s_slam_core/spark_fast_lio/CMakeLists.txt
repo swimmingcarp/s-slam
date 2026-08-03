@@ -99,8 +99,9 @@ add_library(spark_lio_component SHARED
   src/adapters/ouster_adapter.cpp
   src/adapters/robosense_fairy_adapter.cpp
   src/adapters/velodyne_adapter.cpp
+  src/data_processors/imu_processor.cpp
+  src/data_processors/lidar_processor.cpp
   src/spark_fast_lio.cpp
-  src/preprocess.cpp
 )
 
 # Example: C++ standard

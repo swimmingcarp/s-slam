@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <array>
 #include <string>
 #include <vector>
@@ -10,24 +11,21 @@
 #include "adapters/ouster_adapter.hpp"
 #include "adapters/robosense_fairy_adapter.hpp"
 #include "adapters/velodyne_adapter.hpp"
-#include "rclcpp/rclcpp.hpp"
 #include "rclcpp/time.hpp"
 
 #if defined(LIVOX_ROS_DRIVER_FOUND) && LIVOX_ROS_DRIVER_FOUND
 #include <livox_ros_driver2/msg/custom_msg.hpp>
 #endif
 
-#define IS_VALID(a) ((abs(a) > 1e8) ? true : false)
-
 using PointType       = pcl::PointXYZINormal;
 using PointCloudXYZI  = pcl::PointCloud<PointType>;
 
 enum LID_TYPE
 {
-    AVIA     = 1,
-    VELO16   = 2,
-    OUST64   = 3,
-    KMOUST64   = 4,
+    AVIA      = 1,
+    VELO16    = 2,
+    OUST64    = 3,
+    KMOUST64  = 4,
     ROBOSENSE = 5   // RoboSense (rslidar_sdk XYZIRT, e.g. Fairy)
 };  // {1, 2, 3, 4, 5}
 enum TIME_UNIT
@@ -82,18 +80,20 @@ struct PointFeatureInfo
     }
 };
 
-class Preprocess
+class LidarProcessor
 {
 public:
     static constexpr int kMaxScanLines = 128;
 
-    Preprocess();
+    LidarProcessor();
 
 #if defined(LIVOX_ROS_DRIVER_FOUND) && LIVOX_ROS_DRIVER_FOUND
-    void process(const livox_ros_driver2::msg::CustomMsg &msg, PointCloudXYZI::Ptr &pcl_out);
+    bool process(const livox_ros_driver2::msg::CustomMsg &msg, PointCloudXYZI::Ptr &pcl_out);
 #endif
-    void process(const sensor_msgs::msg::PointCloud2 &msg, PointCloudXYZI::Ptr &pcl_out);
+    bool process(const sensor_msgs::msg::PointCloud2 &msg, PointCloudXYZI::Ptr &pcl_out);
     void set(bool is_enabled, int lid_type, double bld, int pfilt_num);
+    // Configure the PointCloud2 per-point timestamp unit once during startup.
+    void setTimestampUnit(TIME_UNIT timestamp_unit);
 
     bool has_scan_time() const
     {
@@ -115,13 +115,33 @@ public:
     PointCloudXYZI pl_buff[kMaxScanLines];       // maximum supported LiDAR scan lines
     // Per-scan-line point feature information, up to kMaxScanLines LiDAR lines.
     std::array<std::vector<PointFeatureInfo>, kMaxScanLines> scan_line_feature_infos_;
-    float time_unit_scale;
-    int lidar_type, point_filter_num, N_SCANS, SCAN_RATE, time_unit;
+    int lidar_type, point_filter_num, N_SCANS, SCAN_RATE;
     double blind, blind_for_human_pilots;
     bool feature_enabled, given_offset_time;
 
 private:
-    bool is_from_pilot_zone(const float &pt_x, const float &pt_y, const float &pt_z, const std::string mode = "velodyne");
+    enum class NeighborDistance
+    {
+        kEuclidean,
+        kSquared,
+    };
+
+    enum class PilotZoneOrientation
+    {
+        kOuster,
+        kVelodyne,
+    };
+
+    void resetFrameClouds();
+    void prepareFeatureScanLines(std::size_t point_count);
+    void extractFeaturesFromScanLines(NeighborDistance neighbor_distance,
+                                      std::size_t minimum_scan_line_points);
+    void populatePointFeatureInfo(const PointCloudXYZI &scan_line,
+                                  std::vector<PointFeatureInfo> &point_feature_infos,
+                                  NeighborDistance neighbor_distance) const;
+    bool isFromPilotZone(float point_x,
+                         float point_y,
+                         PilotZoneOrientation orientation) const;
 #if defined(LIVOX_ROS_DRIVER_FOUND) && LIVOX_ROS_DRIVER_FOUND
     void handleAviaPointCloud(const livox_ros_driver2::msg::CustomMsg &msg);
 #endif
@@ -132,17 +152,11 @@ private:
                                    PointCloudXYZI &output);
     void give_feature(PointCloudXYZI &pl,
                       std::vector<PointFeatureInfo> &point_feature_infos);
-    void pub_func(PointCloudXYZI &pl, const rclcpp::Time &ct);
     int plane_judge(const PointCloudXYZI &pl,
                     std::vector<PointFeatureInfo> &point_feature_infos,
                     uint i,
                     uint &i_nex,
                     Eigen::Vector3d &curr_direct);
-    bool small_plane(const PointCloudXYZI &pl,
-                     std::vector<PointFeatureInfo> &point_feature_infos,
-                     uint i_cur,
-                     uint &i_nex,
-                     Eigen::Vector3d &curr_direct);
     bool edge_jump_judge(const PointCloudXYZI &pl,
                          std::vector<PointFeatureInfo> &point_feature_infos,
                          uint i,
@@ -156,8 +170,8 @@ private:
     double cos160;
     double edgea, edgeb;
     double smallp_intersect, smallp_ratio;
-    double vx, vy, vz;
     double scan_start_time_, scan_end_time_;
+    float time_unit_scale_;
     sensor_adapter::OusterAdapter ouster_adapter_;
     sensor_adapter::KimeraOusterAdapter kimera_ouster_adapter_;
     sensor_adapter::VelodyneAdapter velodyne_adapter_;

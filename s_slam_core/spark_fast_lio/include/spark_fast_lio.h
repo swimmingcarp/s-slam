@@ -21,8 +21,8 @@
 
 #include "common/so3_math.h"
 #include "ikd_Tree.h"
-#include "imu_processing.hpp"
-#include "preprocess.h"
+#include "data_processors/imu_processor.hpp"
+#include "data_processors/lidar_processor.hpp"
 
 #define INIT_TIME (0.1)
 #define LASER_POINT_COV (0.001)
@@ -366,7 +366,7 @@ private:
     esekfom::esekf<state_ikfom, 12, input_ikfom> kf_;
     std::optional<esekfom::esekf<state_ikfom, 12, input_ikfom>> kf_for_preintegration_;
     esekfom::esekf<state_ikfom, 12, input_ikfom> last_good_kf_;
-    std::optional<ImuProcess::Snapshot> last_good_imu_processor_snapshot_;
+    std::optional<ImuProcessor::Snapshot> last_good_imu_processor_snapshot_;
     state_ikfom latest_state_;
     state_ikfom last_good_state_;
     bool have_last_good_state_ = false;
@@ -378,8 +378,8 @@ private:
     nav_msgs::msg::Odometry odomAftMapped_;
     geometry_msgs::msg::PoseStamped msg_body_pose_;
 
-    std::shared_ptr<Preprocess> preprocessor_;
-    std::shared_ptr<ImuProcess> imu_processor_;
+    std::shared_ptr<LidarProcessor> lidar_processor_;
+    std::shared_ptr<ImuProcessor> imu_processor_;
 };
 
 }  // namespace spark_fast_lio

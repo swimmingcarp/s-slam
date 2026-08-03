@@ -1,172 +1,16 @@
-#include <math.h>
+#include "data_processors/imu_processor.hpp"
 
-#include <algorithm>
-#include <cmath>
-#include <condition_variable>
-#include <csignal>
-#include <deque>
-#include <fstream>
-#include <mutex>
-#include <thread>
-#include <vector>
-
-#include <Eigen/Eigen>
-#include <geometry_msgs/msg/transform_stamped.hpp>
-#include <geometry_msgs/msg/vector3.hpp>
-#include <nav_msgs/msg/odometry.hpp>
-#include <pcl/common/io.h>
-#include <pcl/common/transforms.h>
-#include <pcl/kdtree/kdtree_flann.h>
-#include <pcl/point_cloud.h>
-#include <pcl/point_types.h>
-#include <pcl_conversions/pcl_conversions.h>
-#include <rclcpp/time.hpp>
-#include <sensor_msgs/msg/imu.hpp>
-#include <sensor_msgs/msg/point_cloud2.hpp>
-#include <tf2_ros/transform_broadcaster.h>
-
-#include "common/common_lib.h"
-#include "common/so3_math.h"
-#include "common/use-ikfom.hpp"
-
-/// *************Preconfiguration
-
-static constexpr int kMinImuInitSamples      = 200;
-static constexpr double kMinImuInitDuration  = 2.0;
-static constexpr double kMaxInitMeanGyroNorm = 0.05;
-// Initialization estimates gravity from average acceleration, so the window
-// must be quiet, not just close to 1g on average.
-static constexpr double kMaxInitAccStdNorm   = 0.5;
-static constexpr double kMaxInitGyrStdNorm   = 0.03;
-static constexpr double kMinInitAccNorm      = 8.0;
-static constexpr double kMaxInitAccNorm      = 11.5;
-
-bool time_list(PointType &x, PointType &y)
+namespace
 {
-    return (x.curvature < y.curvature);
+
+bool timeList(PointType &lhs, PointType &rhs)
+{
+    return lhs.curvature < rhs.curvature;
 }
 
-/// *************IMU Process and undistortion
-class ImuProcess
-{
-public:
-    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+}  // namespace
 
-    struct Snapshot
-    {
-        Eigen::Matrix<double, 12, 12> Q;
-        V3D cov_acc;
-        V3D cov_gyr;
-        V3D cov_acc_scale;
-        V3D cov_gyr_scale;
-        V3D cov_bias_gyr;
-        V3D cov_bias_acc;
-        double first_lidar_time = 0.0;
-        std::shared_ptr<const sensor_msgs::msg::Imu> last_imu;
-        std::deque<std::shared_ptr<const sensor_msgs::msg::Imu>> v_imu;
-        std::vector<Pose6D> imu_pose;
-        std::vector<M3D> v_rot_pcl;
-        M3D lidar_R_wrt_imu;
-        V3D lidar_T_wrt_imu;
-        V3D mean_acc;
-        V3D mean_gyr;
-        V3D angvel_last;
-        V3D acc_s_last;
-        double start_timestamp = -1.0;
-        double last_lidar_end_time = -1.0;
-        double init_begin_time = -1.0;
-        double init_end_time = -1.0;
-        int init_iter_num = 1;
-        bool b_first_frame = true;
-        bool imu_need_init = true;
-    };
-
-    ImuProcess();
-    ~ImuProcess();
-
-    void Reset();
-    void Reset(double start_timestamp, const std::shared_ptr<const sensor_msgs::msg::Imu> &lastimu);
-    Snapshot GetSnapshot() const;
-    void RestoreSnapshot(const Snapshot &snapshot);
-    void set_extrinsic(const V3D &transl, const M3D &rot);
-    void set_extrinsic(const V3D &transl);
-    void set_extrinsic(const MD(4, 4) & T);
-    void set_gyr_cov(const V3D &scaler);
-    void set_acc_cov(const V3D &scaler);
-    void set_gyr_bias_cov(const V3D &b_g);
-    void set_acc_bias_cov(const V3D &b_a);
-    void set_replay_mode(bool replay_mode);
-    Eigen::Matrix<double, 12, 12> Q;
-    void Process(const MeasureGroup &meas,
-                 esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state,
-                 PointCloudXYZI::Ptr pcl_un_);
-    state_ikfom IntegrateIMU(const std::deque<sensor_msgs::msg::Imu> imu_queue,
-                             esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state);
-    std::ofstream fout_imu;
-    V3D cov_acc;
-    V3D cov_gyr;
-    V3D cov_acc_scale;
-    V3D cov_gyr_scale;
-    V3D cov_bias_gyr;
-    V3D cov_bias_acc;
-    double first_lidar_time;
-
-    // Arm a warm re-initialization after a mid-run estimator reset: seeds
-    // gravity/biases/velocity (all expressed in the IMU body frame at re-init
-    // time) from the pre-reset state so recovery does not require the
-    // stationary window, which never comes while the platform is in flight.
-    void setWarmStartPrior(const V3D &gravity_body,
-                           const V3D &bg,
-                           const V3D &ba,
-                           const V3D &vel_body);
-
-    // True once initialization (cold or warm) has committed. This — not the
-    // caller's post-reset processing-progress flags — is the correct gate for
-    // capturing a warm re-init prior: it flips true the instant a warm
-    // re-initialization commits, closing the burst-reset window where a second
-    // reset would otherwise be misjudged as a cold start.
-    bool IsInitialized() const
-    {
-        return !imu_need_init_;
-    }
-
-private:
-    void IMU_init(const MeasureGroup &meas,
-                  esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state,
-                  int &init_sample_count);
-    void UndistortPcl(const MeasureGroup &meas,
-                      esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state,
-                      PointCloudXYZI &pcl_in_out);
-
-    PointCloudXYZI::Ptr cur_pcl_un_;
-    std::shared_ptr<const sensor_msgs::msg::Imu> last_imu_;
-    std::deque<std::shared_ptr<const sensor_msgs::msg::Imu>> v_imu_;
-    std::vector<Pose6D> IMUpose;
-    std::vector<M3D> v_rot_pcl_;
-    M3D Lidar_R_wrt_IMU;
-    V3D Lidar_T_wrt_IMU;
-    V3D mean_acc;
-    V3D mean_gyr;
-    V3D angvel_last;
-    V3D acc_s_last;
-    double start_timestamp_;
-    double last_lidar_end_time_;
-    double init_begin_time_;
-    double init_end_time_;
-    int init_iter_num   = 1;
-    bool b_first_frame_ = true;
-    bool imu_need_init_ = true;
-    bool replay_mode_ = false;
-    // Warm-start prior; deliberately NOT cleared by Reset() so it survives the
-    // internal Reset() that IMU_init() performs on the first post-reset frame.
-    bool has_warm_start_prior_   = false;
-    V3D warm_start_gravity_body_ = V3D(0, 0, 0);
-    V3D warm_start_bg_           = V3D(0, 0, 0);
-    V3D warm_start_ba_           = V3D(0, 0, 0);
-    V3D warm_start_vel_body_     = V3D(0, 0, 0);
-};
-
-ImuProcess::ImuProcess()
+ImuProcessor::ImuProcessor()
     : start_timestamp_(-1),
       last_lidar_end_time_(-1),
       init_begin_time_(-1),
@@ -192,14 +36,15 @@ ImuProcess::ImuProcess()
     last_imu_.reset(new sensor_msgs::msg::Imu());
 }
 
-ImuProcess::~ImuProcess()
+ImuProcessor::~ImuProcessor()
 {
 }
 
-void ImuProcess::setWarmStartPrior(const V3D &gravity_body,
-                                   const V3D &bg,
-                                   const V3D &ba,
-                                   const V3D &vel_body)
+void ImuProcessor::setWarmStartPrior(
+    const V3D &gravity_body,
+    const V3D &bg,
+    const V3D &ba,
+    const V3D &vel_body)
 {
     warm_start_gravity_body_ = gravity_body;
     warm_start_bg_           = bg;
@@ -208,7 +53,7 @@ void ImuProcess::setWarmStartPrior(const V3D &gravity_body,
     has_warm_start_prior_    = true;
 }
 
-ImuProcess::Snapshot ImuProcess::GetSnapshot() const
+ImuProcessor::Snapshot ImuProcessor::GetSnapshot() const
 {
     Snapshot snapshot;
     snapshot.Q                   = Q;
@@ -239,7 +84,7 @@ ImuProcess::Snapshot ImuProcess::GetSnapshot() const
     return snapshot;
 }
 
-void ImuProcess::RestoreSnapshot(const Snapshot &snapshot)
+void ImuProcessor::RestoreSnapshot(const Snapshot &snapshot)
 {
     Q                    = snapshot.Q;
     cov_acc              = snapshot.cov_acc;
@@ -268,9 +113,9 @@ void ImuProcess::RestoreSnapshot(const Snapshot &snapshot)
     imu_need_init_       = snapshot.imu_need_init;
 }
 
-void ImuProcess::Reset()
+void ImuProcessor::Reset()
 {
-    // ROS_WARN("Reset ImuProcess");
+    // ROS_WARN("Reset ImuProcessor");
     mean_acc         = V3D(0, 0, -1.0);
     mean_gyr         = V3D(0, 0, 0);
     angvel_last      = Zero3d;
@@ -291,52 +136,53 @@ void ImuProcess::Reset()
     cur_pcl_un_.reset(new PointCloudXYZI());
 }
 
-void ImuProcess::set_extrinsic(const MD(4, 4) & T)
+void ImuProcessor::set_extrinsic(const MD(4, 4) & T)
 {
     Lidar_T_wrt_IMU = T.block<3, 1>(0, 3);
     Lidar_R_wrt_IMU = T.block<3, 3>(0, 0);
 }
 
-void ImuProcess::set_extrinsic(const V3D &transl)
+void ImuProcessor::set_extrinsic(const V3D &transl)
 {
     Lidar_T_wrt_IMU = transl;
     Lidar_R_wrt_IMU.setIdentity();
 }
 
-void ImuProcess::set_extrinsic(const V3D &transl, const M3D &rot)
+void ImuProcessor::set_extrinsic(const V3D &transl, const M3D &rot)
 {
     Lidar_T_wrt_IMU = transl;
     Lidar_R_wrt_IMU = rot;
 }
 
-void ImuProcess::set_gyr_cov(const V3D &scaler)
+void ImuProcessor::set_gyr_cov(const V3D &scaler)
 {
     cov_gyr_scale = scaler;
 }
 
-void ImuProcess::set_acc_cov(const V3D &scaler)
+void ImuProcessor::set_acc_cov(const V3D &scaler)
 {
     cov_acc_scale = scaler;
 }
 
-void ImuProcess::set_gyr_bias_cov(const V3D &b_g)
+void ImuProcessor::set_gyr_bias_cov(const V3D &b_g)
 {
     cov_bias_gyr = b_g;
 }
 
-void ImuProcess::set_acc_bias_cov(const V3D &b_a)
+void ImuProcessor::set_acc_bias_cov(const V3D &b_a)
 {
     cov_bias_acc = b_a;
 }
 
-void ImuProcess::set_replay_mode(const bool replay_mode)
+void ImuProcessor::set_replay_mode(const bool replay_mode)
 {
     replay_mode_ = replay_mode;
 }
 
-void ImuProcess::IMU_init(const MeasureGroup &meas,
-                          esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state,
-                          int &init_sample_count)
+void ImuProcessor::IMU_init(
+    const MeasureGroup &meas,
+    esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state,
+    int &init_sample_count)
 {
     /** 1. initializing the gravity, gyro bias, acc and gyro covariance
      ** 2. normalize the acceleration measurenments to unit gravity **/
@@ -401,8 +247,9 @@ void ImuProcess::IMU_init(const MeasureGroup &meas,
     last_imu_ = meas.imu.back();
 }
 
-state_ikfom ImuProcess::IntegrateIMU(const std::deque<sensor_msgs::msg::Imu> imu_queue,
-                                     esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state)
+state_ikfom ImuProcessor::IntegrateIMU(
+    const std::deque<sensor_msgs::msg::Imu> imu_queue,
+    esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state)
 {
     V3D angvel_avr, acc_avr, acc_imu, vel_imu, pos_imu;
     M3D R_imu;
@@ -434,9 +281,10 @@ state_ikfom ImuProcess::IntegrateIMU(const std::deque<sensor_msgs::msg::Imu> imu
     return kf_state.get_x();
 }
 
-void ImuProcess::UndistortPcl(const MeasureGroup &meas,
-                              esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state,
-                              PointCloudXYZI &pcl_out)
+void ImuProcessor::UndistortPcl(
+    const MeasureGroup &meas,
+    esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state,
+    PointCloudXYZI &pcl_out)
 {
     /*** add the imu of the last frame-tail to the of current frame-head ***/
     auto v_imu = meas.imu;
@@ -447,7 +295,7 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas,
 
     /*** sort point clouds by offset time ***/
     pcl_out = *(meas.lidar);
-    sort(pcl_out.points.begin(), pcl_out.points.end(), time_list);
+    sort(pcl_out.points.begin(), pcl_out.points.end(), timeList);
     // cout<<"[ IMU Process ]: Process lidar from "<<pcl_beg_time<<" to "<<pcl_end_time<<", "
     //          <<meas.imu.size()<<" imu msgs from "<<imu_beg_time<<" to "<<imu_end_time<<endl;
 
@@ -590,9 +438,10 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas,
     }
 }
 
-void ImuProcess::Process(const MeasureGroup &meas,
-                         esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state,
-                         PointCloudXYZI::Ptr cur_pcl_un_)
+void ImuProcessor::Process(
+    const MeasureGroup &meas,
+    esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state,
+    PointCloudXYZI::Ptr cur_pcl_un_)
 {
     if (meas.imu.empty())
     {
@@ -645,7 +494,7 @@ void ImuProcess::Process(const MeasureGroup &meas,
             cov_acc              = cov_acc_scale;
             cov_gyr              = cov_gyr_scale;
             has_warm_start_prior_ = false;
-            RCLCPP_WARN(rclcpp::get_logger("imu_processing"),
+            RCLCPP_WARN(rclcpp::get_logger("ImuProcessor"),
                         "IMU warm re-initialization from pre-reset state (no stationary "
                         "window required): grav_body=[%.4f, %.4f, %.4f] "
                         "bg=[%.5f, %.5f, %.5f] vel_body=[%.3f, %.3f, %.3f]",
@@ -680,7 +529,7 @@ void ImuProcess::Process(const MeasureGroup &meas,
                                    gyr_std_norm <= kMaxInitGyrStdNorm;
         if (has_enough_imu && !replay_mode_ && !is_stationary)
         {
-            RCLCPP_WARN(rclcpp::get_logger("imu_processing"),
+            RCLCPP_WARN(rclcpp::get_logger("ImuProcessor"),
                         "IMU initialization rejected: keep the sensor still "
                         "(samples=%d duration=%.3f s mean_acc_norm=%.6f mean_gyr_norm=%.6f "
                         "acc_std_norm=%.6f gyr_std_norm=%.6f)",
@@ -697,7 +546,7 @@ void ImuProcess::Process(const MeasureGroup &meas,
         }
         if (has_enough_imu && replay_mode_ && !is_stationary)
         {
-            RCLCPP_WARN(rclcpp::get_logger("imu_processing"),
+            RCLCPP_WARN(rclcpp::get_logger("ImuProcessor"),
                         "IMU initialization accepted without a stationary window "
                         "(dataset/replay mode): samples=%d duration=%.3f s "
                         "mean_acc_norm=%.6f mean_gyr_norm=%.6f acc_std_norm=%.6f "
@@ -727,7 +576,7 @@ void ImuProcess::Process(const MeasureGroup &meas,
 
             cov_acc = cov_acc_scale;
             cov_gyr = cov_gyr_scale;
-            RCLCPP_INFO(rclcpp::get_logger("imu_processing"),
+            RCLCPP_INFO(rclcpp::get_logger("ImuProcessor"),
                         "IMU Initial Done: samples=%d duration=%.3f s "
                         "mean_acc=[%.6f, %.6f, %.6f] norm=%.6f "
                         "mean_gyr=[%.6f, %.6f, %.6f] "
@@ -754,7 +603,7 @@ void ImuProcess::Process(const MeasureGroup &meas,
                         cov_gyr[0],
                         cov_gyr[1],
                         cov_gyr[2]);
-            // RCLCPP_INFO(rclcpp::get_logger("imu_processing"),
+            // RCLCPP_INFO(rclcpp::get_logger("ImuProcessor"),
             // "IMU Initial Done: Gravity: %.4f %.4f %.4f %.4f; state.bias_g: %.4f %.4f %.4f; acc
             // covarience: %.8f %.8f %.8f; gry covarience: %.8f %.8f %.8f",
             //          imu_state.grav[0], imu_state.grav[1], imu_state.grav[2], mean_acc.norm(),

@@ -205,26 +205,47 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     tf_buffer_      = std::make_shared<tf2_ros::Buffer>(this->get_clock());
     tf_listener_    = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
-    preprocessor_        = std::make_shared<Preprocess>();
-    preprocessor_->blind = declare_parameter<double>("preprocess.blind", 0.01);
-    preprocessor_->blind_for_human_pilots =
+    // Keep the established preprocess.* parameter keys compatible with existing YAML files.
+    lidar_processor_        = std::make_shared<LidarProcessor>();
+    lidar_processor_->blind = declare_parameter<double>("preprocess.blind", 0.01);
+    lidar_processor_->blind_for_human_pilots =
         declare_parameter<double>("preprocess.blind_for_human_pilots", 1.5);
-    preprocessor_->lidar_type =
+    const int lidar_type =
         declare_parameter<int>("preprocess.lidar_type", static_cast<int>(AVIA));
+    if (lidar_type < static_cast<int>(AVIA) || lidar_type > static_cast<int>(ROBOSENSE))
+    {
+        throw std::invalid_argument("preprocess.lidar_type must be between " +
+                                    std::to_string(static_cast<int>(AVIA)) + " and " +
+                                    std::to_string(static_cast<int>(ROBOSENSE)));
+    }
+    lidar_processor_->lidar_type = lidar_type;
     const int scan_line_count = declare_parameter<int>("preprocess.scan_line", 16);
-    if (scan_line_count <= 0 || scan_line_count > Preprocess::kMaxScanLines)
+    if (scan_line_count <= 0 || scan_line_count > LidarProcessor::kMaxScanLines)
     {
         throw std::invalid_argument("preprocess.scan_line must be between 1 and " +
-                                    std::to_string(Preprocess::kMaxScanLines));
+                                    std::to_string(LidarProcessor::kMaxScanLines));
     }
-    preprocessor_->N_SCANS = scan_line_count;
-    preprocessor_->time_unit =
+    lidar_processor_->N_SCANS = scan_line_count;
+    const int timestamp_unit =
         declare_parameter<int>("preprocess.timestamp_unit", static_cast<int>(US));
-    preprocessor_->SCAN_RATE = declare_parameter<int>("preprocess.scan_rate", 10);
-    preprocessor_->point_filter_num =
+    if (timestamp_unit < static_cast<int>(SEC) || timestamp_unit > static_cast<int>(NS))
+    {
+        throw std::invalid_argument("preprocess.timestamp_unit must be between " +
+                                    std::to_string(static_cast<int>(SEC)) + " and " +
+                                    std::to_string(static_cast<int>(NS)));
+    }
+    lidar_processor_->setTimestampUnit(static_cast<TIME_UNIT>(timestamp_unit));
+
+    const int scan_rate = declare_parameter<int>("preprocess.scan_rate", 10);
+    if (scan_rate <= 0)
+    {
+        throw std::invalid_argument("preprocess.scan_rate must be positive");
+    }
+    lidar_processor_->SCAN_RATE = scan_rate;
+    lidar_processor_->point_filter_num =
         std::max(1, static_cast<int>(declare_parameter<int>("point_filter_num_for_preprocessing", 1)));
 
-    imu_processor_ = std::make_shared<ImuProcess>();
+    imu_processor_ = std::make_shared<ImuProcessor>();
     if (extrinT_.size() == 3 && extrinR_.size() == 9)
     {
         Eigen::Vector3d t_lidar(extrinT_[0], extrinT_[1], extrinT_[2]);
@@ -284,11 +305,11 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
             std::bind(&SPARKFastLIO2::main, this));
     }
 
-    if ((preprocessor_->point_filter_num != 1 && point_filter_num_ > 1))
+    if ((lidar_processor_->point_filter_num != 1 && point_filter_num_ > 1))
     {
         RCLCPP_WARN(this->get_logger(),
-                    "Points may be too sparse. Set 'preprocessor_->point_filter_num = 1' and tune "
-                    "'point_filter_num_' instead.");
+                    "Points may be too sparse. Set 'point_filter_num_for_preprocessing' to 1 and tune "
+                    "'point_filter_num' instead.");
     }
 
     RCLCPP_INFO(this->get_logger(),
@@ -621,16 +642,15 @@ void SPARKFastLIO2::standardLiDARCallback(const sensor_msgs::msg::PointCloud2 &m
         double msg_end_time   = 0.0;
 
         PointCloudXYZI::Ptr ptr(new PointCloudXYZI());
-        preprocessor_->process(msg, ptr);
-
-        if (preprocessor_->lidar_type == ROBOSENSE)
+        if (!lidar_processor_->process(msg, ptr))
         {
-            if (!preprocessor_->has_scan_time() || ptr->empty())
-            {
-                return;
-            }
-            msg_time     = rclcpp::Time(preprocessor_->scan_start_time() * 1e9);
-            msg_end_time = preprocessor_->scan_end_time();
+            return;
+        }
+
+        if (lidar_processor_->lidar_type == ROBOSENSE)
+        {
+            msg_time     = rclcpp::Time(lidar_processor_->scan_start_time() * 1e9);
+            msg_end_time = lidar_processor_->scan_end_time();
         }
 
         if (has_last_lidar_timestamp_ && msg_time < last_lidar_timestamp_)
@@ -687,7 +707,10 @@ void SPARKFastLIO2::livoxLiDARCallback(const livox_ros_driver2::msg::CustomMsg::
         }
 
         PointCloudXYZI::Ptr ptr(new PointCloudXYZI());
-        preprocessor_->process(*msg, ptr);
+        if (!lidar_processor_->process(*msg, ptr))
+        {
+            return;
+        }
 
         lidar_buffer_.push_back(ptr);
         time_buffer_.push_back(msg_time.seconds());
@@ -1424,7 +1447,7 @@ bool SPARKFastLIO2::syncPackages(MeasureGroup &meas, bool verbose)
             lidar_end_time_ = msg_end_time;
             const double dt = lidar_end_time_ - meas.lidar_beg_time;
             const double expected_scan_time_ms =
-                1000.0 / static_cast<double>(std::max(preprocessor_->SCAN_RATE, 1));
+                1000.0 / static_cast<double>(std::max(lidar_processor_->SCAN_RATE, 1));
             const double dt_ms = dt * 1000.0;
             if (dt_ms < 0.8 * expected_scan_time_ms || dt_ms > 1.2 * expected_scan_time_ms)
             {
