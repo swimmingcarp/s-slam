@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <mutex>
@@ -24,16 +25,16 @@
 #include "data_processors/imu_processor.hpp"
 #include "data_processors/lidar_processor.hpp"
 
-#define INIT_TIME (0.1)
-#define LASER_POINT_COV (0.001)
-#define MOV_THRESHOLD (1.5)
-
 #if defined(LIVOX_ROS_DRIVER_FOUND) && LIVOX_ROS_DRIVER_FOUND
 #include <livox_ros_driver2/msg/custom_msg.hpp>
 #endif
 
 namespace spark_fast_lio
 {
+
+inline constexpr double kInitializationTimeSec = 0.1;
+inline constexpr double kLaserPointCovariance  = 0.001;
+inline constexpr double kMapMoveThreshold      = 1.5;
 
 struct PoseStruct
 {
@@ -47,34 +48,38 @@ public:
     explicit SPARKFastLIO2(const rclcpp::NodeOptions &options = rclcpp::NodeOptions());
 
 private:
-    M3D computeRelativeRotation(const Eigen::Vector3d &g_a, const Eigen::Vector3d &g_b);
+    M3D computeRelativeRotation(const Eigen::Vector3d &gravity_from,
+                                const Eigen::Vector3d &gravity_to);
 
-    bool lookupBaseExtrinsics(V3D &lidar_T_wrt_base, M3D &lidar_R_wrt_base);
+    bool lookupBaseExtrinsics(V3D &lidar_translation_in_base, M3D &lidar_rotation_in_base);
 
-    void pointBodyToWorld(PointType const *const pi, PointType *const po, const state_ikfom &s);
+    void pointBodyToWorld(PointType const *const input_point,
+                          PointType *const output_point,
+                          const state_ikfom &state);
 
     template <typename T>
-    void pointBodyToWorld(const Eigen::Matrix<T, 3, 1> &pi,
-                          Eigen::Matrix<T, 3, 1> &po,
-                          const state_ikfom &s) const
+    void pointBodyToWorld(const Eigen::Matrix<T, 3, 1> &input_point,
+                          Eigen::Matrix<T, 3, 1> &output_point,
+                          const state_ikfom &state) const
     {
-        V3D p_body(pi[0], pi[1], pi[2]);
-        V3D p_global(s.rot * (s.offset_R_L_I * p_body + s.offset_T_L_I) + s.pos);
+        V3D point_in_body(input_point[0], input_point[1], input_point[2]);
+        V3D point_in_world(
+            state.rot * (state.offset_R_L_I * point_in_body + state.offset_T_L_I) + state.pos);
 
-        po[0] = p_global(0);
-        po[1] = p_global(1);
-        po[2] = p_global(2);
+        output_point[0] = point_in_world(0);
+        output_point[1] = point_in_world(1);
+        output_point[2] = point_in_world(2);
     }
 
-    void pclPointBodyToWorld(PointType const *const pi, PointType *const po);
+    void pclPointBodyToWorld(PointType const *const input_point, PointType *const output_point);
 
-    void pclPointBodyLidarToIMU(PointType const *const pi, PointType *const po);
+    void pclPointBodyLidarToIMU(PointType const *const input_point, PointType *const output_point);
 
-    void pclPointBodyLidarToBase(PointType const *const pi, PointType *const po);
+    void pclPointBodyLidarToBase(PointType const *const input_point, PointType *const output_point);
 
-    void pclPointIMUToLiDAR(PointType const *const pi, PointType *const po);
+    void pclPointIMUToLiDAR(PointType const *const input_point, PointType *const output_point);
 
-    void pclPointIMUToBase(PointType const *const pi, PointType *const po);
+    void pclPointIMUToBase(PointType const *const input_point, PointType *const output_point);
 
     void collectRemovedPoints();
 
@@ -103,11 +108,12 @@ private:
     void integrateIMU(esekfom::esekf<state_ikfom, 12, input_ikfom> &state,
                       const sensor_msgs::msg::Imu &msg);
 
-    void calcHModel(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_data);
+    void computeMeasurementModel(state_ikfom &state,
+                                 esekfom::dyn_share_datastruct<double> &ekfom_data);
 
-    void lasermapFovSegment();
+    void updateLocalMapWindow();
 
-    void mapIncremental();
+    void insertScanIntoMap();
 
     void publishOdometry(const state_ikfom &state, const rclcpp::Time &stamp);
     void publishOdometry(
@@ -126,14 +132,14 @@ private:
     bool topicSubscribed(
         const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr &publisher) const;
 
-    void publishFrameWorld(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubCloud);
+    void publishMapScan(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubCloud);
 
-    void publishFrame(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubCloud,
-                      const std::string &frame);
+    void publishScan(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubCloud,
+                     const std::string &frame);
 
-    PoseStruct transformPoseWrtLidarFrame(const state_ikfom &state) const;
+    PoseStruct transformPoseToLidarFrame(const state_ikfom &state) const;
 
-    PoseStruct transformPoseWrtBaseFrame(const state_ikfom &state) const;
+    PoseStruct transformPoseToBaseFrame(const state_ikfom &state) const;
 
     template <typename T>
     void setPoseStamp(const state_ikfom &state, T &out, const std::string &frame) const
@@ -151,7 +157,7 @@ private:
         }
         else if (frame == "lidar")
         {
-            const auto &p          = transformPoseWrtLidarFrame(state);
+            const auto &p          = transformPoseToLidarFrame(state);
             out.pose.position.x    = p.position_(0);
             out.pose.position.y    = p.position_(1);
             out.pose.position.z    = p.position_(2);
@@ -162,7 +168,7 @@ private:
         }
         else if (frame == "base")
         {
-            const auto &p          = transformPoseWrtBaseFrame(state);
+            const auto &p          = transformPoseToBaseFrame(state);
             out.pose.position.x    = p.position_(0);
             out.pose.position.y    = p.position_(1);
             out.pose.position.z    = p.position_(2);
@@ -179,13 +185,39 @@ private:
 
     void main();
 
-    void drainPendingPackages();
+    void processPendingMeasurements();
 
-    bool syncPackages(MeasureGroup &meas, bool verbose);
+    bool syncPackages(MeasureGroup &measurements, bool verbose);
 
     bool isMotionStopped(const V3D &acc_ref, const V3D &acc_curr, const double acc_diff_thr);
 
-    void processLidarAndImu(MeasureGroup &Measure);
+    void processLidarAndImu(MeasureGroup &measures);
+
+    struct PropagationCheckpoint;
+    struct MotionQualityReport;
+
+    PropagationCheckpoint propagateLidarFrame(const MeasureGroup &measures);
+    void restorePropagatedFrame(const PropagationCheckpoint &checkpoint);
+    void publishPropagatedFrame();
+    PointCloudXYZI::ConstPtr selectMatchingPoints();
+    bool prepareLioUpdate(MeasureGroup &measures,
+                          const PointCloudXYZI::ConstPtr &matching_points,
+                          state_ikfom &propagated_state);
+    void updateGravityAlignmentBeforeLio(MeasureGroup &measures);
+    bool initializeLocalMapIfNeeded();
+    void runLioUpdate();
+    void updateGravityAlignmentAfterLio();
+    MotionQualityReport evaluateMotionQuality(MeasureGroup &measures,
+                                              const state_ikfom &propagated_state);
+    void rejectMotionFrame(const MeasureGroup &measures,
+                           const PropagationCheckpoint &checkpoint,
+                           const MotionQualityReport &quality);
+    void commitOdometryUpdate(const MeasureGroup &measures,
+                              const state_ikfom &propagated_state,
+                              const MotionQualityReport &quality);
+    void logLargeStateJump(const MeasureGroup &measures,
+                           const state_ikfom &propagated_state,
+                           const MotionQualityReport &quality);
 
 private:
     std::mutex buffer_mutex_;
@@ -214,21 +246,18 @@ private:
     rclcpp::TimerBase::SharedPtr main_loop_timer_;
 
     /*** Time Log Variables ***/
-    double kdtree_incremental_time_ = 0.0;
-    double kdtree_search_time_      = 0.0;
-    double kdtree_delete_time_      = 0.0;
+    double map_insertion_time_ = 0.0;
+    double map_search_time_    = 0.0;
+    double map_removal_time_   = 0.0;
 
     double match_time_         = 0.0;
     double solve_time_         = 0.0;
-    double solve_const_H_time_ = 0.0;
 
     bool runtime_pos_log_ = false;
     /**************************/
-    int kdtree_size_st_        = 0;
-    int kdtree_size_end_       = 0;
-    int add_point_size_        = 0;
-    int kdtree_delete_counter_ = 0;
-    bool localmap_initialized_ = false;
+    int inserted_point_count_    = 0;
+    int removed_map_point_count_ = 0;
+    bool local_map_initialized_  = false;
     // Data-driven (frame count) gate for the periodic LIO state log; clock
     // throttling would make the formatted-frame subset timing-dependent and
     // break bit-reproducible replay.
@@ -246,7 +275,7 @@ private:
     bool scan_base_frame_publish_enabled_  = false;
     bool imu_predicted_odometry_enabled_   = true;
     bool process_on_callback_              = false;
-    bool motion_quality_gate_enabled_       = false;
+    bool motion_quality_gate_enabled_      = false;
     int imu_qos_depth_                     = 1000;
     int lidar_qos_depth_                   = 10;
 
@@ -256,8 +285,8 @@ private:
     bool enable_gravity_alignment_ = false;
     bool is_gravity_aligned_       = false;
 
-    std::vector<float> res_last_;
-    float det_range_ = 300.0f;
+    std::vector<float> point_residuals_;
+    float detection_range_ = 300.0f;
 
     std::string map_file_path_;
     std::string save_dir_;
@@ -268,19 +297,19 @@ private:
     std::string imu_frame_;
     std::string viz_frame_;
 
-    double res_mean_last_  = 0.05;
+    double mean_residual_  = 0.05;
     double total_residual_ = 0.0;
     rclcpp::Time last_lidar_timestamp_;
     rclcpp::Time last_imu_timestamp_;
     bool has_last_lidar_timestamp_ = false;
     bool has_last_imu_timestamp_   = false;
     int64_t last_not_enough_imu_log_timestamp_ns_ = -1;
-    int64_t timediff_lidar_wrt_imu_ = 0;
+    int64_t lidar_imu_time_offset_                = 0;
 
-    double gyr_cov_   = 0.1;
-    double acc_cov_   = 0.1;
-    double b_gyr_cov_ = 0.0001;
-    double b_acc_cov_ = 0.0001;
+    double gyroscope_covariance_      = 0.1;
+    double accelerometer_covariance_  = 0.1;
+    double gyroscope_bias_covariance_ = 0.0001;
+    double accelerometer_bias_covariance_ = 0.0001;
     double motion_gate_max_pre_grav_residual_ = 3.0;
     double motion_gate_suspect_frame_step_    = 0.5;
     double motion_gate_max_update_step_       = 0.15;
@@ -288,48 +317,50 @@ private:
     double motion_gate_min_effective_ratio_   = 0.25;
     bool motion_gate_reject_weak_lidar_       = true;
 
-    double filter_size_map_min_     = 0.0;
-    double fov_deg_                 = 0.0;
-    double cube_len_                = 0.0;
-    double lidar_end_time_          = 0.0;
-    double first_lidar_time_        = 0.0;
+    double filter_size_map_min_   = 0.0;
+    double fov_deg_               = 0.0;
+    double local_map_side_length_ = 0.0;
+    double lidar_end_time_        = 0.0;
+    double first_lidar_time_      = 0.0;
 
-    int effect_feat_num_  = 0;
-    int scan_count_           = 0;
-    int path_publish_counter_ = 0;
+    int effective_feature_count_ = 0;
+    int scan_count_              = 0;
+    int path_publish_counter_    = 0;
     int imu_gap_lidar_skip_count_ = 0;
 
-    int iterCount_                = 0;
-    int feats_down_size_          = 0;
-    int max_iterations_       = 0;
-    int pcd_save_interval_        = -1;
-    int pcd_index_                = 0;
-    int point_filter_num_         = 4;  // empirically, 4 showed the best performance
+    int downsampled_point_count_            = 0;
+    int max_iterations_                     = 0;
+    int pcd_save_interval_                  = -1;
+    int pcd_index_                          = 0;
+    int pcd_scan_wait_count_                = 0;
+    int point_filter_num_                   = 4;  // empirically, 4 showed the best performance
     int motion_gate_min_effective_features_ = 100;
-    int motion_gate_reject_count_           = 0;
+    int motion_gate_reject_count_              = 0;
     int motion_gate_consecutive_reject_count_ = 0;
 
-    double lidar_mean_scantime_ = 0.0;
-    int scan_num_               = 0;
+    double mean_scan_duration_ = 0.0;
+    int scan_duration_sample_count_ = 0;
+    std::size_t verbose_lidar_buffer_size_ = 0;
+    std::size_t verbose_imu_buffer_size_   = 0;
 
-    double acc_diff_thr_              = 0.2;
-    int num_moving_frames_thr_        = 10;
-    int num_gravity_measurements_thr_ = 10;
-    std::vector<std::uint8_t> point_selected_surf_;
-    bool lidar_pushed_ = false;
+    double acceleration_difference_threshold_ = 0.2;
+    int moving_frame_threshold_               = 10;
+    int gravity_measurement_threshold_        = 10;
+    std::vector<std::uint8_t> surface_point_selected_;
+    bool lidar_pushed_        = false;
     bool is_first_lidar_scan_ = true;
-    bool flg_EKF_inited_ = false;
-    bool timediff_set_ = false;
+    bool filter_initialized_       = false;
+    bool time_offset_initialized_ = false;
     int num_consecutive_moving_frames_ = 0;
 
     std::deque<V3D> global_gravity_directions_;
 
-    BoxPointType localmap_points_;
-    std::vector<BoxPointType> cub_needrm_;
+    BoxPointType local_map_bounds_;
+    std::vector<BoxPointType> map_boxes_to_remove_;
 
-    std::vector<PointVector> nearest_points_;
-    std::vector<double> extrinT_{0.0, 0.0, 0.0};
-    std::vector<double> extrinR_{1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
+    std::vector<PointVector> nearest_map_points_;
+    std::vector<double> extrinsic_translation_{0.0, 0.0, 0.0};
+    std::vector<double> extrinsic_rotation_{1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
     double extrinsics_timeout_s_ = 10.0;
 
     std::deque<double> time_buffer_;
@@ -342,9 +373,9 @@ private:
     PointCloudXYZI::Ptr sampled_points_;
     PointCloudXYZI::Ptr feats_down_body_;
     PointCloudXYZI::Ptr feats_down_world_;
-    PointCloudXYZI::Ptr normvec_;
-    PointCloudXYZI::Ptr laser_cloud_ori_;
-    PointCloudXYZI::Ptr corr_normvec_;
+    PointCloudXYZI::Ptr point_normals_;
+    PointCloudXYZI::Ptr selected_points_;
+    PointCloudXYZI::Ptr selected_normals_;
     PointCloudXYZI::Ptr cloud_to_be_saved_;
 
     pcl::VoxelGrid<PointType> down_size_filter_;
@@ -352,17 +383,17 @@ private:
 
     V3F xaxis_point_body_;
     V3F xaxis_point_world_;
-    V3D g_base_;
-    V3D mean_acc_stopped_;
+    V3D base_gravity_;
+    V3D stationary_mean_acceleration_;
     V3D position_last_;
-    M3D R_gravity_aligned_;
+    M3D gravity_alignment_rotation_;
 
     /*** Only used for integration with the Hydra system ***/
-    V3D lidar_T_wrt_base_;
-    M3D lidar_R_wrt_base_;
+    V3D lidar_translation_in_base_;
+    M3D lidar_rotation_in_base_;
 
     /*** EKF inputs and output ***/
-    MeasureGroup Measures_;
+    MeasureGroup measures_;
     esekfom::esekf<state_ikfom, 12, input_ikfom> kf_;
     std::optional<esekfom::esekf<state_ikfom, 12, input_ikfom>> kf_for_preintegration_;
     esekfom::esekf<state_ikfom, 12, input_ikfom> last_good_kf_;

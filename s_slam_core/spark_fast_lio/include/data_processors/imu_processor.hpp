@@ -1,31 +1,8 @@
 #pragma once
 
-#include <math.h>
-
-#include <algorithm>
-#include <cmath>
-#include <condition_variable>
-#include <csignal>
 #include <deque>
-#include <fstream>
-#include <mutex>
-#include <thread>
+#include <memory>
 #include <vector>
-
-#include <Eigen/Eigen>
-#include <geometry_msgs/msg/transform_stamped.hpp>
-#include <geometry_msgs/msg/vector3.hpp>
-#include <nav_msgs/msg/odometry.hpp>
-#include <pcl/common/io.h>
-#include <pcl/common/transforms.h>
-#include <pcl/kdtree/kdtree_flann.h>
-#include <pcl/point_cloud.h>
-#include <pcl/point_types.h>
-#include <pcl_conversions/pcl_conversions.h>
-#include <rclcpp/time.hpp>
-#include <sensor_msgs/msg/imu.hpp>
-#include <sensor_msgs/msg/point_cloud2.hpp>
-#include <tf2_ros/transform_broadcaster.h>
 
 #include "common/common_lib.h"
 #include "common/so3_math.h"
@@ -52,62 +29,49 @@ public:
 
     struct Snapshot
     {
-        Eigen::Matrix<double, 12, 12> Q;
-        V3D cov_acc;
-        V3D cov_gyr;
-        V3D cov_acc_scale;
-        V3D cov_gyr_scale;
-        V3D cov_bias_gyr;
-        V3D cov_bias_acc;
-        double first_lidar_time = 0.0;
+        Eigen::Matrix<double, 12, 12> process_noise_covariance;
+        V3D accelerometer_covariance;
+        V3D gyroscope_covariance;
+        V3D accelerometer_covariance_scale;
+        V3D gyroscope_covariance_scale;
+        V3D gyroscope_bias_covariance;
+        V3D accelerometer_bias_covariance;
         std::shared_ptr<const sensor_msgs::msg::Imu> last_imu;
-        std::deque<std::shared_ptr<const sensor_msgs::msg::Imu>> v_imu;
-        std::vector<Pose6D> imu_pose;
-        std::vector<M3D> v_rot_pcl;
-        M3D lidar_R_wrt_imu;
-        V3D lidar_T_wrt_imu;
-        V3D mean_acc;
-        V3D mean_gyr;
-        V3D angvel_last;
-        V3D acc_s_last;
+        std::vector<Pose6D> imu_poses;
+        M3D lidar_rotation_wrt_imu;
+        V3D lidar_translation_wrt_imu;
+        V3D mean_acceleration;
+        V3D mean_angular_velocity;
+        V3D last_angular_velocity;
+        V3D last_acceleration_world;
         double start_timestamp = -1.0;
         double last_lidar_end_time = -1.0;
         double init_begin_time = -1.0;
         double init_end_time = -1.0;
-        int init_iter_num = 1;
-        bool b_first_frame = true;
-        bool imu_need_init = true;
+        int init_sample_count = 1;
+        bool is_first_frame = true;
+        bool needs_initialization = true;
     };
 
     ImuProcessor();
-    ~ImuProcessor();
+    ~ImuProcessor() = default;
 
-    void Reset();
-    void Reset(double start_timestamp, const std::shared_ptr<const sensor_msgs::msg::Imu> &lastimu);
-    Snapshot GetSnapshot() const;
-    void RestoreSnapshot(const Snapshot &snapshot);
-    void set_extrinsic(const V3D &transl, const M3D &rot);
-    void set_extrinsic(const V3D &transl);
-    void set_extrinsic(const MD(4, 4) & T);
-    void set_gyr_cov(const V3D &scaler);
-    void set_acc_cov(const V3D &scaler);
-    void set_gyr_bias_cov(const V3D &b_g);
-    void set_acc_bias_cov(const V3D &b_a);
-    void set_replay_mode(bool replay_mode);
-    Eigen::Matrix<double, 12, 12> Q;
-    void Process(const MeasureGroup &meas,
-                 esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state,
-                 PointCloudXYZI::Ptr pcl_un_);
-    state_ikfom IntegrateIMU(const std::deque<sensor_msgs::msg::Imu> imu_queue,
-                             esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state);
-    std::ofstream fout_imu;
-    V3D cov_acc;
-    V3D cov_gyr;
-    V3D cov_acc_scale;
-    V3D cov_gyr_scale;
-    V3D cov_bias_gyr;
-    V3D cov_bias_acc;
-    double first_lidar_time;
+    void reset();
+    Snapshot getSnapshot() const;
+    void restoreSnapshot(const Snapshot &snapshot);
+    void setExtrinsic(const V3D &translation, const M3D &rotation);
+    void setExtrinsic(const V3D &translation);
+    void setExtrinsic(const MD(4, 4) &transform);
+    void setGyroscopeCovariance(const V3D &covariance);
+    void setAccelerometerCovariance(const V3D &covariance);
+    void setGyroscopeBiasCovariance(const V3D &covariance);
+    void setAccelerometerBiasCovariance(const V3D &covariance);
+    void setReplayMode(bool replay_mode);
+    void process(const MeasureGroup &measures,
+                 esekfom::esekf<state_ikfom, 12, input_ikfom> &filter,
+                 PointCloudXYZI::Ptr undistorted_cloud);
+    state_ikfom integrateImu(const std::deque<sensor_msgs::msg::Imu> &imu_queue,
+                             esekfom::esekf<state_ikfom, 12, input_ikfom> &filter);
 
     // Arm a warm re-initialization after a mid-run estimator reset: seeds
     // gravity/biases/velocity (all expressed in the IMU body frame at re-init
@@ -123,40 +87,45 @@ public:
     // capturing a warm re-init prior: it flips true the instant a warm
     // re-initialization commits, closing the burst-reset window where a second
     // reset would otherwise be misjudged as a cold start.
-    bool IsInitialized() const
+    bool isInitialized() const
     {
-        return !imu_need_init_;
+        return !needs_initialization_;
     }
 
 private:
-    void IMU_init(const MeasureGroup &meas,
-                  esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state,
-                  int &init_sample_count);
-    void UndistortPcl(const MeasureGroup &meas,
-                      esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state,
-                      PointCloudXYZI &pcl_in_out);
+    void initializeImu(const MeasureGroup &measures,
+                       esekfom::esekf<state_ikfom, 12, input_ikfom> &filter,
+                       int &init_sample_count);
+    void undistortPointCloud(const MeasureGroup &measures,
+                             esekfom::esekf<state_ikfom, 12, input_ikfom> &filter,
+                             PointCloudXYZI &point_cloud);
 
-    PointCloudXYZI::Ptr cur_pcl_un_;
     std::shared_ptr<const sensor_msgs::msg::Imu> last_imu_;
-    std::deque<std::shared_ptr<const sensor_msgs::msg::Imu>> v_imu_;
-    std::vector<Pose6D> IMUpose;
-    std::vector<M3D> v_rot_pcl_;
-    M3D Lidar_R_wrt_IMU;
-    V3D Lidar_T_wrt_IMU;
-    V3D mean_acc;
-    V3D mean_gyr;
-    V3D angvel_last;
-    V3D acc_s_last;
+    Eigen::Matrix<double, 12, 12> process_noise_covariance_;
+    V3D accelerometer_covariance_;
+    V3D gyroscope_covariance_;
+    V3D accelerometer_covariance_scale_;
+    V3D gyroscope_covariance_scale_;
+    V3D gyroscope_bias_covariance_;
+    V3D accelerometer_bias_covariance_;
+
+    std::vector<Pose6D> imu_poses_;
+    M3D lidar_rotation_wrt_imu_;
+    V3D lidar_translation_wrt_imu_;
+    V3D mean_acceleration_;
+    V3D mean_angular_velocity_;
+    V3D last_angular_velocity_;
+    V3D last_acceleration_world_;
     double start_timestamp_;
     double last_lidar_end_time_;
     double init_begin_time_;
     double init_end_time_;
-    int init_iter_num   = 1;
-    bool b_first_frame_ = true;
-    bool imu_need_init_ = true;
-    bool replay_mode_ = false;
-    // Warm-start prior; deliberately NOT cleared by Reset() so it survives the
-    // internal Reset() that IMU_init() performs on the first post-reset frame.
+    int init_sample_count_       = 1;
+    bool is_first_frame_         = true;
+    bool needs_initialization_   = true;
+    bool replay_mode_            = false;
+    // Warm-start prior; deliberately NOT cleared by reset() so it survives the
+    // internal reset() that initializeImu() performs on the first post-reset frame.
     bool has_warm_start_prior_   = false;
     V3D warm_start_gravity_body_ = V3D(0, 0, 0);
     V3D warm_start_bg_           = V3D(0, 0, 0);

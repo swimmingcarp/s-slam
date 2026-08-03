@@ -1,39 +1,41 @@
 #pragma once
-#include <cstddef>
+
 #include <array>
-#include <string>
+#include <cstddef>
 #include <vector>
 
-#include <rclcpp/rclcpp.hpp>
+#include <Eigen/Core>
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 
 #include "adapters/kimera_ouster_adapter.hpp"
 #include "adapters/ouster_adapter.hpp"
 #include "adapters/robosense_fairy_adapter.hpp"
 #include "adapters/velodyne_adapter.hpp"
-#include "rclcpp/time.hpp"
 
 #if defined(LIVOX_ROS_DRIVER_FOUND) && LIVOX_ROS_DRIVER_FOUND
 #include <livox_ros_driver2/msg/custom_msg.hpp>
 #endif
 
-using PointType       = pcl::PointXYZINormal;
-using PointCloudXYZI  = pcl::PointCloud<PointType>;
+using PointType      = pcl::PointXYZINormal;
+using PointCloudXYZI = pcl::PointCloud<PointType>;
 
-enum LID_TYPE
+enum class LidarType : int
 {
-    AVIA      = 1,
-    VELO16    = 2,
-    OUST64    = 3,
-    KMOUST64  = 4,
-    ROBOSENSE = 5   // RoboSense (rslidar_sdk XYZIRT, e.g. Fairy)
-};  // {1, 2, 3, 4, 5}
-enum TIME_UNIT
+    kAvia           = 1,
+    kVelo16         = 2,
+    kOuster64       = 3,
+    kKimeraOuster64 = 4,
+    kRoboSense      = 5,
+};
+
+enum class TimestampUnit : int
 {
-    SEC = 0,
-    MS  = 1,
-    US  = 2,
-    NS  = 3
+    kSeconds      = 0,
+    kMilliseconds = 1,
+    kMicroseconds = 2,
+    kNanoseconds  = 3,
 };
 enum Feature
 {
@@ -45,11 +47,20 @@ enum Feature
     Wire,
     ZeroPoint
 };
+
+enum class PlaneClassification
+{
+    kNotPlane,
+    kPlane,
+    kContainsBlindPoint,
+};
+
 enum Surround
 {
     Prev,
     Next
 };
+
 enum E_jump
 {
     Nr_nor,
@@ -83,43 +94,59 @@ struct PointFeatureInfo
 class LidarProcessor
 {
 public:
+    struct Config
+    {
+        LidarType lidar_type = LidarType::kAvia;
+        TimestampUnit timestamp_unit = TimestampUnit::kMilliseconds;
+        int scan_line_count = 6;
+        int scan_rate_hz = 10;
+        int point_filter_stride = 1;
+        double blind_distance = 0.01;
+        double pilot_zone_blind_distance = 1.5;
+        bool feature_extraction_enabled = false;
+    };
+
     static constexpr int kMaxScanLines = 128;
 
-    LidarProcessor();
+    explicit LidarProcessor(const Config &config);
+
+    static LidarType GetLidarType(int value);
+    static TimestampUnit GetTimestampUnit(int value);
 
 #if defined(LIVOX_ROS_DRIVER_FOUND) && LIVOX_ROS_DRIVER_FOUND
     bool process(const livox_ros_driver2::msg::CustomMsg &msg, PointCloudXYZI::Ptr &pcl_out);
 #endif
     bool process(const sensor_msgs::msg::PointCloud2 &msg, PointCloudXYZI::Ptr &pcl_out);
-    void set(bool is_enabled, int lid_type, double bld, int pfilt_num);
-    // Configure the PointCloud2 per-point timestamp unit once during startup.
-    void setTimestampUnit(TIME_UNIT timestamp_unit);
 
-    bool has_scan_time() const
+    bool hasScanTime() const
     {
         return scan_start_time_ > 0.0 && scan_end_time_ >= scan_start_time_;
     }
 
-    double scan_start_time() const
+    double scanStartTime() const
     {
         return scan_start_time_;
     }
 
-    double scan_end_time() const
+    double scanEndTime() const
     {
         return scan_end_time_;
     }
 
-    // sensor_msgs::PointCloud2::ConstPtr pointcloud;
-    PointCloudXYZI pl_full, pl_corn, pl_surf, pl_from_pilots;
-    PointCloudXYZI pl_buff[kMaxScanLines];       // maximum supported LiDAR scan lines
-    // Per-scan-line point feature information, up to kMaxScanLines LiDAR lines.
-    std::array<std::vector<PointFeatureInfo>, kMaxScanLines> scan_line_feature_infos_;
-    int lidar_type, point_filter_num, N_SCANS, SCAN_RATE;
-    double blind, blind_for_human_pilots;
-    bool feature_enabled, given_offset_time;
+    int scanRateHz() const
+    {
+        return scan_rate_hz_;
+    }
+
+    int pointFilterStride() const
+    {
+        return point_filter_stride_;
+    }
 
 private:
+    static void validateConfig(const Config &config);
+    static float timestampUnitScale(TimestampUnit timestamp_unit);
+
     enum class NeighborDistance
     {
         kEuclidean,
@@ -150,28 +177,38 @@ private:
     void handleVelodynePointCloud(const sensor_msgs::msg::PointCloud2 &msg);
     void handleRoboSensePointCloud(const sensor_msgs::msg::PointCloud2 &msg,
                                    PointCloudXYZI &output);
-    void give_feature(PointCloudXYZI &pl,
-                      std::vector<PointFeatureInfo> &point_feature_infos);
-    int plane_judge(const PointCloudXYZI &pl,
+    void extractFeaturesFromScanLine(PointCloudXYZI &scan_line,
+                                     std::vector<PointFeatureInfo> &point_feature_infos);
+    PlaneClassification classifyPlaneSegment(
+        const PointCloudXYZI &scan_line,
+        std::vector<PointFeatureInfo> &point_feature_infos,
+        std::size_t point_index,
+        std::size_t &next_point_index,
+        Eigen::Vector3d &direction);
+    bool isEdgeJump(const PointCloudXYZI &scan_line,
                     std::vector<PointFeatureInfo> &point_feature_infos,
-                    uint i,
-                    uint &i_nex,
-                    Eigen::Vector3d &curr_direct);
-    bool edge_jump_judge(const PointCloudXYZI &pl,
-                         std::vector<PointFeatureInfo> &point_feature_infos,
-                         uint i,
-                         Surround nor_dir);
+                    std::size_t point_index,
+                    Surround neighbor_direction);
 
-    int group_size;
-    double disA, disB, inf_bound;
-    double limit_maxmid, limit_midmin, limit_maxmin;
-    double p2l_ratio;
-    double jump_up_limit, jump_down_limit;
-    double cos160;
-    double edgea, edgeb;
-    double smallp_intersect, smallp_ratio;
-    double scan_start_time_, scan_end_time_;
-    float time_unit_scale_;
+    const LidarType lidar_type_;
+    const int scan_line_count_;
+    const int scan_rate_hz_;
+    const int point_filter_stride_;
+    const double blind_distance_;
+    const double pilot_zone_blind_distance_;
+    const bool feature_extraction_enabled_;
+    const float time_unit_scale_;
+
+    PointCloudXYZI full_cloud_;
+    PointCloudXYZI corner_cloud_;
+    PointCloudXYZI surface_cloud_;
+    PointCloudXYZI pilot_zone_cloud_;
+    std::array<PointCloudXYZI, kMaxScanLines> scan_line_clouds_;
+    std::array<std::vector<PointFeatureInfo>, kMaxScanLines> scan_line_feature_infos_;
+
+    bool has_point_time_offset_ = false;
+    double scan_start_time_;
+    double scan_end_time_;
     sensor_adapter::OusterAdapter ouster_adapter_;
     sensor_adapter::KimeraOusterAdapter kimera_ouster_adapter_;
     sensor_adapter::VelodyneAdapter velodyne_adapter_;

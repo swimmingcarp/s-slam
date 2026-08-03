@@ -12,6 +12,33 @@ claiming a fix.
 - If a related change seems useful, explain it briefly and wait for explicit
   approval before editing.
 
+## Code Formatting
+
+- After any identifier rename or structural refactor, inspect every changed
+  declaration, initializer list, assignment group, and wrapped call for
+  alignment and indentation. Mechanical replacements often leave correct but
+  visually misleading code.
+- Preserve the surrounding file's formatting conventions and run
+  `git diff --check` before validation.
+
+## Naming
+
+- Name identifiers for their actual role and value. Be precise, but do not
+  repeat context already made clear by the class, function, or call site.
+- Prefer concise, conventional names over long literal descriptions. Avoid
+  redundant qualifiers such as `InWorldFrame` when the surrounding API already
+  establishes the frame.
+- Do not invent or preserve opaque abbreviations such as `ds`, `flg`, `wrt`, or
+  misspellings such as `i_nex`. Use clear names such as `i_next` and
+  `plane_classification`.
+- Retain established domain abbreviations when they are broadly understood in
+  this codebase and field, including `IMU`, `EKF`, `SLAM`, `PCL`, `FOV`, and
+  `sync`.
+- Keep unit-bearing names in external configuration where they document the
+  contract. For internal identifiers, do not add redundant unit suffixes when
+  the local type and context already make the unit clear; never rename an
+  external parameter, topic, or config key as part of an internal cleanup.
+
 ## Optimization Principle
 
 This is a mass-production system, not a benchmark. Judge every optimization by
