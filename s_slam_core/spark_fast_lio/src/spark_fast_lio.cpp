@@ -367,6 +367,7 @@ void SPARKFastLIO2::resetEstimatorState(const std::string &reason, const ResetMo
     V3D warm_bg           = Zero3d;
     V3D warm_ba           = Zero3d;
     V3D warm_vel_body     = Zero3d;
+    V3D warm_mean_acc     = Zero3d;
     // Gate on the IMU processor's own initialized flag, NOT filter_initialized_:
     // the latter needs kInitializationTimeSec of post-reset data to flip true again, so a
     // burst of resets (e.g. LiDAR and IMU glitches back to back) inside that
@@ -385,6 +386,7 @@ void SPARKFastLIO2::resetEstimatorState(const std::string &reason, const ResetMo
             warm_bg           = prior_state.bg;
             warm_ba           = prior_state.ba;
             warm_vel_body     = prior_state.rot.conjugate() * prior_state.vel;
+            warm_mean_acc     = imu_processor_->getSnapshot().mean_acceleration;
             have_warm_prior   = true;
         }
     }
@@ -431,7 +433,8 @@ void SPARKFastLIO2::resetEstimatorState(const std::string &reason, const ResetMo
     imu_processor_->reset();
     if (have_warm_prior)
     {
-        imu_processor_->setWarmStartPrior(warm_gravity_body, warm_bg, warm_ba, warm_vel_body);
+        imu_processor_->setWarmStartPrior(
+            warm_gravity_body, warm_bg, warm_ba, warm_vel_body, warm_mean_acc);
     }
 
     latest_state_ = initial_state;

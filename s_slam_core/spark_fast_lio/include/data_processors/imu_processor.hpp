@@ -77,10 +77,14 @@ public:
     // gravity/biases/velocity (all expressed in the IMU body frame at re-init
     // time) from the pre-reset state so recovery does not require the
     // stationary window, which never comes while the platform is in flight.
+    // mean_acceleration carries the accelerometer scale reference committed by
+    // the original initialization; re-deriving it from an in-flight window
+    // would bake maneuver acceleration into the propagation scale.
     void setWarmStartPrior(const V3D &gravity_body,
                            const V3D &bg,
                            const V3D &ba,
-                           const V3D &vel_body);
+                           const V3D &vel_body,
+                           const V3D &mean_acceleration);
 
     // True once initialization (cold or warm) has committed. This — not the
     // caller's post-reset processing-progress flags — is the correct gate for
@@ -126,9 +130,10 @@ private:
     bool replay_mode_            = false;
     // Warm-start prior; deliberately NOT cleared by reset() so it survives the
     // internal reset() that initializeImu() performs on the first post-reset frame.
-    bool has_warm_start_prior_   = false;
-    V3D warm_start_gravity_body_ = V3D(0, 0, 0);
-    V3D warm_start_bg_           = V3D(0, 0, 0);
-    V3D warm_start_ba_           = V3D(0, 0, 0);
-    V3D warm_start_vel_body_     = V3D(0, 0, 0);
+    bool has_warm_start_prior_        = false;
+    V3D warm_start_gravity_body_      = V3D(0, 0, 0);
+    V3D warm_start_bg_                = V3D(0, 0, 0);
+    V3D warm_start_ba_                = V3D(0, 0, 0);
+    V3D warm_start_vel_body_          = V3D(0, 0, 0);
+    V3D warm_start_mean_acceleration_ = V3D(0, 0, 0);
 };

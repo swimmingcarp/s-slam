@@ -45,13 +45,15 @@ void ImuProcessor::setWarmStartPrior(
     const V3D &gravity_body,
     const V3D &bg,
     const V3D &ba,
-    const V3D &vel_body)
+    const V3D &vel_body,
+    const V3D &mean_acceleration)
 {
-    warm_start_gravity_body_ = gravity_body;
-    warm_start_bg_           = bg;
-    warm_start_ba_           = ba;
-    warm_start_vel_body_     = vel_body;
-    has_warm_start_prior_    = true;
+    warm_start_gravity_body_      = gravity_body;
+    warm_start_bg_                = bg;
+    warm_start_ba_                = ba;
+    warm_start_vel_body_          = vel_body;
+    warm_start_mean_acceleration_ = mean_acceleration;
+    has_warm_start_prior_         = true;
 }
 
 ImuProcessor::Snapshot ImuProcessor::getSnapshot() const
@@ -474,11 +476,16 @@ void ImuProcessor::process(
             last_lidar_end_time_          = measures.lidar_end_time;
             accelerometer_covariance_     = accelerometer_covariance_scale_;
             gyroscope_covariance_         = gyroscope_covariance_scale_;
+            // initializeImu above re-derived mean_acceleration_ from this
+            // frame's IMU window, which in flight contains maneuver
+            // acceleration; keep the pre-reset accelerometer scale reference.
+            mean_acceleration_            = warm_start_mean_acceleration_;
             has_warm_start_prior_         = false;
             RCLCPP_WARN(rclcpp::get_logger("ImuProcessor"),
                         "IMU warm re-initialization from pre-reset state (no stationary "
                         "window required): grav_body=[%.4f, %.4f, %.4f] "
-                        "bg=[%.5f, %.5f, %.5f] vel_body=[%.3f, %.3f, %.3f]",
+                        "bg=[%.5f, %.5f, %.5f] vel_body=[%.3f, %.3f, %.3f] "
+                        "mean_acc_norm=%.4f",
                         warm_start_gravity_body_[0],
                         warm_start_gravity_body_[1],
                         warm_start_gravity_body_[2],
@@ -487,7 +494,8 @@ void ImuProcessor::process(
                         warm_start_bg_[2],
                         warm_start_vel_body_[0],
                         warm_start_vel_body_[1],
-                        warm_start_vel_body_[2]);
+                        warm_start_vel_body_[2],
+                        mean_acceleration_.norm());
             return;
         }
 
