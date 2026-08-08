@@ -198,6 +198,7 @@ private:
 
     PropagationCheckpoint propagateLidarFrame(const MeasureGroup &measures);
     void restorePropagatedFrame(const PropagationCheckpoint &checkpoint);
+    void restorePrePropagationFrame(const PropagationCheckpoint &checkpoint);
     void publishPropagatedFrame();
     PointCloudXYZI::ConstPtr selectMatchingPoints();
     bool prepareLioUpdate(MeasureGroup &measures,

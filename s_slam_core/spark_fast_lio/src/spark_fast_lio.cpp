@@ -40,6 +40,40 @@ bool pointLessXYZICurvature(const PointType &lhs, const PointType &rhs)
 }  // namespace
 #endif
 
+namespace
+{
+bool hasFiniteImuMeasurement(const sensor_msgs::msg::Imu &measurement)
+{
+    const auto &acceleration = measurement.linear_acceleration;
+    const auto &angular_velocity = measurement.angular_velocity;
+    return std::isfinite(acceleration.x) && std::isfinite(acceleration.y) &&
+           std::isfinite(acceleration.z) && std::isfinite(angular_velocity.x) &&
+           std::isfinite(angular_velocity.y) && std::isfinite(angular_velocity.z);
+}
+
+bool hasFiniteImuMeasurements(const MeasureGroup &measures)
+{
+    return std::all_of(measures.imu.begin(), measures.imu.end(), [](const auto &measurement)
+                       { return measurement && hasFiniteImuMeasurement(*measurement); });
+}
+
+bool hasFiniteState(const state_ikfom &state)
+{
+    const V3D gravity(state.grav[0], state.grav[1], state.grav[2]);
+    return state.pos.allFinite() && state.vel.allFinite() && state.bg.allFinite() &&
+           state.ba.allFinite() && gravity.allFinite() &&
+           state.rot.toRotationMatrix().allFinite() &&
+           state.offset_R_L_I.toRotationMatrix().allFinite() && state.offset_T_L_I.allFinite();
+}
+
+bool canSeedWarmRecovery(const state_ikfom &state, const V3D &mean_acceleration)
+{
+    const V3D gravity(state.grav[0], state.grav[1], state.grav[2]);
+    return hasFiniteState(state) && mean_acceleration.allFinite() &&
+           gravity.norm() > 0.5 * G_m_s2 && mean_acceleration.norm() > 0.5 * G_m_s2;
+}
+}  // namespace
+
 struct SPARKFastLIO2::PropagationCheckpoint
 {
     bool gravity_aligned = false;
@@ -47,8 +81,12 @@ struct SPARKFastLIO2::PropagationCheckpoint
     std::deque<V3D> gravity_directions;
     V3D static_acceleration_mean = Zero3d;
     int moving_frame_count = 0;
+    esekfom::esekf<state_ikfom, 12, input_ikfom> filter_before_propagation;
+    ImuProcessor::Snapshot imu_snapshot_before_propagation;
+    bool state_before_propagation_is_finite = false;
     esekfom::esekf<state_ikfom, 12, input_ikfom> propagated_filter;
     ImuProcessor::Snapshot propagated_imu_snapshot;
+    bool propagated_state_is_finite = false;
 };
 
 struct SPARKFastLIO2::MotionQualityReport
@@ -371,23 +409,29 @@ void SPARKFastLIO2::resetEstimatorState(const std::string &reason, const ResetMo
     // Gate on the IMU processor's own initialized flag, NOT filter_initialized_:
     // the latter needs kInitializationTimeSec of post-reset data to flip true again, so a
     // burst of resets (e.g. LiDAR and IMU glitches back to back) inside that
-    // window would be misjudged as a cold start and deadlock in flight. The
-    // live filter state is used as the fallback because latest_state_ is only
-    // refreshed by completed update cycles.
+    // window would be misjudged as a cold start and deadlock in flight.
+    // Use the current filter state: after rejected LiDAR updates it still
+    // contains the latest valid IMU propagation, while last_good_state_ may
+    // be arbitrarily old.
     if (mode == ResetMode::kWarmRecovery && imu_processor_ && imu_processor_->isInitialized())
     {
-        const state_ikfom prior_state =
-            have_last_good_state_ ? last_good_state_ : kf_.get_x();
-        const V3D gravity_world(
-            prior_state.grav[0], prior_state.grav[1], prior_state.grav[2]);
-        if (gravity_world.norm() > 0.5 * G_m_s2)
+        const state_ikfom prior_state = kf_.get_x();
+        const V3D mean_acceleration = imu_processor_->getSnapshot().mean_acceleration;
+        if (canSeedWarmRecovery(prior_state, mean_acceleration))
         {
+            const V3D gravity_world(
+                prior_state.grav[0], prior_state.grav[1], prior_state.grav[2]);
             warm_gravity_body = prior_state.rot.conjugate() * gravity_world;
             warm_bg           = prior_state.bg;
             warm_ba           = prior_state.ba;
             warm_vel_body     = prior_state.rot.conjugate() * prior_state.vel;
-            warm_mean_acc     = imu_processor_->getSnapshot().mean_acceleration;
+            warm_mean_acc     = mean_acceleration;
             have_warm_prior   = true;
+        }
+        else
+        {
+            RCLCPP_ERROR(this->get_logger(),
+                         "Warm recovery state is invalid; falling back to cold initialization.");
         }
     }
 
@@ -766,6 +810,15 @@ void SPARKFastLIO2::livoxLiDARCallback(const livox_ros_driver2::msg::CustomMsg::
 
 void SPARKFastLIO2::imuCallback(const sensor_msgs::msg::Imu::ConstSharedPtr msg)
 {
+    if (!hasFiniteImuMeasurement(*msg))
+    {
+        RCLCPP_WARN_THROTTLE(this->get_logger(),
+                             *this->get_clock(),
+                             1000,
+                             "Dropping non-finite IMU measurement.");
+        return;
+    }
+
     rclcpp::Time stamp = msg->header.stamp;
     {
         std::lock_guard<std::mutex> lk(buffer_mutex_);
@@ -1625,27 +1678,47 @@ SPARKFastLIO2::PropagationCheckpoint SPARKFastLIO2::propagateLidarFrame(
     checkpoint.gravity_directions       = global_gravity_directions_;
     checkpoint.static_acceleration_mean = stationary_mean_acceleration_;
     checkpoint.moving_frame_count       = num_consecutive_moving_frames_;
+    checkpoint.filter_before_propagation          = kf_;
+    checkpoint.imu_snapshot_before_propagation    = imu_processor_->getSnapshot();
+    checkpoint.state_before_propagation_is_finite = hasFiniteState(kf_.get_x());
 
     imu_processor_->process(measures, kf_, full_points_);
 
     // A rejected LiDAR correction must retain this frame's IMU propagation.
     // Rolling back to the last corrected state would discard elapsed motion for
     // every rejected frame.
-    checkpoint.propagated_filter       = kf_;
-    checkpoint.propagated_imu_snapshot = imu_processor_->getSnapshot();
+    checkpoint.propagated_filter          = kf_;
+    checkpoint.propagated_imu_snapshot    = imu_processor_->getSnapshot();
+    checkpoint.propagated_state_is_finite = hasFiniteState(kf_.get_x());
     return checkpoint;
 }
 
 void SPARKFastLIO2::restorePropagatedFrame(const PropagationCheckpoint &checkpoint)
 {
     is_gravity_aligned_            = checkpoint.gravity_aligned;
-    gravity_alignment_rotation_             = checkpoint.gravity_rotation;
+    gravity_alignment_rotation_    = checkpoint.gravity_rotation;
     global_gravity_directions_     = checkpoint.gravity_directions;
-    stationary_mean_acceleration_              = checkpoint.static_acceleration_mean;
+    stationary_mean_acceleration_  = checkpoint.static_acceleration_mean;
     num_consecutive_moving_frames_ = checkpoint.moving_frame_count;
 
     kf_ = checkpoint.propagated_filter;
     imu_processor_->restoreSnapshot(checkpoint.propagated_imu_snapshot);
+    latest_state_     = kf_.get_x();
+    latest_state_.pos = gravity_alignment_rotation_ * latest_state_.pos;
+    latest_state_.rot = gravity_alignment_rotation_ * latest_state_.rot;
+    kf_for_preintegration_ = kf_;
+}
+
+void SPARKFastLIO2::restorePrePropagationFrame(const PropagationCheckpoint &checkpoint)
+{
+    is_gravity_aligned_            = checkpoint.gravity_aligned;
+    gravity_alignment_rotation_    = checkpoint.gravity_rotation;
+    global_gravity_directions_     = checkpoint.gravity_directions;
+    stationary_mean_acceleration_  = checkpoint.static_acceleration_mean;
+    num_consecutive_moving_frames_ = checkpoint.moving_frame_count;
+
+    kf_ = checkpoint.filter_before_propagation;
+    imu_processor_->restoreSnapshot(checkpoint.imu_snapshot_before_propagation);
     latest_state_     = kf_.get_x();
     latest_state_.pos = gravity_alignment_rotation_ * latest_state_.pos;
     latest_state_.rot = gravity_alignment_rotation_ * latest_state_.rot;
@@ -1938,10 +2011,7 @@ SPARKFastLIO2::MotionQualityReport SPARKFastLIO2::evaluateMotionQuality(
         downsampled_point_count_ > 0
             ? static_cast<double>(effective_feature_count_) / static_cast<double>(downsampled_point_count_)
             : 0.0;
-    quality.finite_state =
-        std::isfinite(latest_state_.pos[0]) && std::isfinite(latest_state_.pos[1]) &&
-        std::isfinite(latest_state_.pos[2]) && std::isfinite(latest_state_.vel[0]) &&
-        std::isfinite(latest_state_.vel[1]) && std::isfinite(latest_state_.vel[2]);
+    quality.finite_state = hasFiniteState(latest_state_);
     quality.high_pre_gravity_residual =
         quality.pre_gravity_residual.norm() > motion_gate_max_pre_grav_residual_;
     quality.high_post_gravity_residual =
@@ -1977,6 +2047,32 @@ void SPARKFastLIO2::rejectMotionFrame(const MeasureGroup &measures,
                                       const PropagationCheckpoint &checkpoint,
                                       const MotionQualityReport &quality)
 {
+    if (!quality.finite_state)
+    {
+        if (checkpoint.propagated_state_is_finite)
+        {
+            restorePropagatedFrame(checkpoint);
+            RCLCPP_ERROR(this->get_logger(),
+                         "Dropping non-finite LiDAR update; publishing valid IMU propagation.");
+            publishPropagatedFrame();
+            return;
+        }
+
+        if (checkpoint.state_before_propagation_is_finite)
+        {
+            restorePrePropagationFrame(checkpoint);
+            RCLCPP_ERROR(this->get_logger(),
+                         "Dropping LiDAR frame because IMU propagation produced a non-finite state; "
+                         "restored the state before propagation.");
+            return;
+        }
+
+        RCLCPP_ERROR(this->get_logger(),
+                     "IMU propagation started from a non-finite state; resetting the estimator.");
+        resetEstimatorState("non-finite IMU propagation state", ResetMode::kCold);
+        return;
+    }
+
     ++motion_gate_reject_count_;
     ++motion_gate_consecutive_reject_count_;
     restorePropagatedFrame(checkpoint);
@@ -2117,6 +2213,12 @@ void SPARKFastLIO2::commitOdometryUpdate(const MeasureGroup &measures,
 
 void SPARKFastLIO2::processLidarAndImu(MeasureGroup &measures)
 {
+    if (!hasFiniteImuMeasurements(measures))
+    {
+        RCLCPP_ERROR(this->get_logger(), "Dropping LiDAR frame with non-finite IMU data.");
+        return;
+    }
+
     if (is_first_lidar_scan_)
     {
         first_lidar_time_    = measures.lidar_beg_time;
@@ -2130,7 +2232,13 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &measures)
     sampled_points_->clear();
 
     const auto propagation_checkpoint = propagateLidarFrame(measures);
-    const auto matching_points        = selectMatchingPoints();
+    if (!propagation_checkpoint.propagated_state_is_finite)
+    {
+        rejectMotionFrame(measures, propagation_checkpoint, MotionQualityReport{});
+        return;
+    }
+
+    const auto matching_points = selectMatchingPoints();
 
     state_ikfom propagated_state;
     if (!prepareLioUpdate(measures, matching_points, propagated_state))
@@ -2140,7 +2248,7 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &measures)
 
     runLioUpdate();
     const auto motion_quality = evaluateMotionQuality(measures, propagated_state);
-    if (motion_quality.reject)
+    if (!motion_quality.finite_state || motion_quality.reject)
     {
         rejectMotionFrame(measures, propagation_checkpoint, motion_quality);
         return;
