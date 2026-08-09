@@ -12,6 +12,7 @@
   <license>GPL-2.0-only</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+  <test_depend>ament_cmake_gtest</test_depend>
 
   <depend>rcutils</depend>
   <depend>rclcpp</depend>

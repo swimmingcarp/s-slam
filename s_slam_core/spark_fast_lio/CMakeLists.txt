@@ -162,5 +162,23 @@ install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(gravity_alignment_test test/gravity_alignment_test.cpp)
+  if(TARGET gravity_alignment_test)
+    target_include_directories(gravity_alignment_test PRIVATE
+      include
+      ${THIRD_PARTY_DIR}/ikd-Tree
+      ${THIRD_PARTY_DIR}/IKFoM_toolkit)
+    target_link_libraries(gravity_alignment_test ${PCL_LIBRARIES})
+    ament_target_dependencies(gravity_alignment_test
+      rclcpp
+      sensor_msgs
+      nav_msgs
+      geometry_msgs
+      tf2_ros)
+  endif()
+endif()
+
 # Generate package info
 ament_package()

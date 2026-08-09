@@ -71,7 +71,9 @@ private:
         output_point[2] = point_in_world(2);
     }
 
-    void pclPointBodyToWorld(PointType const *const input_point, PointType *const output_point);
+    void pclPointBodyToWorld(PointType const *const input_point,
+                             PointType *const output_point,
+                             const state_ikfom &state);
 
     void pclPointBodyLidarToIMU(PointType const *const input_point, PointType *const output_point);
 
@@ -113,7 +115,7 @@ private:
 
     void updateLocalMapWindow();
 
-    void insertScanIntoMap();
+    void insertScanIntoMap(const state_ikfom &state);
 
     void publishOdometry(const state_ikfom &state, const rclcpp::Time &stamp);
     void publishOdometry(
@@ -132,7 +134,8 @@ private:
     bool topicSubscribed(
         const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr &publisher) const;
 
-    void publishMapScan(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubCloud);
+    void publishMapScan(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubCloud,
+                        const state_ikfom &state);
 
     void publishScan(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubCloud,
                      const std::string &frame);
@@ -399,6 +402,8 @@ private:
     std::optional<esekfom::esekf<state_ikfom, 12, input_ikfom>> kf_for_preintegration_;
     esekfom::esekf<state_ikfom, 12, input_ikfom> last_good_kf_;
     std::optional<ImuProcessor::Snapshot> last_good_imu_processor_snapshot_;
+    // Always remains in the raw EKF/map frame. Publishing applies gravity
+    // alignment to a copy so matching and map insertion stay in one frame.
     state_ikfom latest_state_;
     state_ikfom last_good_state_;
     bool have_last_good_state_ = false;

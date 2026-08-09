@@ -163,6 +163,17 @@ use the safest mode:
 BUILD_JOBS=1 scripts/build.sh
 ```
 
+## Unit Test
+
+### Front End Unit Test
+
+```bash
+source /opt/ros/humble/setup.bash
+colcon build --packages-select spark_fast_lio --symlink-install
+colcon test --packages-select spark_fast_lio --event-handlers console_direct+
+colcon test-result --verbose --all
+```
+
 ## Replay Workflow
 
 Run one end-to-end local regression from an existing ROS 2 bag:

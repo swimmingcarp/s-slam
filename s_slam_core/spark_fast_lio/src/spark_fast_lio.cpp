@@ -1,5 +1,7 @@
 #include "spark_fast_lio.h"
 
+#include "common/gravity_alignment.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -644,14 +646,13 @@ void SPARKFastLIO2::pointBodyToWorld(PointType const *const input_point,
 }
 
 void SPARKFastLIO2::pclPointBodyToWorld(PointType const *const input_point,
-                                        PointType *const output_point)
+                                        PointType *const output_point,
+                                        const state_ikfom &state)
 {
     *output_point = *input_point;
     V3D point_in_body(input_point->x, input_point->y, input_point->z);
-    V3D point_in_world(latest_state_.rot *
-                           (latest_state_.offset_R_L_I * point_in_body +
-                            latest_state_.offset_T_L_I) +
-                       latest_state_.pos);
+    V3D point_in_world(
+        state.rot * (state.offset_R_L_I * point_in_body + state.offset_T_L_I) + state.pos);
 
     output_point->x = point_in_world(0);
     output_point->y = point_in_world(1);
@@ -880,8 +881,15 @@ void SPARKFastLIO2::integrateIMU(esekfom::esekf<state_ikfom, 12, input_ikfom> &s
     const auto &stamp     = imu_integration_queue_[1].header.stamp;
     imu_integration_queue_.pop_front();
 
-    integrated_state.pos = gravity_alignment_rotation_ * integrated_state.pos;
-    integrated_state.rot = gravity_alignment_rotation_ * integrated_state.rot;
+    if (is_gravity_aligned_)
+    {
+        publishOdometry(
+            gravityAlignedState(integrated_state, gravity_alignment_rotation_),
+            stamp,
+            pub_imu_predicted_odom_,
+            false);
+        return;
+    }
 
     publishOdometry(integrated_state, stamp, pub_imu_predicted_odom_, false);
 }
@@ -1119,7 +1127,7 @@ void SPARKFastLIO2::updateLocalMapWindow()
     map_removal_time_ = omp_get_wtime() - delete_begin;
 }
 
-void SPARKFastLIO2::insertScanIntoMap()
+void SPARKFastLIO2::insertScanIntoMap(const state_ikfom &state)
 {
     PointVector points_to_insert;
     PointVector points_to_insert_without_downsampling;
@@ -1129,8 +1137,7 @@ void SPARKFastLIO2::insertScanIntoMap()
     for (int i = 0; i < downsampled_point_count_; ++i)
     {
         // transform to world frame
-        pointBodyToWorld(
-            &(feats_down_body_->points[i]), &(feats_down_world_->points[i]), latest_state_);
+        pointBodyToWorld(&(feats_down_body_->points[i]), &(feats_down_world_->points[i]), state);
 
         // decide if we need to add to map
         if (!nearest_map_points_[i].empty() && filter_initialized_)
@@ -1297,16 +1304,24 @@ void SPARKFastLIO2::publishCurrentFrame(const state_ikfom &state,
                                         bool insert_into_map,
                                         bool append_path)
 {
-    publishOdometry(state, stamp);
+    std::optional<state_ikfom> aligned_state;
+    const state_ikfom *output_state = &state;
+    if (is_gravity_aligned_)
+    {
+        aligned_state.emplace(gravityAlignedState(state, gravity_alignment_rotation_));
+        output_state = &*aligned_state;
+    }
+
+    publishOdometry(*output_state, stamp);
 
     if (insert_into_map)
     {
-        insertScanIntoMap();
+        insertScanIntoMap(state);
     }
 
     if (append_path && path_enabled_)
     {
-        publishPath(state);
+        publishPath(*output_state);
     }
 
     if (!scan_publish_enabled_)
@@ -1314,7 +1329,7 @@ void SPARKFastLIO2::publishCurrentFrame(const state_ikfom &state,
         return;
     }
 
-    publishMapScan(pub_cloud_full_);
+    publishMapScan(pub_cloud_full_, *output_state);
     if (scan_lidar_frame_publish_enabled_)
     {
         publishScan(pub_cloud_lidar_, "lidar");
@@ -1338,7 +1353,8 @@ bool SPARKFastLIO2::topicSubscribed(
 }
 
 void SPARKFastLIO2::publishMapScan(
-    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubCloud)
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubCloud,
+    const state_ikfom &state)
 {
     if (!scan_publish_enabled_)
     {
@@ -1360,16 +1376,19 @@ void SPARKFastLIO2::publishMapScan(
         {
             if (viz_frame_ == "imu")
             {
-                pclPointBodyToWorld(&laserCloudFullRes->points[i], &laserCloudWorld->points[i]);
+                pclPointBodyToWorld(
+                    &laserCloudFullRes->points[i], &laserCloudWorld->points[i], state);
             }
             else if (viz_frame_ == "lidar")
             {
-                pclPointBodyToWorld(&laserCloudFullRes->points[i], &laserCloudTmp->points[i]);
+                pclPointBodyToWorld(
+                    &laserCloudFullRes->points[i], &laserCloudTmp->points[i], state);
                 pclPointIMUToLiDAR(&laserCloudTmp->points[i], &laserCloudWorld->points[i]);
             }
             else if (viz_frame_ == "base")
             {
-                pclPointBodyToWorld(&laserCloudFullRes->points[i], &laserCloudTmp->points[i]);
+                pclPointBodyToWorld(
+                    &laserCloudFullRes->points[i], &laserCloudTmp->points[i], state);
                 pclPointIMUToBase(&laserCloudTmp->points[i], &laserCloudWorld->points[i]);
             }
             else
@@ -1395,7 +1414,7 @@ void SPARKFastLIO2::publishMapScan(
 
         for (int i = 0; i < nsize; ++i)
         {
-            pclPointBodyToWorld(&full_points_->points[i], &laserCloudWorld2->points[i]);
+            pclPointBodyToWorld(&full_points_->points[i], &laserCloudWorld2->points[i], state);
         }
         if (pcd_save_interval_ > 0)
         {
@@ -1703,9 +1722,12 @@ void SPARKFastLIO2::restorePropagatedFrame(const PropagationCheckpoint &checkpoi
 
     kf_ = checkpoint.propagated_filter;
     imu_processor_->restoreSnapshot(checkpoint.propagated_imu_snapshot);
-    latest_state_     = kf_.get_x();
-    latest_state_.pos = gravity_alignment_rotation_ * latest_state_.pos;
-    latest_state_.rot = gravity_alignment_rotation_ * latest_state_.rot;
+    latest_state_ = kf_.get_x();
+    if (!is_gravity_aligned_)
+    {
+        latest_state_.pos = gravity_alignment_rotation_ * latest_state_.pos;
+        latest_state_.rot = gravity_alignment_rotation_ * latest_state_.rot;
+    }
     kf_for_preintegration_ = kf_;
 }
 
@@ -1719,9 +1741,12 @@ void SPARKFastLIO2::restorePrePropagationFrame(const PropagationCheckpoint &chec
 
     kf_ = checkpoint.filter_before_propagation;
     imu_processor_->restoreSnapshot(checkpoint.imu_snapshot_before_propagation);
-    latest_state_     = kf_.get_x();
-    latest_state_.pos = gravity_alignment_rotation_ * latest_state_.pos;
-    latest_state_.rot = gravity_alignment_rotation_ * latest_state_.rot;
+    latest_state_ = kf_.get_x();
+    if (!is_gravity_aligned_)
+    {
+        latest_state_.pos = gravity_alignment_rotation_ * latest_state_.pos;
+        latest_state_.rot = gravity_alignment_rotation_ * latest_state_.rot;
+    }
     kf_for_preintegration_ = kf_;
 }
 
@@ -1934,9 +1959,14 @@ SPARKFastLIO2::MotionQualityReport SPARKFastLIO2::evaluateMotionQuality(
     MeasureGroup &measures,
     const state_ikfom &propagated_state)
 {
-    latest_state_     = kf_.get_x();
-    latest_state_.pos = gravity_alignment_rotation_ * latest_state_.pos;
-    latest_state_.rot = gravity_alignment_rotation_ * latest_state_.rot;
+    latest_state_ = kf_.get_x();
+    if (!is_gravity_aligned_)
+    {
+        // Preserve the existing pre-alignment trajectory bit pattern. The
+        // rotation is identity here; after alignment, latest_state_ remains raw.
+        latest_state_.pos = gravity_alignment_rotation_ * latest_state_.pos;
+        latest_state_.rot = gravity_alignment_rotation_ * latest_state_.rot;
+    }
 
     MotionQualityReport quality;
     quality.lidar_time        = lidar_end_time_;
