@@ -91,30 +91,6 @@ struct SPARKFastLIO2::PropagationCheckpoint
     bool propagated_state_is_finite = false;
 };
 
-struct SPARKFastLIO2::MotionQualityReport
-{
-    double lidar_time = 0.0;
-    double delta_time = 0.0;
-    double state_step = 0.0;
-    double state_speed = 0.0;
-    double correction_step = 0.0;
-    double correction_step_ratio = 1.0;
-    double velocity_norm = 0.0;
-    double rotation_correction_deg = 0.0;
-    double effective_feature_ratio = 0.0;
-    V3D mean_acceleration = Zero3d;
-    V3D pre_gravity_residual = Zero3d;
-    V3D post_gravity_residual = Zero3d;
-    bool finite_state = false;
-    bool high_pre_gravity_residual = false;
-    bool high_post_gravity_residual = false;
-    bool weak_lidar_update = false;
-    bool weak_lidar_constraints = false;
-    bool suspicious_large_correction = false;
-    bool unsupported_recovery_step = false;
-    bool reject = false;
-};
-
 SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     : Node("spark_fast_lio_node", options),
       clock_(get_clock()),
@@ -2232,6 +2208,9 @@ void SPARKFastLIO2::commitOdometryUpdate(const MeasureGroup &measures,
 
     if (enable_gravity_alignment_ && !is_gravity_aligned_ && !base_frame_.empty())
     {
+        // Do not return before adding this raw scan: the local window may have evicted
+        // old points, and skipping an accepted scan would leave the matching map stale.
+        insertScanIntoMap(latest_state_);
         RCLCPP_WARN(this->get_logger(),
                     "Gravity alignment is enabled but not yet completed. Waiting for alignment...");
         return;

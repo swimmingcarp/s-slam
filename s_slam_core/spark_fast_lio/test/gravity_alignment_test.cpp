@@ -1,9 +1,91 @@
 #include <gtest/gtest.h>
 
+#include <memory>
+
 #include "common/gravity_alignment.hpp"
+#include "spark_fast_lio.h"
 
 namespace spark_fast_lio
 {
+class SPARKFastLIO2Test : public ::testing::Test
+{
+protected:
+    static void SetUpTestSuite()
+    {
+        rclcpp::init(0, nullptr);
+    }
+
+    static void TearDownTestSuite()
+    {
+        rclcpp::shutdown();
+    }
+
+    static void prepareInitialMap(SPARKFastLIO2 &node)
+    {
+        constexpr int kPointCount = 6;
+
+        state_ikfom initial_state;
+        node.kf_.change_x(initial_state);
+        node.latest_state_ = initial_state;
+        node.downsampled_point_count_ = kPointCount;
+        node.feats_down_body_->resize(kPointCount);
+        node.feats_down_world_->resize(kPointCount);
+        node.nearest_map_points_.assign(kPointCount, PointVector{});
+
+        for (int i = 0; i < kPointCount; ++i)
+        {
+            PointType point{};
+            point.x = static_cast<float>(i);
+            node.feats_down_body_->points[i] = point;
+        }
+
+        node.initializeLocalMapIfNeeded();
+    }
+
+    static void setAcceptedScan(SPARKFastLIO2 &node)
+    {
+        constexpr int kPointCount = 6;
+        node.downsampled_point_count_ = kPointCount;
+        node.feats_down_body_->resize(kPointCount);
+        node.feats_down_world_->resize(kPointCount);
+        node.nearest_map_points_.assign(kPointCount, PointVector{});
+
+        for (int i = 0; i < kPointCount; ++i)
+        {
+            PointType point{};
+            point.x = 10.0F + static_cast<float>(i);
+            node.feats_down_body_->points[i] = point;
+        }
+    }
+
+    static std::size_t localMapPointCount(SPARKFastLIO2 &node)
+    {
+        return node.ikd_tree_.size();
+    }
+
+    static void setBaseFrame(SPARKFastLIO2 &node)
+    {
+        node.base_frame_ = "base_link";
+    }
+
+    static bool hasNoPublishedOdometryOrPath(const SPARKFastLIO2 &node)
+    {
+        return node.path_msg_.poses.empty() && node.odomAftMapped_.header.stamp.sec == 0 &&
+               node.odomAftMapped_.header.stamp.nanosec == 0U;
+    }
+
+    static void commitAcceptedFrame(SPARKFastLIO2 &node)
+    {
+        MeasureGroup measures;
+        state_ikfom propagated_state = node.latest_state_;
+        SPARKFastLIO2::MotionQualityReport quality;
+        quality.lidar_time = 1.0;
+
+        node.lidar_end_time_ = quality.lidar_time;
+        node.commitOdometryUpdate(measures, propagated_state, quality);
+    }
+};
+
 namespace
 {
 
@@ -36,6 +118,25 @@ TEST(GravityAlignment, PreservesRawStateForMapAndRotatesPublishedState)
                     .isApprox(rotation * V3D(raw_state.grav[0],
                                               raw_state.grav[1],
                                               raw_state.grav[2])));
+}
+
+TEST_F(SPARKFastLIO2Test, PreAlignmentAcceptedFrameKeepsMapCurrent)
+{
+    rclcpp::NodeOptions options;
+    options.append_parameter_override("gravity_alignment.enable_gravity_alignment", true);
+    options.append_parameter_override("common.process_on_callback", true);
+    options.append_parameter_override("publish.path_enabled", true);
+
+    auto node = std::make_shared<SPARKFastLIO2>(options);
+    setBaseFrame(*node);
+    prepareInitialMap(*node);
+    const std::size_t initial_map_point_count = localMapPointCount(*node);
+
+    setAcceptedScan(*node);
+    commitAcceptedFrame(*node);
+
+    EXPECT_GT(localMapPointCount(*node), initial_map_point_count);
+    EXPECT_TRUE(hasNoPublishedOdometryOrPath(*node));
 }
 
 }  // namespace

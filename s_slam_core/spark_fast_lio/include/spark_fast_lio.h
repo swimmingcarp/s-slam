@@ -42,12 +42,16 @@ struct PoseStruct
     Eigen::Quaterniond orientation_;
 };
 
+class SPARKFastLIO2Test;
+
 class SPARKFastLIO2 : public rclcpp::Node
 {
 public:
     explicit SPARKFastLIO2(const rclcpp::NodeOptions &options = rclcpp::NodeOptions());
 
 private:
+    friend class SPARKFastLIO2Test;
+
     M3D computeRelativeRotation(const Eigen::Vector3d &gravity_from,
                                 const Eigen::Vector3d &gravity_to);
 
@@ -197,7 +201,29 @@ private:
     void processLidarAndImu(MeasureGroup &measures);
 
     struct PropagationCheckpoint;
-    struct MotionQualityReport;
+    struct MotionQualityReport
+    {
+        double lidar_time = 0.0;
+        double delta_time = 0.0;
+        double state_step = 0.0;
+        double state_speed = 0.0;
+        double correction_step = 0.0;
+        double correction_step_ratio = 1.0;
+        double velocity_norm = 0.0;
+        double rotation_correction_deg = 0.0;
+        double effective_feature_ratio = 0.0;
+        V3D mean_acceleration = Zero3d;
+        V3D pre_gravity_residual = Zero3d;
+        V3D post_gravity_residual = Zero3d;
+        bool finite_state = false;
+        bool high_pre_gravity_residual = false;
+        bool high_post_gravity_residual = false;
+        bool weak_lidar_update = false;
+        bool weak_lidar_constraints = false;
+        bool suspicious_large_correction = false;
+        bool unsupported_recovery_step = false;
+        bool reject = false;
+    };
 
     PropagationCheckpoint propagateLidarFrame(const MeasureGroup &measures);
     void restorePropagatedFrame(const PropagationCheckpoint &checkpoint);

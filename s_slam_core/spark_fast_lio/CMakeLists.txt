@@ -170,7 +170,7 @@ if(BUILD_TESTING)
       include
       ${THIRD_PARTY_DIR}/ikd-Tree
       ${THIRD_PARTY_DIR}/IKFoM_toolkit)
-    target_link_libraries(gravity_alignment_test ${PCL_LIBRARIES})
+    target_link_libraries(gravity_alignment_test spark_lio_component ${PCL_LIBRARIES})
     ament_target_dependencies(gravity_alignment_test
       rclcpp
       sensor_msgs
