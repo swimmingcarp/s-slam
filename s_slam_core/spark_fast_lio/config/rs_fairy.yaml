@@ -4,6 +4,10 @@
       # Keep all 200 Hz IMU samples while LiDAR matching/publishing is busy.
       # SensorDataQoS defaults to depth 5, which can drop IMU samples on Jetson.
       imu_qos_depth: 1000
+      # The RoboSense driver publishes both inputs as RELIABLE. Keep the
+      # frontend subscription compatible with the live sensor topics.
+      lidar_qos_reliability: reliable
+      imu_qos_reliability: reliable
 
     preprocess:
       lidar_type: 5               # 1 Livox, 2 Velodyne, 3 Ouster, 4 KM-Ouster, 5 RoboSense (Fairy)

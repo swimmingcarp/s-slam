@@ -76,6 +76,26 @@ bool canSeedWarmRecovery(const state_ikfom &state, const V3D &mean_acceleration)
     return hasFiniteState(state) && mean_acceleration.allFinite() &&
            gravity.norm() > 0.5 * G_m_s2 && mean_acceleration.norm() > 0.5 * G_m_s2;
 }
+
+rclcpp::ReliabilityPolicy parseReliabilityPolicy(const std::string &value,
+                                                  const std::string &parameter_name)
+{
+    if (value == "reliable")
+    {
+        return rclcpp::ReliabilityPolicy::Reliable;
+    }
+    if (value == "best_effort")
+    {
+        return rclcpp::ReliabilityPolicy::BestEffort;
+    }
+    throw std::invalid_argument(
+        parameter_name + " must be 'reliable' or 'best_effort'");
+}
+
+const char *reliabilityPolicyName(const rclcpp::ReliabilityPolicy policy)
+{
+    return policy == rclcpp::ReliabilityPolicy::BestEffort ? "best_effort" : "reliable";
+}
 }  // namespace
 
 struct SPARKFastLIO2::PropagationCheckpoint
@@ -147,6 +167,12 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     // real-time drop behavior for on-robot use.
     lidar_qos_depth_ = declare_parameter<int>("common.lidar_qos_depth", 10);
     lidar_qos_depth_ = std::max(1, lidar_qos_depth_);
+    lidar_qos_reliability_ = parseReliabilityPolicy(
+        declare_parameter<std::string>("common.lidar_qos_reliability", "reliable"),
+        "common.lidar_qos_reliability");
+    imu_qos_reliability_ = parseReliabilityPolicy(
+        declare_parameter<std::string>("common.imu_qos_reliability", "reliable"),
+        "common.imu_qos_reliability");
     lidar_buffer_capacity_ = static_cast<std::size_t>(std::max<int64_t>(
         1, declare_parameter<int>("common.lidar_buffer_capacity", 20)));
     imu_buffer_capacity_ = static_cast<std::size_t>(std::max<int64_t>(
@@ -344,7 +370,10 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     }
 
     RCLCPP_INFO(this->get_logger(),
-                "SPARKFastLIO2 constructed; imu_qos_depth=%d reliable=true process_on_callback=%d",
+                "SPARKFastLIO2 constructed; lidar_qos=%s imu_qos=%s imu_qos_depth=%d "
+                "process_on_callback=%d",
+                reliabilityPolicyName(lidar_qos_reliability_),
+                reliabilityPolicyName(imu_qos_reliability_),
                 imu_qos_depth_,
                 process_on_callback_ ? 1 : 0);
 }
@@ -358,7 +387,7 @@ void SPARKFastLIO2::activateSensorProcessing()
     sensor_processing_active_ = true;
 
     rclcpp::QoS lidar_qos(rclcpp::KeepLast(static_cast<std::size_t>(lidar_qos_depth_)));
-    lidar_qos.reliable();
+    lidar_qos.reliability(lidar_qos_reliability_);
     lidar_qos.durability_volatile();
     sub_lidar_ = create_subscription<sensor_msgs::msg::PointCloud2>(
         "lidar",
@@ -372,7 +401,7 @@ void SPARKFastLIO2::activateSensorProcessing()
         std::bind(&SPARKFastLIO2::livoxLiDARCallback, this, std::placeholders::_1));
 #endif
     auto imu_qos = rclcpp::QoS(rclcpp::KeepLast(imu_qos_depth_));
-    imu_qos.reliable();
+    imu_qos.reliability(imu_qos_reliability_);
     imu_qos.durability_volatile();
     sub_imu_ = create_subscription<sensor_msgs::msg::Imu>(
         "imu", imu_qos, std::bind(&SPARKFastLIO2::imuCallback, this, std::placeholders::_1));

@@ -13,6 +13,8 @@
       visualization_frame: lidar
       imu_qos_depth: 2000
       lidar_qos_depth: 50
+      lidar_qos_reliability: reliable
+      imu_qos_reliability: reliable
       process_on_callback: true
 
     preprocess:

@@ -317,6 +317,8 @@ private:
     bool motion_quality_gate_enabled_      = false;
     int imu_qos_depth_                     = 1000;
     int lidar_qos_depth_                   = 10;
+    rclcpp::ReliabilityPolicy lidar_qos_reliability_ = rclcpp::ReliabilityPolicy::Reliable;
+    rclcpp::ReliabilityPolicy imu_qos_reliability_   = rclcpp::ReliabilityPolicy::Reliable;
     std::size_t lidar_buffer_capacity_     = 20;
     std::size_t imu_buffer_capacity_       = 1000;
     double input_buffer_max_duration_      = 2.0;

@@ -1,6 +1,8 @@
 /**:
   ros__parameters:
     common:
+      lidar_qos_reliability: reliable
+      imu_qos_reliability: reliable
       lid_topic:  "/acl_jackal2/lidar_points"
   #    imu_topic:  "/acl_jackal2/imu/data"
       imu_topic:  "/acl_jackal2/forward/imu"

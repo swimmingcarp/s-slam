@@ -1,5 +1,9 @@
 /**:
   ros__parameters:
+    common:
+      lidar_qos_reliability: reliable
+      imu_qos_reliability: reliable
+
     preprocess:
       # 2 is better in the Kimera-Multi dataset
       lidar_type: 2                # 1 Livox, 2 Velodyne, 3 Ouster, 4 KM-Ouster, 5 RoboSense

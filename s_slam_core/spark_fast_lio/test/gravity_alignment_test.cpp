@@ -82,6 +82,16 @@ protected:
                !node.main_loop_timer_;
     }
 
+    static rclcpp::ReliabilityPolicy lidarSubscriptionReliability(const SPARKFastLIO2 &node)
+    {
+        return node.sub_lidar_->get_actual_qos().reliability();
+    }
+
+    static rclcpp::ReliabilityPolicy imuSubscriptionReliability(const SPARKFastLIO2 &node)
+    {
+        return node.sub_imu_->get_actual_qos().reliability();
+    }
+
     static bool extrinsicsRetryIsScheduled(const SPARKFastLIO2 &node)
     {
         return node.extrinsics_retry_timer_ != nullptr;
@@ -229,6 +239,26 @@ TEST_F(SPARKFastLIO2Test, WaitsForBaseExtrinsicsBeforeActivatingSensorProcessing
 
     EXPECT_TRUE(sensorProcessingIsActive(*node));
     EXPECT_TRUE(extrinsicsRetryIsStopped(*node));
+}
+
+TEST_F(SPARKFastLIO2Test, ConfiguresInputSubscriptionReliability)
+{
+    rclcpp::NodeOptions options;
+    options.append_parameter_override("common.lidar_qos_reliability", "best_effort");
+    options.append_parameter_override("common.imu_qos_reliability", "best_effort");
+
+    auto node = std::make_shared<SPARKFastLIO2>(options);
+
+    EXPECT_EQ(lidarSubscriptionReliability(*node), rclcpp::ReliabilityPolicy::BestEffort);
+    EXPECT_EQ(imuSubscriptionReliability(*node), rclcpp::ReliabilityPolicy::BestEffort);
+}
+
+TEST_F(SPARKFastLIO2Test, RejectsUnknownInputSubscriptionReliability)
+{
+    rclcpp::NodeOptions options;
+    options.append_parameter_override("common.lidar_qos_reliability", "lossless");
+
+    EXPECT_THROW(std::make_shared<SPARKFastLIO2>(options), std::invalid_argument);
 }
 
 TEST_F(SPARKFastLIO2Test, ImuBufferCapacityOverflowResetsQueuedInput)
