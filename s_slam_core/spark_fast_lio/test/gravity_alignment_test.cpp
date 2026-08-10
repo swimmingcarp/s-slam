@@ -293,7 +293,7 @@ TEST(SafetyChecks, RejectsDegeneratePlaneNormal)
     EXPECT_FALSE(esti_plane(plane, points, 0.1F));
 }
 
-TEST_F(SPARKFastLIO2Test, LidarPoseUsesTheInternalMapFrame)
+TEST_F(SPARKFastLIO2Test, LidarPoseAndRegisteredPointUseSameMapTransform)
 {
     auto node = std::make_shared<SPARKFastLIO2>();
 
@@ -347,6 +347,44 @@ TEST_F(SPARKFastLIO2Test, LidarPoseUsesTheInternalMapFrame)
 
     EXPECT_TRUE(base_pose.position_.isApprox(expected_base_position));
     EXPECT_TRUE(base_pose.orientation_.toRotationMatrix().isApprox(expected_base_rotation));
+}
+
+TEST_F(SPARKFastLIO2Test, GravityAlignedLidarPoseAndRegisteredPointUseSamePublicMapFrame)
+{
+    auto node = std::make_shared<SPARKFastLIO2>();
+
+    state_ikfom raw_state;
+    raw_state.pos          = V3D(2.0, -3.0, 5.0);
+    raw_state.offset_T_L_I = V3D(0.4, -0.2, 0.6);
+
+    M3D rotation_imu_lidar;
+    rotation_imu_lidar << 0.0, -1.0, 0.0,
+                            1.0, 0.0, 0.0,
+                            0.0, 0.0, 1.0;
+    raw_state.offset_R_L_I = SO3(rotation_imu_lidar);
+
+    M3D gravity_alignment_rotation;
+    gravity_alignment_rotation << 1.0, 0.0, 0.0,
+                                  0.0, 0.0, -1.0,
+                                  0.0, 1.0, 0.0;
+    const state_ikfom output_state =
+        gravityAlignedState(raw_state, gravity_alignment_rotation);
+
+    PointType point_in_lidar{};
+    point_in_lidar.x = 1.0F;
+    point_in_lidar.y = 2.0F;
+    point_in_lidar.z = -3.0F;
+
+    const PoseStruct lidar_pose = lidarPose(*node, output_state);
+    const PointType registered_point =
+        lidarPointInWorld(*node, point_in_lidar, output_state);
+    const V3D expected_point =
+        lidar_pose.orientation_.toRotationMatrix() *
+            V3D(point_in_lidar.x, point_in_lidar.y, point_in_lidar.z) +
+        lidar_pose.position_;
+
+    EXPECT_TRUE(V3D(registered_point.x, registered_point.y, registered_point.z)
+                    .isApprox(expected_point, 1.0e-5));
 }
 
 TEST_F(SPARKFastLIO2Test, RejectsZeroAccelerationDuringImuInitialization)

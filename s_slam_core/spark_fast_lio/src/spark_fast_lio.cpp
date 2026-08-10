@@ -1387,8 +1387,9 @@ void SPARKFastLIO2::publishMapScan(
             dense_publish_enabled_ ? full_points_ : feats_down_body_);
 
         int size = laserCloudFullRes->points.size();
-        // `map_frame_` always uses the internal world coordinates, regardless of
-        // the child frame selected for odometry visualization.
+        // Use the same public map coordinates as odometry and path. After
+        // gravity alignment, `state` is the aligned output-state copy while
+        // the internal matching map remains in the raw EKF frame.
         PointCloudXYZI::Ptr laserCloudWorld(new PointCloudXYZI(size, 1));
 
         for (int i = 0; i < size; ++i)
