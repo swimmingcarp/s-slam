@@ -199,6 +199,8 @@ private:
 
     void processPendingMeasurements();
 
+    void enforceInputBufferBounds();
+
     bool syncPackages(MeasureGroup &measurements, bool verbose);
 
     bool isMotionStopped(const V3D &acc_ref, const V3D &acc_curr, const double acc_diff_thr);
@@ -315,6 +317,9 @@ private:
     bool motion_quality_gate_enabled_      = false;
     int imu_qos_depth_                     = 1000;
     int lidar_qos_depth_                   = 10;
+    std::size_t lidar_buffer_capacity_     = 20;
+    std::size_t imu_buffer_capacity_       = 1000;
+    double input_buffer_max_duration_      = 2.0;
 
     bool verbose_     = false;
     bool pcl_verbose_ = true;
@@ -374,6 +379,7 @@ private:
     int motion_gate_min_effective_features_ = 100;
     int motion_gate_reject_count_              = 0;
     int motion_gate_consecutive_reject_count_ = 0;
+    int input_buffer_overflow_count_          = 0;
 
     double mean_scan_duration_ = 0.0;
     int scan_duration_sample_count_ = 0;

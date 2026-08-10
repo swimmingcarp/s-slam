@@ -103,6 +103,45 @@ protected:
         node.retryBaseExtrinsics();
     }
 
+    static void feedImu(SPARKFastLIO2 &node, const double timestamp)
+    {
+        auto imu = std::make_shared<sensor_msgs::msg::Imu>();
+        const int64_t nanoseconds = static_cast<int64_t>(timestamp * 1.0e9);
+        imu->header.stamp.sec     = static_cast<int32_t>(nanoseconds / 1000000000LL);
+        imu->header.stamp.nanosec = static_cast<uint32_t>(nanoseconds % 1000000000LL);
+        node.imuCallback(imu);
+    }
+
+    static void queueLidar(SPARKFastLIO2 &node, const double timestamp)
+    {
+        node.lidar_buffer_.push_back(std::make_shared<PointCloudXYZI>());
+        node.time_buffer_.push_back(timestamp);
+        node.lidar_end_time_buffer_.push_back(timestamp + 0.1);
+    }
+
+    static void enforceInputBufferBounds(SPARKFastLIO2 &node)
+    {
+        node.enforceInputBufferBounds();
+    }
+
+    static void markFirstLidarPackageProcessed(SPARKFastLIO2 &node)
+    {
+        node.is_first_lidar_scan_ = false;
+    }
+
+    static bool inputBuffersAreCleared(const SPARKFastLIO2 &node)
+    {
+        return node.lidar_buffer_.empty() && node.time_buffer_.empty() &&
+               node.lidar_end_time_buffer_.empty() && node.imu_buffer_.empty() &&
+               node.imu_integration_queue_.empty() && !node.lidar_pushed_ &&
+               node.measures_.imu.empty();
+    }
+
+    static int inputBufferOverflowCount(const SPARKFastLIO2 &node)
+    {
+        return node.input_buffer_overflow_count_;
+    }
+
     static bool hasNoPublishedOdometryOrPath(const SPARKFastLIO2 &node)
     {
         return node.path_msg_.poses.empty() && node.odomAftMapped_.header.stamp.sec == 0 &&
@@ -190,6 +229,39 @@ TEST_F(SPARKFastLIO2Test, WaitsForBaseExtrinsicsBeforeActivatingSensorProcessing
 
     EXPECT_TRUE(sensorProcessingIsActive(*node));
     EXPECT_TRUE(extrinsicsRetryIsStopped(*node));
+}
+
+TEST_F(SPARKFastLIO2Test, ImuBufferCapacityOverflowResetsQueuedInput)
+{
+    rclcpp::NodeOptions options;
+    options.append_parameter_override("common.imu_buffer_capacity", 2);
+    options.append_parameter_override("common.input_buffer_max_duration_sec", 10.0);
+
+    auto node = std::make_shared<SPARKFastLIO2>(options);
+    feedImu(*node, 1.0);
+    feedImu(*node, 1.01);
+    feedImu(*node, 1.02);
+
+    EXPECT_EQ(inputBufferOverflowCount(*node), 1);
+    EXPECT_TRUE(inputBuffersAreCleared(*node));
+}
+
+TEST_F(SPARKFastLIO2Test, LidarBufferDurationOverflowResetsQueuedInput)
+{
+    rclcpp::NodeOptions options;
+    options.append_parameter_override("common.lidar_buffer_capacity", 10);
+    options.append_parameter_override("common.input_buffer_max_duration_sec", 0.2);
+
+    auto node = std::make_shared<SPARKFastLIO2>(options);
+    queueLidar(*node, 1.0);
+    queueLidar(*node, 1.1);
+    queueLidar(*node, 1.3);
+    markFirstLidarPackageProcessed(*node);
+
+    enforceInputBufferBounds(*node);
+
+    EXPECT_EQ(inputBufferOverflowCount(*node), 1);
+    EXPECT_TRUE(inputBuffersAreCleared(*node));
 }
 
 }  // namespace
