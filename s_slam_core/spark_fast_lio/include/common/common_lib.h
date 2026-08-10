@@ -66,6 +66,7 @@ struct MeasureGroup
     }
     double lidar_beg_time;
     double lidar_end_time;
+    std::size_t lidar_point_count = 0;
     PointCloudXYZI::Ptr lidar;
     std::deque<std::shared_ptr<const sensor_msgs::msg::Imu>> imu;
 

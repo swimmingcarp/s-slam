@@ -227,7 +227,7 @@ private:
         bool reject = false;
     };
 
-    PropagationCheckpoint propagateLidarFrame(const MeasureGroup &measures);
+    PropagationCheckpoint propagateLidarFrame(MeasureGroup &measures);
     void restorePropagatedFrame(const PropagationCheckpoint &checkpoint);
     void restorePrePropagationFrame(const PropagationCheckpoint &checkpoint);
     void publishPropagatedFrame();

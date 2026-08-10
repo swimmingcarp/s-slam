@@ -178,6 +178,21 @@ if(BUILD_TESTING)
       geometry_msgs
       tf2_ros)
   endif()
+
+  ament_add_gtest(robosense_fairy_adapter_test test/robosense_fairy_adapter_test.cpp)
+  if(TARGET robosense_fairy_adapter_test)
+    target_include_directories(robosense_fairy_adapter_test PRIVATE
+      include
+      ${THIRD_PARTY_DIR}/ikd-Tree
+      ${THIRD_PARTY_DIR}/IKFoM_toolkit)
+    target_link_libraries(robosense_fairy_adapter_test spark_lio_component ${PCL_LIBRARIES})
+    ament_target_dependencies(robosense_fairy_adapter_test
+      rclcpp
+      sensor_msgs
+      nav_msgs
+      geometry_msgs
+      tf2_ros)
+  endif()
 endif()
 
 # Generate package info

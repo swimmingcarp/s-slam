@@ -67,9 +67,9 @@ public:
     void setGyroscopeBiasCovariance(const V3D &covariance);
     void setAccelerometerBiasCovariance(const V3D &covariance);
     void setReplayMode(bool replay_mode);
-    void process(const MeasureGroup &measures,
+    void process(MeasureGroup &measures,
                  esekfom::esekf<state_ikfom, 12, input_ikfom> &filter,
-                 PointCloudXYZI::Ptr undistorted_cloud);
+                 PointCloudXYZI::Ptr &undistorted_cloud);
     state_ikfom integrateImu(const std::deque<sensor_msgs::msg::Imu> &imu_queue,
                              esekfom::esekf<state_ikfom, 12, input_ikfom> &filter);
 

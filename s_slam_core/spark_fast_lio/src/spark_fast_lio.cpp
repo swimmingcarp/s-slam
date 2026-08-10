@@ -1553,6 +1553,7 @@ bool SPARKFastLIO2::syncPackages(MeasureGroup &measurements, bool verbose)
         const BufferedLidarFrame &buffered_lidar = lidar_buffer_.front();
         measurements.lidar                       = buffered_lidar.cloud;
         measurements.lidar_beg_time              = buffered_lidar.begin_time;
+        measurements.lidar_point_count           = buffered_lidar.cloud->size();
         const double msg_end_time                 = buffered_lidar.end_time;
         lidar_buffer_.pop_front();
         constexpr double kPointTimeOffsetScale = 1000.0;
@@ -1673,7 +1674,7 @@ bool SPARKFastLIO2::isMotionStopped(const V3D &acc_ref,
 }
 
 SPARKFastLIO2::PropagationCheckpoint SPARKFastLIO2::propagateLidarFrame(
-    const MeasureGroup &measures)
+    MeasureGroup &measures)
 {
     PropagationCheckpoint checkpoint;
     checkpoint.gravity_aligned          = is_gravity_aligned_;
@@ -1825,7 +1826,7 @@ bool SPARKFastLIO2::prepareLioUpdate(MeasureGroup &measures,
                              "pos=[%.3f, %.3f, %.3f] vel=[%.3f, %.3f, %.3f]",
                              full_points_->size(),
                              matching_points->size(),
-                             measures.lidar ? measures.lidar->size() : 0,
+                             measures.lidar_point_count,
                              measures.imu.size(),
                              (measures.lidar_end_time - measures.lidar_beg_time) * 1000.0,
                              latest_state_.pos[0],
@@ -1870,7 +1871,7 @@ bool SPARKFastLIO2::prepareLioUpdate(MeasureGroup &measures,
                              full_points_->size(),
                              sampled_points_->size(),
                              downsampled_point_count_,
-                             measures.lidar ? measures.lidar->size() : 0,
+                             measures.lidar_point_count,
                              measures.imu.size(),
                              (measures.lidar_end_time - measures.lidar_beg_time) * 1000.0,
                              latest_state_.pos[0],

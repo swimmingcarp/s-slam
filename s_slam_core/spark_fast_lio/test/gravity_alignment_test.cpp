@@ -231,6 +231,26 @@ protected:
         node.imu_processor_->process(measures, node.kf_, undistorted_cloud);
     }
 
+    static void initializeWithStationaryGravity(SPARKFastLIO2 &node)
+    {
+        MeasureGroup measures;
+        measures.lidar_beg_time = 0.0;
+        measures.lidar_end_time = 2.1;
+        for (int sample_index = 0; sample_index <= kMinImuInitSamples; ++sample_index)
+        {
+            auto imu = std::make_shared<sensor_msgs::msg::Imu>();
+            const int64_t nanoseconds = static_cast<int64_t>(sample_index) * 10000000LL;
+            imu->header.stamp.sec     = static_cast<int32_t>(nanoseconds / 1000000000LL);
+            imu->header.stamp.nanosec = static_cast<uint32_t>(nanoseconds % 1000000000LL);
+            imu->linear_acceleration.z = G_m_s2;
+            measures.imu.push_back(imu);
+        }
+
+        auto undistorted_cloud = std::make_shared<PointCloudXYZI>();
+        node.imu_processor_->process(measures, node.kf_, undistorted_cloud);
+        ASSERT_TRUE(node.imu_processor_->isInitialized());
+    }
+
     static bool filterStateIsFinite(const SPARKFastLIO2 &node)
     {
         const state_ikfom state = node.kf_.get_x();
@@ -243,6 +263,16 @@ protected:
     static bool imuProcessorIsInitialized(const SPARKFastLIO2 &node)
     {
         return node.imu_processor_->isInitialized();
+    }
+
+    static PointCloudXYZI::Ptr fullPoints(const SPARKFastLIO2 &node)
+    {
+        return node.full_points_;
+    }
+
+    static void undistortQueuedCloud(SPARKFastLIO2 &node, MeasureGroup &measures)
+    {
+        node.imu_processor_->process(measures, node.kf_, node.full_points_);
     }
 };
 
@@ -395,6 +425,38 @@ TEST_F(SPARKFastLIO2Test, RejectsZeroAccelerationDuringImuInitialization)
 
     EXPECT_FALSE(imuProcessorIsInitialized(*node));
     EXPECT_TRUE(filterStateIsFinite(*node));
+}
+
+TEST_F(SPARKFastLIO2Test, ImuUndistortionTakesQueuedCloudOwnership)
+{
+    auto node = std::make_shared<SPARKFastLIO2>();
+    initializeWithStationaryGravity(*node);
+
+    MeasureGroup measures;
+    measures.lidar_beg_time = 2.1;
+    measures.lidar_end_time = 2.2;
+    measures.lidar = std::make_shared<PointCloudXYZI>();
+    measures.lidar->resize(1);
+    measures.lidar->points[0].x = 1.0F;
+    const PointCloudXYZI::Ptr queued_cloud = measures.lidar;
+    const PointCloudXYZI::Ptr previous_working_cloud = fullPoints(*node);
+
+    for (const double timestamp : {2.1, 2.2})
+    {
+        auto imu = std::make_shared<sensor_msgs::msg::Imu>();
+        const int64_t nanoseconds = static_cast<int64_t>(timestamp * 1.0e9);
+        imu->header.stamp.sec     = static_cast<int32_t>(nanoseconds / 1000000000LL);
+        imu->header.stamp.nanosec = static_cast<uint32_t>(nanoseconds % 1000000000LL);
+        imu->linear_acceleration.z = G_m_s2;
+        measures.imu.push_back(imu);
+    }
+
+    undistortQueuedCloud(*node, measures);
+
+    EXPECT_EQ(fullPoints(*node), queued_cloud);
+    EXPECT_EQ(measures.lidar, previous_working_cloud);
+    ASSERT_EQ(fullPoints(*node)->size(), 1U);
+    EXPECT_FLOAT_EQ(fullPoints(*node)->points[0].x, 1.0F);
 }
 
 TEST_F(SPARKFastLIO2Test, RejectsNonPositiveMapFilterSize)

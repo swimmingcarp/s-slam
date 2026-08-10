@@ -308,7 +308,6 @@ void ImuProcessor::undistortPointCloud(
     const double pcl_end_time = measures.lidar_end_time;
 
     /*** sort point clouds by offset time ***/
-    point_cloud = *(measures.lidar);
     std::sort(point_cloud.points.begin(), point_cloud.points.end(), isPointTimeOrdered);
     /*** Initialize IMU pose ***/
     state_ikfom imu_state = filter.get_x();
@@ -445,9 +444,9 @@ void ImuProcessor::undistortPointCloud(
 }
 
 void ImuProcessor::process(
-    const MeasureGroup &measures,
+    MeasureGroup &measures,
     esekfom::esekf<state_ikfom, 12, input_ikfom> &filter,
-    PointCloudXYZI::Ptr undistorted_cloud)
+    PointCloudXYZI::Ptr &undistorted_cloud)
 {
     if (measures.imu.empty())
     {
@@ -639,5 +638,9 @@ void ImuProcessor::process(
         return;
     }
 
+    // The synchronized cloud has been removed from the input buffer and is no
+    // longer shared. Transfer it into the working cloud before sorting and
+    // undistorting so a full-frame copy is not required.
+    std::swap(measures.lidar, undistorted_cloud);
     undistortPointCloud(measures, filter, *undistorted_cloud);
 }
