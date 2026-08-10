@@ -169,6 +169,33 @@ protected:
         return node.lidar_pushed_;
     }
 
+    static PoseStruct lidarPose(const SPARKFastLIO2 &node, const state_ikfom &state)
+    {
+        return node.transformPoseToLidarFrame(state);
+    }
+
+    static PoseStruct basePose(const SPARKFastLIO2 &node, const state_ikfom &state)
+    {
+        return node.transformPoseToBaseFrame(state);
+    }
+
+    static void setLidarPoseInBase(SPARKFastLIO2 &node,
+                                   const M3D &rotation_base_lidar,
+                                   const V3D &translation_base_lidar)
+    {
+        node.lidar_rotation_in_base_    = rotation_base_lidar;
+        node.lidar_translation_in_base_ = translation_base_lidar;
+    }
+
+    static PointType lidarPointInWorld(SPARKFastLIO2 &node,
+                                       const PointType &point_in_lidar,
+                                       const state_ikfom &state)
+    {
+        PointType point_in_world{};
+        node.pclPointBodyToWorld(&point_in_lidar, &point_in_world, state);
+        return point_in_world;
+    }
+
     static bool hasNoPublishedOdometryOrPath(const SPARKFastLIO2 &node)
     {
         return node.path_msg_.poses.empty() && node.odomAftMapped_.header.stamp.sec == 0 &&
@@ -219,6 +246,62 @@ TEST(GravityAlignment, PreservesRawStateForMapAndRotatesPublishedState)
                     .isApprox(rotation * V3D(raw_state.grav[0],
                                               raw_state.grav[1],
                                               raw_state.grav[2])));
+}
+
+TEST_F(SPARKFastLIO2Test, LidarPoseUsesTheInternalMapFrame)
+{
+    auto node = std::make_shared<SPARKFastLIO2>();
+
+    state_ikfom state;
+    M3D rotation_world_imu;
+    rotation_world_imu << 0.0, -1.0, 0.0,
+                          1.0, 0.0, 0.0,
+                          0.0, 0.0, 1.0;
+    M3D rotation_imu_lidar;
+    rotation_imu_lidar << 1.0, 0.0, 0.0,
+                           0.0, 0.0, -1.0,
+                           0.0, 1.0, 0.0;
+    state.rot          = SO3(rotation_world_imu);
+    state.offset_R_L_I = SO3(rotation_imu_lidar);
+    state.pos          = V3D(3.0, -2.0, 4.0);
+    state.offset_T_L_I = V3D(0.5, -0.25, 1.0);
+
+    const PoseStruct lidar_pose = lidarPose(*node, state);
+    const V3D expected_position = state.rot * state.offset_T_L_I + state.pos;
+    const M3D expected_rotation =
+        (state.rot * state.offset_R_L_I).toRotationMatrix();
+
+    EXPECT_TRUE(lidar_pose.position_.isApprox(expected_position));
+    EXPECT_TRUE(lidar_pose.orientation_.toRotationMatrix().isApprox(expected_rotation));
+
+    PointType point_in_lidar{};
+    point_in_lidar.x = 1.0F;
+    point_in_lidar.y = -3.0F;
+    point_in_lidar.z = 2.0F;
+    const PointType point_in_world = lidarPointInWorld(*node, point_in_lidar, state);
+    const V3D expected_point =
+        expected_rotation * V3D(point_in_lidar.x, point_in_lidar.y, point_in_lidar.z) +
+        expected_position;
+
+    EXPECT_TRUE(V3D(point_in_world.x, point_in_world.y, point_in_world.z).isApprox(expected_point));
+
+    M3D rotation_base_lidar;
+    rotation_base_lidar << 0.0, 0.0, 1.0,
+                           0.0, 1.0, 0.0,
+                           -1.0, 0.0, 0.0;
+    const V3D translation_base_lidar(-0.2, 0.4, 0.1);
+    setLidarPoseInBase(*node, rotation_base_lidar, translation_base_lidar);
+
+    const PoseStruct base_pose = basePose(*node, state);
+    const M3D rotation_imu_base = rotation_imu_lidar * rotation_base_lidar.inverse();
+    const V3D translation_imu_base =
+        state.offset_T_L_I - rotation_imu_base * translation_base_lidar;
+    const M3D expected_base_rotation = rotation_world_imu * rotation_imu_base;
+    const V3D expected_base_position =
+        rotation_world_imu * translation_imu_base + state.pos;
+
+    EXPECT_TRUE(base_pose.position_.isApprox(expected_base_position));
+    EXPECT_TRUE(base_pose.orientation_.toRotationMatrix().isApprox(expected_base_rotation));
 }
 
 TEST_F(SPARKFastLIO2Test, PreAlignmentAcceptedFrameKeepsMapCurrent)

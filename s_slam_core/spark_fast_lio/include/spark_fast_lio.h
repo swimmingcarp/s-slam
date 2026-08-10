@@ -89,10 +89,6 @@ private:
 
     void pclPointBodyLidarToBase(PointType const *const input_point, PointType *const output_point);
 
-    void pclPointIMUToLiDAR(PointType const *const input_point, PointType *const output_point);
-
-    void pclPointIMUToBase(PointType const *const input_point, PointType *const output_point);
-
     void collectRemovedPoints();
 
     void standardLiDARCallback(const sensor_msgs::msg::PointCloud2 &msg);

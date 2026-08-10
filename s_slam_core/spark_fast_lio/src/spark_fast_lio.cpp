@@ -726,35 +726,6 @@ void SPARKFastLIO2::pclPointBodyLidarToBase(PointType const *const input_point,
     output_point->z = point_in_base(2);
 }
 
-void SPARKFastLIO2::pclPointIMUToLiDAR(PointType const *const input_point,
-                                       PointType *const output_point)
-{
-    *output_point = *input_point;
-    V3D point_in_imu(input_point->x, input_point->y, input_point->z);
-    V3D point_in_lidar(
-        latest_state_.offset_R_L_I.inverse() * (point_in_imu - latest_state_.offset_T_L_I));
-
-    output_point->x = point_in_lidar(0);
-    output_point->y = point_in_lidar(1);
-    output_point->z = point_in_lidar(2);
-}
-
-void SPARKFastLIO2::pclPointIMUToBase(PointType const *const input_point,
-                                      PointType *const output_point)
-{
-    *output_point = *input_point;
-    const Eigen::Matrix3d offset_R_B_I = latest_state_.offset_R_L_I * lidar_rotation_in_base_.inverse();
-    const Eigen::Vector3d offset_T_B_I =
-        -1 * offset_R_B_I * lidar_translation_in_base_ + latest_state_.offset_T_L_I;
-
-    V3D point_in_imu(input_point->x, input_point->y, input_point->z);
-    V3D point_in_base(offset_R_B_I.inverse() * (point_in_imu - offset_T_B_I));
-
-    output_point->x = point_in_base(0);
-    output_point->y = point_in_base(1);
-    output_point->z = point_in_base(2);
-}
-
 void SPARKFastLIO2::collectRemovedPoints()
 {
     PointVector points_history;
@@ -1407,33 +1378,13 @@ void SPARKFastLIO2::publishMapScan(
             dense_publish_enabled_ ? full_points_ : feats_down_body_);
 
         int size = laserCloudFullRes->points.size();
-        // allocate world frames
+        // `map_frame_` always uses the internal world coordinates, regardless of
+        // the child frame selected for odometry visualization.
         PointCloudXYZI::Ptr laserCloudWorld(new PointCloudXYZI(size, 1));
-        PointCloudXYZI::Ptr laserCloudTmp(new PointCloudXYZI(size, 1));
 
         for (int i = 0; i < size; ++i)
         {
-            if (viz_frame_ == "imu")
-            {
-                pclPointBodyToWorld(
-                    &laserCloudFullRes->points[i], &laserCloudWorld->points[i], state);
-            }
-            else if (viz_frame_ == "lidar")
-            {
-                pclPointBodyToWorld(
-                    &laserCloudFullRes->points[i], &laserCloudTmp->points[i], state);
-                pclPointIMUToLiDAR(&laserCloudTmp->points[i], &laserCloudWorld->points[i]);
-            }
-            else if (viz_frame_ == "base")
-            {
-                pclPointBodyToWorld(
-                    &laserCloudFullRes->points[i], &laserCloudTmp->points[i], state);
-                pclPointIMUToBase(&laserCloudTmp->points[i], &laserCloudWorld->points[i]);
-            }
-            else
-            {
-                throw std::invalid_argument("Invalid visualization frame has been given");
-            }
+            pclPointBodyToWorld(&laserCloudFullRes->points[i], &laserCloudWorld->points[i], state);
         }
 
         sensor_msgs::msg::PointCloud2 cloud_msg;
@@ -1525,13 +1476,9 @@ void SPARKFastLIO2::publishScan(
 
 PoseStruct SPARKFastLIO2::transformPoseToLidarFrame(const state_ikfom &state) const
 {
-    // offset_A_B: transformation matrix of A w.r.t. B
-    Eigen::Vector3d lidar_position =
-        state.offset_R_L_I.inverse() *
-        (state.rot * state.offset_T_L_I + state.pos - state.offset_T_L_I);
-
-    Eigen::Quaterniond lidar_orientation =
-        state.offset_R_L_I.inverse() * state.rot * state.offset_R_L_I;
+    // T_W_L = T_W_I * T_I_L. The map frame is never re-expressed for display.
+    const Eigen::Vector3d lidar_position = state.rot * state.offset_T_L_I + state.pos;
+    const Eigen::Quaterniond lidar_orientation(state.rot * state.offset_R_L_I);
 
     PoseStruct output;
     output.position_    = lidar_position;
@@ -1554,15 +1501,12 @@ void SPARKFastLIO2::processPendingMeasurements()
 
 PoseStruct SPARKFastLIO2::transformPoseToBaseFrame(const state_ikfom &state) const
 {
-    const Eigen::Matrix3d offset_R_B_I = state.offset_R_L_I * lidar_rotation_in_base_.inverse();
-    const Eigen::Vector3d offset_T_B_I =
-        -offset_R_B_I * lidar_translation_in_base_ + state.offset_T_L_I;
-
-    Eigen::Vector3d base_position =
-        offset_R_B_I.inverse() * (state.rot * offset_T_B_I + state.pos - offset_T_B_I);
-
-    Eigen::Quaterniond base_orientation =
-        Eigen::Quaterniond(offset_R_B_I.inverse() * state.rot * offset_R_B_I);
+    const Eigen::Matrix3d rotation_imu_base =
+        state.offset_R_L_I * lidar_rotation_in_base_.inverse();
+    const Eigen::Vector3d translation_imu_base =
+        state.offset_T_L_I - rotation_imu_base * lidar_translation_in_base_;
+    const Eigen::Vector3d base_position = state.rot * translation_imu_base + state.pos;
+    const Eigen::Quaterniond base_orientation(state.rot * rotation_imu_base);
 
     PoseStruct output;
     output.position_    = base_position;
