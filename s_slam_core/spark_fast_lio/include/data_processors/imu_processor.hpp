@@ -97,7 +97,8 @@ public:
     }
 
 private:
-    void initializeImu(const MeasureGroup &measures,
+    static bool hasValidAccelerationReference(const V3D &acceleration);
+    bool initializeImu(const MeasureGroup &measures,
                        esekfom::esekf<state_ikfom, 12, input_ikfom> &filter,
                        int &init_sample_count);
     void undistortPointCloud(const MeasureGroup &measures,

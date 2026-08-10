@@ -24,6 +24,7 @@ constexpr double kSmallPlaneDistanceRatio = 1.2;
 constexpr double kPi = 3.14159265358979323846;
 constexpr float kPilotZoneHalfWidth = 0.6F;
 constexpr double kPlaneDirectionMinimumNorm = 0.1;
+constexpr double kMinimumVectorNorm = 1.0e-12;
 constexpr double kEdgePlaneDirectionCosineLimit = 0.707;
 constexpr double kEdgeJumpMinimumDistance = 0.0225;
 constexpr double kEdgeJumpNeighborDistanceRatio = 4.0;
@@ -655,6 +656,14 @@ void LidarProcessor::extractFeaturesFromScanLine(
         }
 
         Eigen::Vector3d point_vector(pl[i].x, pl[i].y, pl[i].z);
+        const double point_norm = point_vector.norm();
+        if (!std::isfinite(point_norm) || point_norm < kMinimumVectorNorm)
+        {
+            point_feature_infos[i].ftype     = ZeroPoint;
+            point_feature_infos[i].edj[Prev] = Nr_zero;
+            point_feature_infos[i].edj[Next] = Nr_zero;
+            continue;
+        }
         std::array<Eigen::Vector3d, 2> neighbor_vectors{
             Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero()};
         std::array<bool, 2> has_neighbor{};
@@ -684,7 +693,7 @@ void LidarProcessor::extractFeaturesFromScanLine(
                                 pl[i + neighbor_offset].z) -
                 point_vector;
             const double neighbor_norm = neighbor_vectors[neighbor_index].norm();
-            if (neighbor_norm < 1.0e-12)
+            if (!std::isfinite(neighbor_norm) || neighbor_norm < kMinimumVectorNorm)
             {
                 point_feature_infos[i].edj[neighbor_index] = Nr_zero;
                 continue;
@@ -693,7 +702,7 @@ void LidarProcessor::extractFeaturesFromScanLine(
 
             point_feature_infos[i].angle[neighbor_index] =
                 point_vector.dot(neighbor_vectors[neighbor_index]) /
-                point_vector.norm() / neighbor_norm;
+                point_norm / neighbor_norm;
             if (point_feature_infos[i].angle[neighbor_index] < kJumpUpCosineThreshold)
             {
                 point_feature_infos[i].edj[neighbor_index] = Nr_180;
@@ -845,6 +854,11 @@ void LidarProcessor::extractFeaturesFromScanLine(
                     ap.curvature += pl[k].curvature;
                 }
                 const auto point_count = j - *first_surface_index;
+                if (point_count == 0)
+                {
+                    first_surface_index.reset();
+                    continue;
+                }
                 ap.x /= point_count;
                 ap.y /= point_count;
                 ap.z /= point_count;
@@ -932,7 +946,8 @@ PlaneClassification LidarProcessor::classifyPlaneSegment(
         }
     }
 
-    if ((two_dis * two_dis / leng_wid) < kPlaneToLineRatio)
+    if (!std::isfinite(leng_wid) || leng_wid < kMinimumVectorNorm ||
+        (two_dis * two_dis / leng_wid) < kPlaneToLineRatio)
     {
         curr_direct.setZero();
         return PlaneClassification::kNotPlane;

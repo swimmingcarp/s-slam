@@ -74,7 +74,7 @@ bool canSeedWarmRecovery(const state_ikfom &state, const V3D &mean_acceleration)
 {
     const V3D gravity(state.grav[0], state.grav[1], state.grav[2]);
     return hasFiniteState(state) && mean_acceleration.allFinite() &&
-           gravity.norm() > 0.5 * G_m_s2 && mean_acceleration.norm() > 0.5 * G_m_s2;
+           gravity.norm() > 0.5 * G_m_s2 && mean_acceleration.norm() >= kMinInitAccNorm;
 }
 
 rclcpp::ReliabilityPolicy parseReliabilityPolicy(const std::string &value,
@@ -183,6 +183,10 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     imu_buffer_.set_capacity(imu_buffer_capacity_);
 
     filter_size_map_min_ = declare_parameter<double>("filter_size_map", 0.5);
+    if (!std::isfinite(filter_size_map_min_) || filter_size_map_min_ <= 0.0)
+    {
+        throw std::invalid_argument("filter_size_map must be positive and finite");
+    }
     local_map_side_length_      = declare_parameter<double>("cube_side_length", 200.0);
     detection_range_             = declare_parameter<double>("mapping.det_range", 300.0);
     fov_deg_                     = declare_parameter<double>("mapping.fov_degree", 360.0);
@@ -967,12 +971,17 @@ void SPARKFastLIO2::computeMeasurementModel(
         if (esti_plane(plane_coefficients, points_near, 0.1f))
         {
             ++plane_candidate_num;
+            const double point_range = point_in_body.norm();
+            if (!std::isfinite(point_range) || point_range <= std::numeric_limits<double>::epsilon())
+            {
+                continue;
+            }
             const float point_to_plane_distance =
                 plane_coefficients(0) * point_world.x +
                 plane_coefficients(1) * point_world.y +
                 plane_coefficients(2) * point_world.z + plane_coefficients(3);
             const float plane_score =
-                1 - 0.9f * fabs(point_to_plane_distance) / sqrt(point_in_body.norm());
+                1 - 0.9f * fabs(point_to_plane_distance) / sqrt(point_range);
 
             if (plane_score > 0.9f)
             {

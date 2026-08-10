@@ -172,7 +172,13 @@ void ImuProcessor::setReplayMode(const bool replay_mode)
     replay_mode_ = replay_mode;
 }
 
-void ImuProcessor::initializeImu(
+bool ImuProcessor::hasValidAccelerationReference(const V3D &acceleration)
+{
+    const double norm = acceleration.norm();
+    return acceleration.allFinite() && std::isfinite(norm) && norm >= kMinInitAccNorm;
+}
+
+bool ImuProcessor::initializeImu(
     const MeasureGroup &measures,
     esekfom::esekf<state_ikfom, 12, input_ikfom> &filter,
     int &init_sample_count)
@@ -219,29 +225,41 @@ void ImuProcessor::initializeImu(
 
         ++init_sample_count;
     }
-    state_ikfom init_state = filter.get_x();
-    init_state.grav         = S2(-mean_acceleration_ / mean_acceleration_.norm() * G_m_s2);
+    const bool has_valid_acceleration_reference =
+        hasValidAccelerationReference(mean_acceleration_);
+    if (has_valid_acceleration_reference)
+    {
+        const double mean_acceleration_norm = mean_acceleration_.norm();
+        state_ikfom init_state = filter.get_x();
+        init_state.grav = S2(-mean_acceleration_ / mean_acceleration_norm * G_m_s2);
 
-    init_state.bg           = mean_angular_velocity_;
-    init_state.offset_T_L_I = lidar_translation_wrt_imu_;
-    init_state.offset_R_L_I = lidar_rotation_wrt_imu_;
-    filter.change_x(init_state);
+        init_state.bg           = mean_angular_velocity_;
+        init_state.offset_T_L_I = lidar_translation_wrt_imu_;
+        init_state.offset_R_L_I = lidar_rotation_wrt_imu_;
+        filter.change_x(init_state);
 
-    esekfom::esekf<state_ikfom, 12, input_ikfom>::cov init_P = filter.get_P();
-    init_P.setIdentity();
-    init_P(6, 6) = init_P(7, 7) = init_P(8, 8) = 0.00001;
-    init_P(9, 9) = init_P(10, 10) = init_P(11, 11) = 0.00001;
-    init_P(15, 15) = init_P(16, 16) = init_P(17, 17) = 0.0001;
-    init_P(18, 18) = init_P(19, 19) = init_P(20, 20) = 0.001;
-    init_P(21, 21) = init_P(22, 22) = 0.00001;
-    filter.change_P(init_P);
+        esekfom::esekf<state_ikfom, 12, input_ikfom>::cov init_P = filter.get_P();
+        init_P.setIdentity();
+        init_P(6, 6) = init_P(7, 7) = init_P(8, 8) = 0.00001;
+        init_P(9, 9) = init_P(10, 10) = init_P(11, 11) = 0.00001;
+        init_P(15, 15) = init_P(16, 16) = init_P(17, 17) = 0.0001;
+        init_P(18, 18) = init_P(19, 19) = init_P(20, 20) = 0.001;
+        init_P(21, 21) = init_P(22, 22) = 0.00001;
+        filter.change_P(init_P);
+    }
     last_imu_ = measures.imu.back();
+    return has_valid_acceleration_reference;
 }
 
 state_ikfom ImuProcessor::integrateImu(
     const std::deque<sensor_msgs::msg::Imu> &imu_queue,
     esekfom::esekf<state_ikfom, 12, input_ikfom> &filter)
 {
+    if (imu_queue.size() < 2 || !hasValidAccelerationReference(mean_acceleration_))
+    {
+        return filter.get_x();
+    }
+
     V3D angvel_avr, acc_avr, acc_imu, vel_imu, pos_imu;
     M3D R_imu;
 
@@ -277,6 +295,11 @@ void ImuProcessor::undistortPointCloud(
     esekfom::esekf<state_ikfom, 12, input_ikfom> &filter,
     PointCloudXYZI &point_cloud)
 {
+    if (!hasValidAccelerationReference(mean_acceleration_))
+    {
+        return;
+    }
+
     /*** add the imu of the last frame-tail to the of current frame-head ***/
     auto v_imu = measures.imu;
     v_imu.push_front(last_imu_);
@@ -437,7 +460,8 @@ void ImuProcessor::process(
         /// The very first lidar frame
         state_ikfom state_before_init = filter.get_x();
         esekfom::esekf<state_ikfom, 12, input_ikfom>::cov cov_before_init = filter.get_P();
-        initializeImu(measures, filter, init_sample_count_);
+        const bool has_valid_acceleration_reference =
+            initializeImu(measures, filter, init_sample_count_);
 
         needs_initialization_ = true;
 
@@ -513,6 +537,22 @@ void ImuProcessor::process(
             gyroscope_covariance_.cwiseMax(V3D::Zero()).cwiseSqrt().norm();
         const bool has_enough_imu = init_samples >= kMinImuInitSamples &&
                                     init_duration >= kMinImuInitDuration;
+        if (!has_valid_acceleration_reference)
+        {
+            if (has_enough_imu)
+            {
+                RCLCPP_WARN(rclcpp::get_logger("ImuProcessor"),
+                            "IMU initialization rejected: invalid mean acceleration reference "
+                            "(samples=%d duration=%.3f s mean_acc_norm=%.6f)",
+                            init_samples,
+                            init_duration,
+                            mean_acc_norm);
+                reset();
+            }
+            filter.change_x(state_before_init);
+            filter.change_P(cov_before_init);
+            return;
+        }
         const bool is_stationary  = mean_acc_norm >= kMinInitAccNorm &&
                                    mean_acc_norm <= kMaxInitAccNorm &&
                                    mean_gyr_norm <= kMaxInitMeanGyroNorm &&
@@ -561,7 +601,7 @@ void ImuProcessor::process(
 
         if (has_enough_imu)
         {
-            accelerometer_covariance_ *= std::pow(G_m_s2 / mean_acceleration_.norm(), 2);
+            accelerometer_covariance_ *= std::pow(G_m_s2 / mean_acc_norm, 2);
             needs_initialization_     = false;
             last_lidar_end_time_      = measures.lidar_end_time;
 

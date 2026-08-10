@@ -1,7 +1,9 @@
 #ifndef COMMON_LIB_H
 #define COMMON_LIB_H
 
+#include <cmath>
 #include <deque>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -70,6 +72,10 @@ struct MeasureGroup
     inline V3D getMeanAcc()
     {
         V3D mean_acc(Zero3d);
+        if (imu.empty())
+        {
+            return mean_acc;
+        }
         for (const auto &meas : imu)
         {
             const auto &imu_acc = meas->linear_acceleration;
@@ -226,6 +232,11 @@ bool esti_normvector(Eigen::Matrix<T, 3, 1> &normvec,
                      const T &threshold,
                      const int &point_num)
 {
+    if (point_num <= 0 || point.size() < static_cast<std::size_t>(point_num))
+    {
+        return false;
+    }
+
     Eigen::MatrixXf A(point_num, 3);
     Eigen::MatrixXf b(point_num, 1);
     b.setOnes();
@@ -248,7 +259,13 @@ bool esti_normvector(Eigen::Matrix<T, 3, 1> &normvec,
         }
     }
 
-    normvec.normalize();
+    const T norm = normvec.norm();
+    if (!normvec.allFinite() || !std::isfinite(norm) ||
+        norm <= std::numeric_limits<T>::epsilon())
+    {
+        return false;
+    }
+    normvec /= norm;
     return true;
 }
 
@@ -262,6 +279,11 @@ inline float calc_dist(PointType p1, PointType p2)
 template <typename T>
 bool esti_plane(Eigen::Matrix<T, 4, 1> &pca_result, const PointVector &point, const T &threshold)
 {
+    if (point.size() < NUM_MATCH_POINTS)
+    {
+        return false;
+    }
+
     Eigen::Matrix<T, NUM_MATCH_POINTS, 3> A;
     Eigen::Matrix<T, NUM_MATCH_POINTS, 1> b;
     A.setZero();
@@ -277,7 +299,11 @@ bool esti_plane(Eigen::Matrix<T, 4, 1> &pca_result, const PointVector &point, co
 
     Eigen::Matrix<T, 3, 1> normvec = A.colPivHouseholderQr().solve(b);
 
-    T n           = normvec.norm();
+    const T n = normvec.norm();
+    if (!normvec.allFinite() || !std::isfinite(n) || n <= std::numeric_limits<T>::epsilon())
+    {
+        return false;
+    }
     pca_result(0) = normvec(0) / n;
     pca_result(1) = normvec(1) / n;
     pca_result(2) = normvec(2) / n;

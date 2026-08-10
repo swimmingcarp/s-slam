@@ -212,6 +212,38 @@ protected:
         node.lidar_end_time_ = quality.lidar_time;
         node.commitOdometryUpdate(measures, propagated_state, quality);
     }
+
+    static void initializeWithZeroAcceleration(SPARKFastLIO2 &node)
+    {
+        MeasureGroup measures;
+        measures.lidar_beg_time = 0.0;
+        measures.lidar_end_time = 2.1;
+        for (int sample_index = 0; sample_index <= kMinImuInitSamples; ++sample_index)
+        {
+            auto imu = std::make_shared<sensor_msgs::msg::Imu>();
+            const int64_t nanoseconds = static_cast<int64_t>(sample_index) * 10000000LL;
+            imu->header.stamp.sec     = static_cast<int32_t>(nanoseconds / 1000000000LL);
+            imu->header.stamp.nanosec = static_cast<uint32_t>(nanoseconds % 1000000000LL);
+            measures.imu.push_back(imu);
+        }
+
+        auto undistorted_cloud = std::make_shared<PointCloudXYZI>();
+        node.imu_processor_->process(measures, node.kf_, undistorted_cloud);
+    }
+
+    static bool filterStateIsFinite(const SPARKFastLIO2 &node)
+    {
+        const state_ikfom state = node.kf_.get_x();
+        const V3D gravity(state.grav[0], state.grav[1], state.grav[2]);
+        return state.pos.allFinite() && state.vel.allFinite() && state.bg.allFinite() &&
+               state.ba.allFinite() && gravity.allFinite() &&
+               state.rot.toRotationMatrix().allFinite();
+    }
+
+    static bool imuProcessorIsInitialized(const SPARKFastLIO2 &node)
+    {
+        return node.imu_processor_->isInitialized();
+    }
 };
 
 namespace
@@ -246,6 +278,19 @@ TEST(GravityAlignment, PreservesRawStateForMapAndRotatesPublishedState)
                     .isApprox(rotation * V3D(raw_state.grav[0],
                                               raw_state.grav[1],
                                               raw_state.grav[2])));
+}
+
+TEST(SafetyChecks, EmptyImuGroupHasZeroMeanAcceleration)
+{
+    MeasureGroup measures;
+    EXPECT_TRUE(measures.getMeanAcc().isZero());
+}
+
+TEST(SafetyChecks, RejectsDegeneratePlaneNormal)
+{
+    PointVector points(NUM_MATCH_POINTS);
+    Eigen::Matrix<float, 4, 1> plane;
+    EXPECT_FALSE(esti_plane(plane, points, 0.1F));
 }
 
 TEST_F(SPARKFastLIO2Test, LidarPoseUsesTheInternalMapFrame)
@@ -302,6 +347,24 @@ TEST_F(SPARKFastLIO2Test, LidarPoseUsesTheInternalMapFrame)
 
     EXPECT_TRUE(base_pose.position_.isApprox(expected_base_position));
     EXPECT_TRUE(base_pose.orientation_.toRotationMatrix().isApprox(expected_base_rotation));
+}
+
+TEST_F(SPARKFastLIO2Test, RejectsZeroAccelerationDuringImuInitialization)
+{
+    auto node = std::make_shared<SPARKFastLIO2>();
+
+    initializeWithZeroAcceleration(*node);
+
+    EXPECT_FALSE(imuProcessorIsInitialized(*node));
+    EXPECT_TRUE(filterStateIsFinite(*node));
+}
+
+TEST_F(SPARKFastLIO2Test, RejectsNonPositiveMapFilterSize)
+{
+    rclcpp::NodeOptions options;
+    options.append_parameter_override("filter_size_map", 0.0);
+
+    EXPECT_THROW(std::make_shared<SPARKFastLIO2>(options), std::invalid_argument);
 }
 
 TEST_F(SPARKFastLIO2Test, PreAlignmentAcceptedFrameKeepsMapCurrent)
