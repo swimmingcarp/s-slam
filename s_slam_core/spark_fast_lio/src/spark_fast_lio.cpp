@@ -738,24 +738,24 @@ void SPARKFastLIO2::collectRemovedPoints()
 
 void SPARKFastLIO2::standardLiDARCallback(const sensor_msgs::msg::PointCloud2 &msg)
 {
+    rclcpp::Time msg_time = msg.header.stamp;
+    double msg_end_time   = 0.0;
+
+    PointCloudXYZI::Ptr ptr(new PointCloudXYZI());
+    if (!lidar_processor_->process(msg, ptr))
+    {
+        return;
+    }
+
+    if (lidar_processor_->hasScanTime())
+    {
+        msg_time     = rclcpp::Time(lidar_processor_->scanStartTime() * 1e9);
+        msg_end_time = lidar_processor_->scanEndTime();
+    }
+
     {
         std::lock_guard<std::mutex> lk(buffer_mutex_);
         ++scan_count_;
-        rclcpp::Time msg_time = msg.header.stamp;
-        double msg_end_time   = 0.0;
-
-        PointCloudXYZI::Ptr ptr(new PointCloudXYZI());
-        if (!lidar_processor_->process(msg, ptr))
-        {
-            return;
-        }
-
-        if (lidar_processor_->hasScanTime())
-        {
-            msg_time     = rclcpp::Time(lidar_processor_->scanStartTime() * 1e9);
-            msg_end_time = lidar_processor_->scanEndTime();
-        }
-
         if (has_last_lidar_timestamp_ && msg_time < last_lidar_timestamp_)
         {
             resetEstimatorState("LiDAR timestamp moved backwards", ResetMode::kWarmRecovery);
@@ -775,10 +775,17 @@ void SPARKFastLIO2::standardLiDARCallback(const sensor_msgs::msg::PointCloud2 &m
 #if defined(LIVOX_ROS_DRIVER_FOUND) && LIVOX_ROS_DRIVER_FOUND
 void SPARKFastLIO2::livoxLiDARCallback(const livox_ros_driver2::msg::CustomMsg::ConstSharedPtr msg)
 {
+    const rclcpp::Time msg_time = msg->header.stamp;
+
+    PointCloudXYZI::Ptr ptr(new PointCloudXYZI());
+    if (!lidar_processor_->process(*msg, ptr))
+    {
+        return;
+    }
+
     {
         std::lock_guard<std::mutex> lk(buffer_mutex_);
         ++scan_count_;
-        rclcpp::Time msg_time = msg->header.stamp;
 
         if (has_last_lidar_timestamp_ && msg_time < last_lidar_timestamp_)
         {
@@ -805,12 +812,6 @@ void SPARKFastLIO2::livoxLiDARCallback(const livox_ros_driver2::msg::CustomMsg::
             RCLCPP_INFO_STREAM(
                 this->get_logger(),
                 "Self sync IMU and LiDAR, time diff is " << lidar_imu_time_offset_ << "[ns]");
-        }
-
-        PointCloudXYZI::Ptr ptr(new PointCloudXYZI());
-        if (!lidar_processor_->process(*msg, ptr))
-        {
-            return;
         }
 
         lidar_buffer_.push_back({ptr, msg_time.seconds(), 0.0});
