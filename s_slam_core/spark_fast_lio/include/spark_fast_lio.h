@@ -9,6 +9,7 @@
 #include <vector>
 
 #include <Eigen/Core>
+#include <boost/circular_buffer.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <pcl/filters/voxel_grid.h>
@@ -199,8 +200,6 @@ private:
 
     void processPendingMeasurements();
 
-    void enforceInputBufferBounds();
-
     bool syncPackages(MeasureGroup &measurements, bool verbose);
 
     bool isMotionStopped(const V3D &acc_ref, const V3D &acc_curr, const double acc_diff_thr);
@@ -321,7 +320,6 @@ private:
     rclcpp::ReliabilityPolicy imu_qos_reliability_   = rclcpp::ReliabilityPolicy::Reliable;
     std::size_t lidar_buffer_capacity_     = 20;
     std::size_t imu_buffer_capacity_       = 1000;
-    double input_buffer_max_duration_      = 2.0;
 
     bool verbose_     = false;
     bool pcl_verbose_ = true;
@@ -381,8 +379,6 @@ private:
     int motion_gate_min_effective_features_ = 100;
     int motion_gate_reject_count_              = 0;
     int motion_gate_consecutive_reject_count_ = 0;
-    int input_buffer_overflow_count_          = 0;
-
     double mean_scan_duration_ = 0.0;
     int scan_duration_sample_count_ = 0;
     std::size_t verbose_lidar_buffer_size_ = 0;
@@ -411,10 +407,15 @@ private:
     std::chrono::steady_clock::time_point last_extrinsics_wait_log_;
     bool extrinsics_timeout_reported_ = false;
 
-    std::deque<double> time_buffer_;
-    std::deque<double> lidar_end_time_buffer_;
-    std::deque<PointCloudXYZI::Ptr> lidar_buffer_;
-    std::deque<std::shared_ptr<const sensor_msgs::msg::Imu>> imu_buffer_;
+    struct BufferedLidarFrame
+    {
+        PointCloudXYZI::Ptr cloud;
+        double begin_time = 0.0;
+        double end_time   = 0.0;
+    };
+
+    boost::circular_buffer<BufferedLidarFrame> lidar_buffer_;
+    boost::circular_buffer<std::shared_ptr<const sensor_msgs::msg::Imu>> imu_buffer_;
     std::deque<sensor_msgs::msg::Imu> imu_integration_queue_;
 
     PointCloudXYZI::Ptr full_points_;

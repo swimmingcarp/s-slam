@@ -177,8 +177,10 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
         1, declare_parameter<int>("common.lidar_buffer_capacity", 20)));
     imu_buffer_capacity_ = static_cast<std::size_t>(std::max<int64_t>(
         1, declare_parameter<int>("common.imu_buffer_capacity", 1000)));
-    input_buffer_max_duration_ = std::max(
-        0.0, declare_parameter<double>("common.input_buffer_max_duration_sec", 2.0));
+    // A bounded sliding window keeps the newest sensor data when processing
+    // falls behind. Full buffers discard stale entries instead of resetting LIO.
+    lidar_buffer_.set_capacity(lidar_buffer_capacity_);
+    imu_buffer_.set_capacity(imu_buffer_capacity_);
 
     filter_size_map_min_ = declare_parameter<double>("filter_size_map", 0.5);
     local_map_side_length_      = declare_parameter<double>("cube_side_length", 200.0);
@@ -509,8 +511,6 @@ void SPARKFastLIO2::resetEstimatorState(const std::string &reason, const ResetMo
     }
 
     lidar_buffer_.clear();
-    time_buffer_.clear();
-    lidar_end_time_buffer_.clear();
     imu_buffer_.clear();
     imu_integration_queue_.clear();
 
@@ -788,10 +788,7 @@ void SPARKFastLIO2::standardLiDARCallback(const sensor_msgs::msg::PointCloud2 &m
         last_lidar_timestamp_ = msg_time;
         has_last_lidar_timestamp_ = true;
 
-        lidar_buffer_.push_back(ptr);
-        time_buffer_.push_back(msg_time.seconds());
-        lidar_end_time_buffer_.push_back(msg_end_time);
-        enforceInputBufferBounds();
+        lidar_buffer_.push_back({ptr, msg_time.seconds(), msg_end_time});
     }
 
     if (process_on_callback_)
@@ -841,10 +838,7 @@ void SPARKFastLIO2::livoxLiDARCallback(const livox_ros_driver2::msg::CustomMsg::
             return;
         }
 
-        lidar_buffer_.push_back(ptr);
-        time_buffer_.push_back(msg_time.seconds());
-        lidar_end_time_buffer_.push_back(0.0);
-        enforceInputBufferBounds();
+        lidar_buffer_.push_back({ptr, msg_time.seconds(), 0.0});
     }
 
     if (process_on_callback_)
@@ -893,7 +887,6 @@ void SPARKFastLIO2::imuCallback(const sensor_msgs::msg::Imu::ConstSharedPtr msg)
         }
 
         imu_buffer_.push_back(imu_input);
-        enforceInputBufferBounds();
     }
 
     if (process_on_callback_)
@@ -1577,47 +1570,6 @@ PoseStruct SPARKFastLIO2::transformPoseToBaseFrame(const state_ikfom &state) con
     return output;
 }
 
-void SPARKFastLIO2::enforceInputBufferBounds()
-{
-    const double lidar_buffer_duration =
-        time_buffer_.size() < 2 ? 0.0 : time_buffer_.back() - time_buffer_.front();
-    const double imu_buffer_duration =
-        imu_buffer_.size() < 2
-            ? 0.0
-            : (rclcpp::Time(imu_buffer_.back()->header.stamp) -
-               rclcpp::Time(imu_buffer_.front()->header.stamp))
-                  .seconds();
-    // Before the first LiDAR package is paired, retain the IMU history needed
-    // to initialize and undistort that scan. The hard capacities still bound
-    // this startup phase.
-    const bool duration_exceeded =
-        !is_first_lidar_scan_ && input_buffer_max_duration_ > 0.0 &&
-        (lidar_buffer_duration > input_buffer_max_duration_ ||
-         imu_buffer_duration > input_buffer_max_duration_);
-    const bool capacity_exceeded = lidar_buffer_.size() > lidar_buffer_capacity_ ||
-                                   imu_buffer_.size() > imu_buffer_capacity_;
-    if (!duration_exceeded && !capacity_exceeded)
-    {
-        return;
-    }
-
-    ++input_buffer_overflow_count_;
-    RCLCPP_ERROR(this->get_logger(),
-                 "Input buffer overflow: lidar=%zu/%zu over %.3f s, imu=%zu/%zu over %.3f s; "
-                 "clearing queued input and cold-resetting the estimator (count=%d).",
-                 lidar_buffer_.size(),
-                 lidar_buffer_capacity_,
-                 lidar_buffer_duration,
-                 imu_buffer_.size(),
-                 imu_buffer_capacity_,
-                 imu_buffer_duration,
-                 input_buffer_overflow_count_);
-
-    // Truncating either sensor stream breaks the LiDAR-IMU time contract.
-    // Restart at a clean boundary instead of fusing new data with stale state.
-    resetEstimatorState("input buffer overflow", ResetMode::kCold);
-}
-
 bool SPARKFastLIO2::syncPackages(MeasureGroup &measurements, bool verbose)
 {
     std::lock_guard<std::mutex> lk(buffer_mutex_);
@@ -1636,17 +1588,18 @@ bool SPARKFastLIO2::syncPackages(MeasureGroup &measurements, bool verbose)
         }
     }
 
-    if (lidar_buffer_.empty() || imu_buffer_.empty())
+    if ((!lidar_pushed_ && lidar_buffer_.empty()) || imu_buffer_.empty())
     {
         return false;
     }
 
     if (!lidar_pushed_)
     {
-        measurements.lidar          = lidar_buffer_.front();
-        measurements.lidar_beg_time = time_buffer_.front();
-        const double msg_end_time =
-            lidar_end_time_buffer_.empty() ? 0.0 : lidar_end_time_buffer_.front();
+        const BufferedLidarFrame &buffered_lidar = lidar_buffer_.front();
+        measurements.lidar                       = buffered_lidar.cloud;
+        measurements.lidar_beg_time              = buffered_lidar.begin_time;
+        const double msg_end_time                 = buffered_lidar.end_time;
+        lidar_buffer_.pop_front();
         constexpr double kPointTimeOffsetScale = 1000.0;
 
         // RoboSense filtering can drop late-scan points; prefer the raw scan end timestamp.
@@ -1720,17 +1673,6 @@ bool SPARKFastLIO2::syncPackages(MeasureGroup &measurements, bool verbose)
         return false;
     }
 
-    const auto consume_lidar = [&]()
-    {
-        lidar_buffer_.pop_front();
-        time_buffer_.pop_front();
-        if (!lidar_end_time_buffer_.empty())
-        {
-            lidar_end_time_buffer_.pop_front();
-        }
-        lidar_pushed_ = false;
-    };
-
     /*** push imu data, and pop from imu buffer ***/
     double imu_time = rclcpp::Time(imu_buffer_.front()->header.stamp).seconds();
     measurements.imu.clear();
@@ -1759,11 +1701,11 @@ bool SPARKFastLIO2::syncPackages(MeasureGroup &measurements, bool verbose)
                              measurements.lidar_beg_time,
                              lidar_end_time_,
                              imu_time);
-        consume_lidar();
+        lidar_pushed_ = false;
         return false;
     }
 
-    consume_lidar();
+    lidar_pushed_ = false;
 
     return true;
 }

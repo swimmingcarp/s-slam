@@ -122,34 +122,51 @@ protected:
         node.imuCallback(imu);
     }
 
-    static void queueLidar(SPARKFastLIO2 &node, const double timestamp)
+    static PointCloudXYZI::Ptr queueLidar(SPARKFastLIO2 &node, const double timestamp)
     {
-        node.lidar_buffer_.push_back(std::make_shared<PointCloudXYZI>());
-        node.time_buffer_.push_back(timestamp);
-        node.lidar_end_time_buffer_.push_back(timestamp + 0.1);
+        auto cloud = std::make_shared<PointCloudXYZI>();
+        node.lidar_buffer_.push_back({cloud, timestamp, timestamp + 0.1});
+        return cloud;
     }
 
-    static void enforceInputBufferBounds(SPARKFastLIO2 &node)
+    static std::size_t lidarBufferSize(const SPARKFastLIO2 &node)
     {
-        node.enforceInputBufferBounds();
+        return node.lidar_buffer_.size();
     }
 
-    static void markFirstLidarPackageProcessed(SPARKFastLIO2 &node)
+    static double oldestLidarTimestamp(const SPARKFastLIO2 &node)
     {
-        node.is_first_lidar_scan_ = false;
+        return node.lidar_buffer_.front().begin_time;
     }
 
-    static bool inputBuffersAreCleared(const SPARKFastLIO2 &node)
+    static double newestLidarTimestamp(const SPARKFastLIO2 &node)
     {
-        return node.lidar_buffer_.empty() && node.time_buffer_.empty() &&
-               node.lidar_end_time_buffer_.empty() && node.imu_buffer_.empty() &&
-               node.imu_integration_queue_.empty() && !node.lidar_pushed_ &&
-               node.measures_.imu.empty();
+        return node.lidar_buffer_.back().begin_time;
     }
 
-    static int inputBufferOverflowCount(const SPARKFastLIO2 &node)
+    static std::size_t imuBufferSize(const SPARKFastLIO2 &node)
     {
-        return node.input_buffer_overflow_count_;
+        return node.imu_buffer_.size();
+    }
+
+    static double oldestImuTimestamp(const SPARKFastLIO2 &node)
+    {
+        return rclcpp::Time(node.imu_buffer_.front()->header.stamp).seconds();
+    }
+
+    static double newestImuTimestamp(const SPARKFastLIO2 &node)
+    {
+        return rclcpp::Time(node.imu_buffer_.back()->header.stamp).seconds();
+    }
+
+    static bool syncPackages(SPARKFastLIO2 &node, MeasureGroup &measurements)
+    {
+        return node.syncPackages(measurements, false);
+    }
+
+    static bool hasInFlightLidar(const SPARKFastLIO2 &node)
+    {
+        return node.lidar_pushed_;
     }
 
     static bool hasNoPublishedOdometryOrPath(const SPARKFastLIO2 &node)
@@ -261,37 +278,72 @@ TEST_F(SPARKFastLIO2Test, RejectsUnknownInputSubscriptionReliability)
     EXPECT_THROW(std::make_shared<SPARKFastLIO2>(options), std::invalid_argument);
 }
 
-TEST_F(SPARKFastLIO2Test, ImuBufferCapacityOverflowResetsQueuedInput)
+TEST_F(SPARKFastLIO2Test, InputBuffersRetainNewestDataAtCapacity)
 {
     rclcpp::NodeOptions options;
+    options.append_parameter_override("common.lidar_buffer_capacity", 2);
     options.append_parameter_override("common.imu_buffer_capacity", 2);
-    options.append_parameter_override("common.input_buffer_max_duration_sec", 10.0);
 
     auto node = std::make_shared<SPARKFastLIO2>(options);
     feedImu(*node, 1.0);
     feedImu(*node, 1.01);
     feedImu(*node, 1.02);
+    queueLidar(*node, 2.0);
+    queueLidar(*node, 2.1);
+    queueLidar(*node, 2.2);
 
-    EXPECT_EQ(inputBufferOverflowCount(*node), 1);
-    EXPECT_TRUE(inputBuffersAreCleared(*node));
+    ASSERT_EQ(imuBufferSize(*node), 2U);
+    EXPECT_DOUBLE_EQ(oldestImuTimestamp(*node), 1.01);
+    EXPECT_DOUBLE_EQ(newestImuTimestamp(*node), 1.02);
+    ASSERT_EQ(lidarBufferSize(*node), 2U);
+    EXPECT_DOUBLE_EQ(oldestLidarTimestamp(*node), 2.1);
+    EXPECT_DOUBLE_EQ(newestLidarTimestamp(*node), 2.2);
 }
 
-TEST_F(SPARKFastLIO2Test, LidarBufferDurationOverflowResetsQueuedInput)
+TEST_F(SPARKFastLIO2Test, InFlightLidarFrameSurvivesBufferWrapping)
 {
     rclcpp::NodeOptions options;
-    options.append_parameter_override("common.lidar_buffer_capacity", 10);
-    options.append_parameter_override("common.input_buffer_max_duration_sec", 0.2);
+    options.append_parameter_override("common.lidar_buffer_capacity", 2);
+    options.append_parameter_override("common.imu_buffer_capacity", 10);
 
     auto node = std::make_shared<SPARKFastLIO2>(options);
-    queueLidar(*node, 1.0);
-    queueLidar(*node, 1.1);
+    const PointCloudXYZI::Ptr first_lidar = queueLidar(*node, 1.0);
+    feedImu(*node, 1.0);
+
+    MeasureGroup measurements;
+    EXPECT_FALSE(syncPackages(*node, measurements));
+    EXPECT_TRUE(hasInFlightLidar(*node));
+    EXPECT_EQ(measurements.lidar, first_lidar);
+
+    queueLidar(*node, 1.2);
     queueLidar(*node, 1.3);
-    markFirstLidarPackageProcessed(*node);
+    queueLidar(*node, 1.4);
+    feedImu(*node, 1.1);
 
-    enforceInputBufferBounds(*node);
+    EXPECT_TRUE(syncPackages(*node, measurements));
 
-    EXPECT_EQ(inputBufferOverflowCount(*node), 1);
-    EXPECT_TRUE(inputBuffersAreCleared(*node));
+    EXPECT_EQ(measurements.lidar, first_lidar);
+    EXPECT_FALSE(hasInFlightLidar(*node));
+    ASSERT_EQ(lidarBufferSize(*node), 2U);
+    EXPECT_DOUBLE_EQ(oldestLidarTimestamp(*node), 1.3);
+    EXPECT_DOUBLE_EQ(newestLidarTimestamp(*node), 1.4);
+}
+
+TEST_F(SPARKFastLIO2Test, TimestampLoopbackClearsCircularBuffers)
+{
+    rclcpp::NodeOptions options;
+    options.append_parameter_override("common.lidar_buffer_capacity", 2);
+    options.append_parameter_override("common.imu_buffer_capacity", 3);
+
+    auto node = std::make_shared<SPARKFastLIO2>(options);
+    queueLidar(*node, 2.0);
+    feedImu(*node, 1.0);
+    feedImu(*node, 1.1);
+    feedImu(*node, 0.5);
+
+    EXPECT_EQ(lidarBufferSize(*node), 0U);
+    ASSERT_EQ(imuBufferSize(*node), 1U);
+    EXPECT_DOUBLE_EQ(oldestImuTimestamp(*node), 0.5);
 }
 
 }  // namespace
