@@ -3,6 +3,7 @@
 #include "common/gravity_alignment.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <sstream>
@@ -12,6 +13,7 @@
 #include <pcl_conversions/pcl_conversions.h>
 #include <rclcpp/create_timer.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
+#include <tf2/exceptions.h>
 
 namespace spark_fast_lio
 {
@@ -225,26 +227,6 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
         throw std::invalid_argument("gravity_alignment.g_base must be non-zero");
     }
 
-    rclcpp::QoS lidar_qos(rclcpp::KeepLast(static_cast<std::size_t>(lidar_qos_depth_)));
-    lidar_qos.reliable();
-    lidar_qos.durability_volatile();
-    sub_lidar_ = create_subscription<sensor_msgs::msg::PointCloud2>(
-        "lidar",
-        lidar_qos,
-        std::bind(&SPARKFastLIO2::standardLiDARCallback, this, std::placeholders::_1));
-
-#if defined(LIVOX_ROS_DRIVER_FOUND) && LIVOX_ROS_DRIVER_FOUND
-    sub_lidar_livox_ = create_subscription<livox_ros_driver2::msg::CustomMsg>(
-        "lidar",
-        lidar_qos,
-        std::bind(&SPARKFastLIO2::livoxLiDARCallback, this, std::placeholders::_1));
-#endif
-    auto imu_qos = rclcpp::QoS(rclcpp::KeepLast(imu_qos_depth_));
-    imu_qos.reliable();
-    imu_qos.durability_volatile();
-    sub_imu_ = create_subscription<sensor_msgs::msg::Imu>(
-        "imu", imu_qos, std::bind(&SPARKFastLIO2::imuCallback, this, std::placeholders::_1));
-
     rclcpp::QoS qos((rclcpp::SystemDefaultsQoS().keep_last(1).durability_volatile()));
     pub_cloud_full_ = create_publisher<sensor_msgs::msg::PointCloud2>("cloud_registered", qos);
     pub_cloud_lidar_ =
@@ -333,22 +315,19 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     selected_normals_.reset(new PointCloudXYZI());
     cloud_to_be_saved_.reset(new PointCloudXYZI());
 
-    if (!base_frame_.empty())
+    if (base_frame_.empty())
     {
-        if (!lookupBaseExtrinsics(lidar_translation_in_base_, lidar_rotation_in_base_))
-        {
-            RCLCPP_ERROR(this->get_logger(), "Failed to lookup transform.");
-            return;
-        }
+        activateSensorProcessing();
     }
-
-    if (!process_on_callback_)
+    else
     {
-        main_loop_timer_ = rclcpp::create_timer(
-            this,
-            get_clock(),
-            rclcpp::Duration::from_nanoseconds(1000000),
-            std::bind(&SPARKFastLIO2::main, this));
+        extrinsics_wait_started_ = std::chrono::steady_clock::now();
+        retryBaseExtrinsics();
+        if (!sensor_processing_active_)
+        {
+            extrinsics_retry_timer_ = create_wall_timer(
+                std::chrono::milliseconds(100), std::bind(&SPARKFastLIO2::retryBaseExtrinsics, this));
+        }
     }
 
     if (lidar_processor_->pointFilterStride() != 1 && point_filter_num_ > 1)
@@ -362,6 +341,87 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
                 "SPARKFastLIO2 constructed; imu_qos_depth=%d reliable=true process_on_callback=%d",
                 imu_qos_depth_,
                 process_on_callback_ ? 1 : 0);
+}
+
+void SPARKFastLIO2::activateSensorProcessing()
+{
+    if (sensor_processing_active_)
+    {
+        return;
+    }
+    sensor_processing_active_ = true;
+
+    rclcpp::QoS lidar_qos(rclcpp::KeepLast(static_cast<std::size_t>(lidar_qos_depth_)));
+    lidar_qos.reliable();
+    lidar_qos.durability_volatile();
+    sub_lidar_ = create_subscription<sensor_msgs::msg::PointCloud2>(
+        "lidar",
+        lidar_qos,
+        std::bind(&SPARKFastLIO2::standardLiDARCallback, this, std::placeholders::_1));
+
+#if defined(LIVOX_ROS_DRIVER_FOUND) && LIVOX_ROS_DRIVER_FOUND
+    sub_lidar_livox_ = create_subscription<livox_ros_driver2::msg::CustomMsg>(
+        "lidar",
+        lidar_qos,
+        std::bind(&SPARKFastLIO2::livoxLiDARCallback, this, std::placeholders::_1));
+#endif
+    auto imu_qos = rclcpp::QoS(rclcpp::KeepLast(imu_qos_depth_));
+    imu_qos.reliable();
+    imu_qos.durability_volatile();
+    sub_imu_ = create_subscription<sensor_msgs::msg::Imu>(
+        "imu", imu_qos, std::bind(&SPARKFastLIO2::imuCallback, this, std::placeholders::_1));
+
+    if (!process_on_callback_)
+    {
+        main_loop_timer_ = rclcpp::create_timer(
+            this,
+            get_clock(),
+            rclcpp::Duration::from_nanoseconds(1000000),
+            std::bind(&SPARKFastLIO2::main, this));
+    }
+}
+
+void SPARKFastLIO2::retryBaseExtrinsics()
+{
+    if (sensor_processing_active_)
+    {
+        return;
+    }
+
+    std::string error;
+    if (tryLookupBaseExtrinsics(lidar_translation_in_base_, lidar_rotation_in_base_, error))
+    {
+        if (extrinsics_retry_timer_)
+        {
+            extrinsics_retry_timer_->cancel();
+        }
+        activateSensorProcessing();
+        RCLCPP_INFO(this->get_logger(), "Base extrinsics detected; sensor processing activated.");
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto waited = std::chrono::duration<double>(now - extrinsics_wait_started_).count();
+    if (extrinsics_timeout_s_ > 0.0 && waited >= extrinsics_timeout_s_ &&
+        !extrinsics_timeout_reported_)
+    {
+        extrinsics_timeout_reported_ = true;
+        RCLCPP_ERROR(this->get_logger(),
+                     "Base extrinsics unavailable after %.1f seconds; sensor processing remains disabled: %s",
+                     waited,
+                     error.c_str());
+    }
+
+    if (last_extrinsics_wait_log_.time_since_epoch().count() == 0 ||
+        now - last_extrinsics_wait_log_ >= std::chrono::seconds(5))
+    {
+        last_extrinsics_wait_log_ = now;
+        RCLCPP_WARN(this->get_logger(),
+                    "Waiting for transform from '%s' to '%s'; sensor processing is disabled: %s",
+                    lidar_frame_.c_str(),
+                    base_frame_.c_str(),
+                    error.c_str());
+    }
 }
 
 void SPARKFastLIO2::resetEstimatorState(const std::string &reason, const ResetMode mode)
@@ -530,56 +590,28 @@ M3D SPARKFastLIO2::computeRelativeRotation(const Eigen::Vector3d &gravity_from,
     }
 }
 
-bool SPARKFastLIO2::lookupBaseExtrinsics(V3D &lidar_translation_in_base, M3D &lidar_rotation_in_base)
+bool SPARKFastLIO2::tryLookupBaseExtrinsics(V3D &lidar_translation_in_base,
+                                            M3D &lidar_rotation_in_base,
+                                            std::string &error)
 {
-    RCLCPP_INFO(this->get_logger(),
-                "Looking up transform from %s -> %s",
-                base_frame_.c_str(),
-                lidar_frame_.c_str());
-
     const auto lookup_time = rclcpp::Time(0);
-    bool has_transform     = false;
-    std::string err_str;
-    auto start_time          = this->now();
-    rclcpp::Duration timeout = rclcpp::Duration::from_seconds(extrinsics_timeout_s_);
-    rclcpp::Rate rate(10.0);  // Just 10 Hz works
-
-    while (rclcpp::ok())
+    if (!tf_buffer_->canTransform(
+            base_frame_, lidar_frame_, lookup_time, tf2::durationFromSec(0.0), &error))
     {
-        if (tf_buffer_->canTransform(
-                base_frame_, lidar_frame_, lookup_time, tf2::durationFromSec(0.0), &err_str))
-        {
-            RCLCPP_INFO_STREAM(this->get_logger(), "\033[1;32mExtrinsics detected.\033[1;0m");
-            has_transform = true;
-            break;
-        }
-
-        const auto time_since_start = now() - start_time;
-        if (extrinsics_timeout_s_ > 0.0 && time_since_start > timeout)
-        {
-            RCLCPP_ERROR_STREAM(this->get_logger(),
-                                "Timeout after "
-                                    << timeout.seconds() << " seconds waiting for transform from '"
-                                    << lidar_frame_ << "' to '" << base_frame_ << "': " << err_str);
-            break;
-        }
-
-        RCLCPP_WARN_STREAM_SKIPFIRST_THROTTLE(get_logger(),
-                                              *clock_,
-                                              5000,
-                                              "Waiting for transform from '"
-                                                  << lidar_frame_ << "' to '" << base_frame_
-                                                  << "': " << err_str);
-
-        rate.sleep();
+        return false;
     }
 
-    if (!has_transform)
+    geometry_msgs::msg::TransformStamped transform;
+    try
     {
-        return has_transform;
+        transform = tf_buffer_->lookupTransform(base_frame_, lidar_frame_, lookup_time);
+    }
+    catch (const tf2::TransformException &exception)
+    {
+        error = exception.what();
+        return false;
     }
 
-    const auto &transform = tf_buffer_->lookupTransform(base_frame_, lidar_frame_, lookup_time);
     lidar_translation_in_base(0)   = transform.transform.translation.x;
     lidar_translation_in_base(1)   = transform.transform.translation.y;
     lidar_translation_in_base(2)   = transform.transform.translation.z;
@@ -604,7 +636,7 @@ bool SPARKFastLIO2::lookupBaseExtrinsics(V3D &lidar_translation_in_base, M3D &li
                 q.z(),
                 q.w());
 
-    return has_transform;
+    return true;
 }
 
 void SPARKFastLIO2::pointBodyToWorld(PointType const *const input_point,

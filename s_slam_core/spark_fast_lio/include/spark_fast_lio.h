@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -55,7 +56,11 @@ private:
     M3D computeRelativeRotation(const Eigen::Vector3d &gravity_from,
                                 const Eigen::Vector3d &gravity_to);
 
-    bool lookupBaseExtrinsics(V3D &lidar_translation_in_base, M3D &lidar_rotation_in_base);
+    bool tryLookupBaseExtrinsics(V3D &lidar_translation_in_base,
+                                 M3D &lidar_rotation_in_base,
+                                 std::string &error);
+    void retryBaseExtrinsics();
+    void activateSensorProcessing();
 
     void pointBodyToWorld(PointType const *const input_point,
                           PointType *const output_point,
@@ -274,6 +279,7 @@ private:
 
     rclcpp::Clock::SharedPtr clock_;
     rclcpp::TimerBase::SharedPtr main_loop_timer_;
+    rclcpp::TimerBase::SharedPtr extrinsics_retry_timer_;
 
     /*** Time Log Variables ***/
     double map_insertion_time_ = 0.0;
@@ -305,6 +311,7 @@ private:
     bool scan_base_frame_publish_enabled_  = false;
     bool imu_predicted_odometry_enabled_   = true;
     bool process_on_callback_              = false;
+    bool sensor_processing_active_         = false;
     bool motion_quality_gate_enabled_      = false;
     int imu_qos_depth_                     = 1000;
     int lidar_qos_depth_                   = 10;
@@ -392,6 +399,9 @@ private:
     std::vector<double> extrinsic_translation_{0.0, 0.0, 0.0};
     std::vector<double> extrinsic_rotation_{1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
     double extrinsics_timeout_s_ = 10.0;
+    std::chrono::steady_clock::time_point extrinsics_wait_started_;
+    std::chrono::steady_clock::time_point last_extrinsics_wait_log_;
+    bool extrinsics_timeout_reported_ = false;
 
     std::deque<double> time_buffer_;
     std::deque<double> lidar_end_time_buffer_;

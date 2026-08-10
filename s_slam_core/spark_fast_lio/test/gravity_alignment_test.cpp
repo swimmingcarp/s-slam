@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <geometry_msgs/msg/transform_stamped.hpp>
+
 #include <memory>
 
 #include "common/gravity_alignment.hpp"
@@ -66,6 +68,39 @@ protected:
     static void setBaseFrame(SPARKFastLIO2 &node)
     {
         node.base_frame_ = "base_link";
+    }
+
+    static bool sensorProcessingIsActive(const SPARKFastLIO2 &node)
+    {
+        return node.sensor_processing_active_ && node.sub_lidar_ && node.sub_imu_ &&
+               node.main_loop_timer_;
+    }
+
+    static bool sensorProcessingIsInactive(const SPARKFastLIO2 &node)
+    {
+        return !node.sensor_processing_active_ && !node.sub_lidar_ && !node.sub_imu_ &&
+               !node.main_loop_timer_;
+    }
+
+    static bool extrinsicsRetryIsScheduled(const SPARKFastLIO2 &node)
+    {
+        return node.extrinsics_retry_timer_ != nullptr;
+    }
+
+    static bool extrinsicsRetryIsStopped(const SPARKFastLIO2 &node)
+    {
+        return node.extrinsics_retry_timer_ && node.extrinsics_retry_timer_->is_canceled();
+    }
+
+    static void setBaseExtrinsics(SPARKFastLIO2 &node)
+    {
+        geometry_msgs::msg::TransformStamped transform;
+        transform.header.frame_id = "base_link";
+        transform.child_frame_id  = "lidar";
+        transform.transform.rotation.w = 1.0;
+
+        ASSERT_TRUE(node.tf_buffer_->setTransform(transform, "test", true));
+        node.retryBaseExtrinsics();
     }
 
     static bool hasNoPublishedOdometryOrPath(const SPARKFastLIO2 &node)
@@ -137,6 +172,24 @@ TEST_F(SPARKFastLIO2Test, PreAlignmentAcceptedFrameKeepsMapCurrent)
 
     EXPECT_GT(localMapPointCount(*node), initial_map_point_count);
     EXPECT_TRUE(hasNoPublishedOdometryOrPath(*node));
+}
+
+TEST_F(SPARKFastLIO2Test, WaitsForBaseExtrinsicsBeforeActivatingSensorProcessing)
+{
+    rclcpp::NodeOptions options;
+    options.append_parameter_override("common.base_frame", "base_link");
+    options.append_parameter_override("common.lidar_frame", "lidar");
+    options.append_parameter_override("common.process_on_callback", false);
+
+    auto node = std::make_shared<SPARKFastLIO2>(options);
+
+    EXPECT_TRUE(sensorProcessingIsInactive(*node));
+    ASSERT_TRUE(extrinsicsRetryIsScheduled(*node));
+
+    setBaseExtrinsics(*node);
+
+    EXPECT_TRUE(sensorProcessingIsActive(*node));
+    EXPECT_TRUE(extrinsicsRetryIsStopped(*node));
 }
 
 }  // namespace
