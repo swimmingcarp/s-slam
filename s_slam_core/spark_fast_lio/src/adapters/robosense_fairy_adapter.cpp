@@ -26,6 +26,15 @@ struct RoboSensePoint
     double timestamp = 0.0;
 };
 
+struct RoboSensePointFilterData
+{
+    float x = 0.0F;
+    float y = 0.0F;
+    float z = 0.0F;
+    std::uint16_t ring = 0;
+    double timestamp = 0.0;
+};
+
 struct XYZIRTFieldLayout
 {
     std::uint32_t x_offset = 0;
@@ -126,10 +135,9 @@ std::optional<XYZIRTFieldLayout> getXYZIRTFieldLayout(
     return layout;
 }
 
-template <typename PointVisitor>
-void forEachXYZIRTPoint(const sensor_msgs::msg::PointCloud2 &msg,
-                        const XYZIRTFieldLayout &layout,
-                        PointVisitor &&visitor)
+template <typename PointDataVisitor>
+void forEachPointData(const sensor_msgs::msg::PointCloud2 &msg,
+                      PointDataVisitor &&visitor)
 {
     std::size_t point_index = 0;
     for (std::uint32_t row = 0; row < msg.height; ++row)
@@ -140,27 +148,44 @@ void forEachXYZIRTPoint(const sensor_msgs::msg::PointCloud2 &msg,
         {
             const std::uint8_t *const point_data =
                 row_data + static_cast<std::size_t>(column) * msg.point_step;
-            visitor(point_index,
-                    RoboSensePoint{readField<float>(point_data + layout.x_offset, msg.is_bigendian),
-                                   readField<float>(point_data + layout.y_offset, msg.is_bigendian),
-                                   readField<float>(point_data + layout.z_offset, msg.is_bigendian),
-                                   readField<float>(point_data + layout.intensity_offset, msg.is_bigendian),
-                                   readField<std::uint16_t>(point_data + layout.ring_offset,
-                                                            msg.is_bigendian),
-                                   readField<double>(point_data + layout.timestamp_offset,
-                                                     msg.is_bigendian)});
+            visitor(point_index, point_data);
         }
     }
 }
 
-bool hasFiniteXYZ(const RoboSensePoint &point)
+template <typename PointVisitor>
+void forEachXYZIRTPoint(const sensor_msgs::msg::PointCloud2 &msg,
+                        const XYZIRTFieldLayout &layout,
+                        PointVisitor &&visitor)
 {
-    return std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z);
+    forEachPointData(msg, [&](const std::size_t point_index, const std::uint8_t *const point_data) {
+        visitor(point_index,
+                RoboSensePoint{readField<float>(point_data + layout.x_offset, msg.is_bigendian),
+                               readField<float>(point_data + layout.y_offset, msg.is_bigendian),
+                               readField<float>(point_data + layout.z_offset, msg.is_bigendian),
+                               readField<float>(point_data + layout.intensity_offset, msg.is_bigendian),
+                               readField<std::uint16_t>(point_data + layout.ring_offset,
+                                                        msg.is_bigendian),
+                               readField<double>(point_data + layout.timestamp_offset,
+                                                 msg.is_bigendian)});
+    });
 }
 
-bool hasValidTimestamp(const RoboSensePoint &point)
+template <typename PointVisitor>
+void forEachXYZRTPoint(const sensor_msgs::msg::PointCloud2 &msg,
+                       const XYZIRTFieldLayout &layout,
+                       PointVisitor &&visitor)
 {
-    return std::isfinite(point.timestamp) && point.timestamp > 0.0;
+    forEachPointData(
+        msg, [&](const std::size_t point_index, const std::uint8_t *const point_data) {
+            visitor(point_index,
+                    RoboSensePointFilterData{
+                        readField<float>(point_data + layout.x_offset, msg.is_bigendian),
+                        readField<float>(point_data + layout.y_offset, msg.is_bigendian),
+                        readField<float>(point_data + layout.z_offset, msg.is_bigendian),
+                        readField<std::uint16_t>(point_data + layout.ring_offset, msg.is_bigendian),
+                        readField<double>(point_data + layout.timestamp_offset, msg.is_bigendian)});
+        });
 }
 
 void fillPoint(const RoboSensePoint &src,
@@ -177,9 +202,11 @@ void fillPoint(const RoboSensePoint &src,
     dst.curvature = static_cast<float>((src.timestamp - scan_start_time) * 1000.0);
 }
 
-bool isValidPoint(const RoboSensePoint &point)
+template <typename Point>
+bool isValidPoint(const Point &point)
 {
-    return hasValidTimestamp(point) && hasFiniteXYZ(point);
+    return std::isfinite(point.timestamp) && point.timestamp > 0.0 && std::isfinite(point.x) &&
+           std::isfinite(point.y) && std::isfinite(point.z);
 }
 
 void logInvalidTimestampCloud()
@@ -263,7 +290,7 @@ bool RoboSenseFairyAdapter::convertToFilteredCloud(
     double last_timestamp          = -std::numeric_limits<double>::max();
     std::size_t output_size        = 0;
 
-    forEachXYZIRTPoint(msg, *layout, [&](const std::size_t point_index, const RoboSensePoint &point) {
+    forEachXYZRTPoint(msg, *layout, [&](const std::size_t point_index, const RoboSensePointFilterData &point) {
         if (!isValidPoint(point))
         {
             return;
