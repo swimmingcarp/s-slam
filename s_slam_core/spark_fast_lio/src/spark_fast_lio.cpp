@@ -429,13 +429,22 @@ void SPARKFastLIO2::resetEstimatorState(const std::string &reason, const ResetMo
     // the latter needs kInitializationTimeSec of post-reset data to flip true again, so a
     // burst of resets (e.g. LiDAR and IMU glitches back to back) inside that
     // window would be misjudged as a cold start and deadlock in flight.
-    // Use the current filter state: after rejected LiDAR updates it still
-    // contains the latest valid IMU propagation, while last_good_state_ may
-    // be arbitrarily old.
+    // Prefer the high-rate IMU propagation state when it is available. kf_
+    // advances only with LiDAR processing, while kf_for_preintegration_ stays
+    // current during rejected or missing LiDAR frames. last_good_state_ may be
+    // arbitrarily old and must not be used for a warm recovery prior.
     if (mode == ResetMode::kWarmRecovery && imu_processor_ && imu_processor_->isInitialized())
     {
-        const state_ikfom prior_state = kf_.get_x();
         const V3D mean_acceleration = imu_processor_->getSnapshot().mean_acceleration;
+        state_ikfom prior_state = kf_.get_x();
+        if (kf_for_preintegration_.has_value())
+        {
+            const state_ikfom propagated_state = kf_for_preintegration_->get_x();
+            if (canSeedWarmRecovery(propagated_state, mean_acceleration))
+            {
+                prior_state = propagated_state;
+            }
+        }
         if (canSeedWarmRecovery(prior_state, mean_acceleration))
         {
             const V3D gravity_world(

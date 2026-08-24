@@ -260,6 +260,11 @@ protected:
                state.rot.toRotationMatrix().allFinite();
     }
 
+    static state_ikfom filterState(const SPARKFastLIO2 &node)
+    {
+        return node.kf_.get_x();
+    }
+
     static bool imuProcessorIsInitialized(const SPARKFastLIO2 &node)
     {
         return node.imu_processor_->isInitialized();
@@ -273,6 +278,35 @@ protected:
     static void undistortQueuedCloud(SPARKFastLIO2 &node, MeasureGroup &measures)
     {
         node.imu_processor_->process(measures, node.kf_, node.full_points_);
+    }
+
+    static state_ikfom warmResetFromPropagatedState(SPARKFastLIO2 &node,
+                                                     const state_ikfom &stale_state,
+                                                     const state_ikfom &propagated_state)
+    {
+        state_ikfom stale_state_copy      = stale_state;
+        state_ikfom propagated_state_copy = propagated_state;
+        node.kf_.change_x(stale_state_copy);
+        node.kf_for_preintegration_ = node.kf_;
+        node.kf_for_preintegration_->change_x(propagated_state_copy);
+        node.resetEstimatorState("test warm recovery", SPARKFastLIO2::ResetMode::kWarmRecovery);
+
+        MeasureGroup measures;
+        measures.lidar_beg_time = 2.1;
+        measures.lidar_end_time = 2.2;
+        measures.lidar          = std::make_shared<PointCloudXYZI>();
+        for (const double timestamp : {2.1, 2.2})
+        {
+            auto imu = std::make_shared<sensor_msgs::msg::Imu>();
+            const int64_t nanoseconds = static_cast<int64_t>(timestamp * 1.0e9);
+            imu->header.stamp.sec     = static_cast<int32_t>(nanoseconds / 1000000000LL);
+            imu->header.stamp.nanosec = static_cast<uint32_t>(nanoseconds % 1000000000LL);
+            imu->linear_acceleration.z = G_m_s2;
+            measures.imu.push_back(imu);
+        }
+
+        node.imu_processor_->process(measures, node.kf_, node.full_points_);
+        return node.kf_.get_x();
     }
 };
 
@@ -457,6 +491,42 @@ TEST_F(SPARKFastLIO2Test, ImuUndistortionTakesQueuedCloudOwnership)
     EXPECT_EQ(measures.lidar, previous_working_cloud);
     ASSERT_EQ(fullPoints(*node)->size(), 1U);
     EXPECT_FLOAT_EQ(fullPoints(*node)->points[0].x, 1.0F);
+}
+
+TEST_F(SPARKFastLIO2Test, WarmResetUsesCurrentImuPropagationState)
+{
+    auto node = std::make_shared<SPARKFastLIO2>();
+    initializeWithStationaryGravity(*node);
+
+    state_ikfom stale_state = filterState(*node);
+    stale_state.vel         = V3D(-3.0, 4.0, -2.0);
+    stale_state.bg          = V3D(0.01, -0.02, 0.03);
+    stale_state.ba          = V3D(-0.04, 0.05, -0.06);
+
+    state_ikfom propagated_state = stale_state;
+    M3D propagated_rotation;
+    propagated_rotation << 1.0, 0.0, 0.0,
+                           0.0, 0.0, -1.0,
+                           0.0, 1.0, 0.0;
+    propagated_state.rot = SO3(propagated_rotation);
+    propagated_state.vel = V3D(1.0, 2.0, 3.0);
+    propagated_state.bg  = V3D(-0.11, 0.12, -0.13);
+    propagated_state.ba  = V3D(0.14, -0.15, 0.16);
+
+    const state_ikfom reset_state =
+        warmResetFromPropagatedState(*node, stale_state, propagated_state);
+    const V3D expected_velocity = propagated_state.rot.conjugate() * propagated_state.vel;
+    const V3D expected_gravity =
+        propagated_state.rot.conjugate() *
+        V3D(propagated_state.grav[0], propagated_state.grav[1], propagated_state.grav[2]);
+    const V3D reset_gravity(
+        reset_state.grav[0], reset_state.grav[1], reset_state.grav[2]);
+
+    EXPECT_TRUE(reset_state.vel.isApprox(expected_velocity));
+    EXPECT_FALSE(reset_state.vel.isApprox(stale_state.vel));
+    EXPECT_TRUE(reset_gravity.isApprox(expected_gravity));
+    EXPECT_TRUE(reset_state.bg.isApprox(propagated_state.bg));
+    EXPECT_TRUE(reset_state.ba.isApprox(propagated_state.ba));
 }
 
 TEST_F(SPARKFastLIO2Test, RejectsNonPositiveMapFilterSize)
