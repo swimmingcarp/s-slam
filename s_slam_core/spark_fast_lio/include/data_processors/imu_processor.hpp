@@ -67,6 +67,10 @@ public:
     void setGyroscopeBiasCovariance(const V3D &covariance);
     void setAccelerometerBiasCovariance(const V3D &covariance);
     void setReplayMode(bool replay_mode);
+    // Advance the temporal cursor after a synchronized LiDAR frame is
+    // rejected for IMU coverage. The next accepted frame must not integrate
+    // across the rejected timing gap.
+    void skipLidarFrame(const MeasureGroup &measures);
     void process(MeasureGroup &measures,
                  esekfom::esekf<state_ikfom, 12, input_ikfom> &filter,
                  PointCloudXYZI::Ptr &undistorted_cloud);

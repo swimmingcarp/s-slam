@@ -16,6 +16,8 @@ namespace spark_fast_lio
 {
 namespace
 {
+constexpr double kMaximumImuGapScanPeriods = 1.2;
+
 bool hasFiniteState(const state_ikfom &state)
 {
     const V3D gravity(state.grav[0], state.grav[1], state.grav[2]);
@@ -241,6 +243,10 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
         1,
         static_cast<int>(declare_parameter<int>("point_filter_num_for_preprocessing", 1)));
     lidar_processor_ = std::make_shared<LidarProcessor>(lidar_processor_config);
+    // One LiDAR scan period plus the established 20% timing tolerance is the
+    // longest IMU gap that can still support reliable scan de-skewing.
+    max_imu_gap_ =
+        kMaximumImuGapScanPeriods / static_cast<double>(lidar_processor_->scanRateHz());
 
     imu_processor_ = std::make_shared<ImuProcessor>();
     if (extrinsic_translation_.size() == 3 && extrinsic_rotation_.size() == 9)
@@ -477,6 +483,7 @@ void SPARKFastLIO2::resetEstimatorState(const std::string &reason, const ResetMo
     filter_initialized_ = false;
     has_last_lidar_timestamp_ = false;
     has_last_imu_timestamp_ = false;
+    last_consumed_imu_time_.reset();
     last_not_enough_imu_log_timestamp_ns_ = -1;
 
     full_points_->clear();

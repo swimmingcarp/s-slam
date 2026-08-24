@@ -326,6 +326,7 @@ private:
     rclcpp::Time last_imu_timestamp_;
     bool has_last_lidar_timestamp_ = false;
     bool has_last_imu_timestamp_   = false;
+    std::optional<double> last_consumed_imu_time_;
     int64_t last_not_enough_imu_log_timestamp_ns_ = -1;
     int64_t lidar_imu_time_offset_                = 0;
 
@@ -347,6 +348,7 @@ private:
     double local_map_side_length_ = 0.0;
     double lidar_end_time_        = 0.0;
     double first_lidar_time_      = 0.0;
+    double max_imu_gap_           = 0.0;
 
     int effective_feature_count_ = 0;
     int scan_count_              = 0;

@@ -172,6 +172,18 @@ void ImuProcessor::setReplayMode(const bool replay_mode)
     replay_mode_ = replay_mode;
 }
 
+void ImuProcessor::skipLidarFrame(const MeasureGroup &measures)
+{
+    if (measures.imu.empty())
+    {
+        return;
+    }
+
+    last_imu_            = measures.imu.back();
+    last_lidar_end_time_ = measures.lidar_end_time;
+    imu_poses_.clear();
+}
+
 bool ImuProcessor::hasValidAccelerationReference(const V3D &acceleration)
 {
     const double norm = acceleration.norm();

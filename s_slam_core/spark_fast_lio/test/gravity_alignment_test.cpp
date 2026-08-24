@@ -169,6 +169,39 @@ protected:
         return node.lidar_pushed_;
     }
 
+    static int imuGapLidarSkipCount(const SPARKFastLIO2 &node)
+    {
+        return node.imu_gap_lidar_skip_count_;
+    }
+
+    static ImuProcessor::Snapshot imuProcessorSnapshot(const SPARKFastLIO2 &node)
+    {
+        return node.imu_processor_->getSnapshot();
+    }
+
+    static void integratePredictedImu(SPARKFastLIO2 &node,
+                                      const double timestamp,
+                                      const double angular_velocity_z)
+    {
+        sensor_msgs::msg::Imu imu;
+        const int64_t nanoseconds = static_cast<int64_t>(timestamp * 1.0e9);
+        imu.header.stamp.sec     = static_cast<int32_t>(nanoseconds / 1000000000LL);
+        imu.header.stamp.nanosec = static_cast<uint32_t>(nanoseconds % 1000000000LL);
+        imu.linear_acceleration.z = G_m_s2;
+        imu.angular_velocity.z    = angular_velocity_z;
+        node.integrateIMU(node.kf_, imu);
+    }
+
+    static std::size_t predictedImuQueueSize(const SPARKFastLIO2 &node)
+    {
+        return node.imu_integration_queue_.size();
+    }
+
+    static double predictedImuQueueFrontTime(const SPARKFastLIO2 &node)
+    {
+        return rclcpp::Time(node.imu_integration_queue_.front().header.stamp).seconds();
+    }
+
     static PoseStruct lidarPose(const SPARKFastLIO2 &node, const state_ikfom &state)
     {
         return node.transformPoseToLidarFrame(state);
@@ -643,6 +676,64 @@ TEST_F(SPARKFastLIO2Test, InFlightLidarFrameSurvivesBufferWrapping)
     ASSERT_EQ(lidarBufferSize(*node), 2U);
     EXPECT_DOUBLE_EQ(oldestLidarTimestamp(*node), 1.3);
     EXPECT_DOUBLE_EQ(newestLidarTimestamp(*node), 1.4);
+}
+
+TEST_F(SPARKFastLIO2Test, IncludesImuAtLidarEndpoint)
+{
+    auto node = std::make_shared<SPARKFastLIO2>();
+    const PointCloudXYZI::Ptr lidar = queueLidar(*node, 1.0);
+    feedImu(*node, 1.1);
+
+    MeasureGroup measurements;
+    ASSERT_TRUE(syncPackages(*node, measurements));
+    EXPECT_EQ(measurements.lidar, lidar);
+    ASSERT_EQ(measurements.imu.size(), 1U);
+    EXPECT_DOUBLE_EQ(rclcpp::Time(measurements.imu.back()->header.stamp).seconds(), 1.1);
+}
+
+TEST_F(SPARKFastLIO2Test, RejectsLongImuGapAndAdvancesTemporalCursor)
+{
+    auto node = std::make_shared<SPARKFastLIO2>();
+    queueLidar(*node, 1.0);
+    feedImu(*node, 1.0);
+    feedImu(*node, 1.1);
+
+    MeasureGroup measurements;
+    ASSERT_TRUE(syncPackages(*node, measurements));
+
+    queueLidar(*node, 1.5);
+    feedImu(*node, 1.6);
+    EXPECT_FALSE(syncPackages(*node, measurements));
+    EXPECT_EQ(imuGapLidarSkipCount(*node), 1);
+    EXPECT_FALSE(hasInFlightLidar(*node));
+
+    const ImuProcessor::Snapshot skipped_snapshot = imuProcessorSnapshot(*node);
+    ASSERT_NE(skipped_snapshot.last_imu, nullptr);
+    EXPECT_DOUBLE_EQ(rclcpp::Time(skipped_snapshot.last_imu->header.stamp).seconds(), 1.6);
+    EXPECT_DOUBLE_EQ(skipped_snapshot.last_lidar_end_time, 1.6);
+
+    queueLidar(*node, 1.6);
+    feedImu(*node, 1.605);
+    feedImu(*node, 1.61);
+    feedImu(*node, 1.7);
+    feedImu(*node, 1.701);
+    EXPECT_TRUE(syncPackages(*node, measurements));
+}
+
+TEST_F(SPARKFastLIO2Test, SkipsPredictedOdometryAcrossLongImuGap)
+{
+    auto node = std::make_shared<SPARKFastLIO2>();
+    initializeWithStationaryGravity(*node);
+    const state_ikfom state_before = filterState(*node);
+
+    integratePredictedImu(*node, 3.0, 1.0);
+    integratePredictedImu(*node, 3.5, 1.0);
+
+    const state_ikfom state_after = filterState(*node);
+    EXPECT_TRUE(state_after.rot.toRotationMatrix().isApprox(
+        state_before.rot.toRotationMatrix()));
+    ASSERT_EQ(predictedImuQueueSize(*node), 1U);
+    EXPECT_DOUBLE_EQ(predictedImuQueueFrontTime(*node), 3.5);
 }
 
 TEST_F(SPARKFastLIO2Test, TimestampLoopbackClearsCircularBuffers)

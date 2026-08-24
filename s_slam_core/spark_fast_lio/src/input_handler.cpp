@@ -1,6 +1,7 @@
 #include "spark_fast_lio.h"
 
 #include "common/gravity_alignment.hpp"
+#include <algorithm>
 #include <cmath>
 #include <sstream>
 
@@ -173,6 +174,18 @@ void SPARKFastLIO2::integrateIMU(esekfom::esekf<state_ikfom, 12, input_ikfom> &s
         imu_integration_queue_.pop_front();
         return;
     }
+    if (delta_time > max_imu_gap_)
+    {
+        RCLCPP_WARN_THROTTLE(this->get_logger(),
+                             *this->get_clock(),
+                             1000,
+                             "Skipping predicted odometry across an IMU gap: "
+                             "gap=%.6f max=%.6f",
+                             delta_time,
+                             max_imu_gap_);
+        imu_integration_queue_.pop_front();
+        return;
+    }
 
     auto integrated_state = imu_processor_->integrateImu(imu_integration_queue_, state);
     const auto &stamp     = imu_integration_queue_[1].header.stamp;
@@ -307,13 +320,14 @@ bool SPARKFastLIO2::syncPackages(MeasureGroup &measurements, bool verbose)
     }
 
     /*** push imu data, and pop from imu buffer ***/
-    double imu_time = rclcpp::Time(imu_buffer_.front()->header.stamp).seconds();
+    double next_imu_time = rclcpp::Time(imu_buffer_.front()->header.stamp).seconds();
     measurements.imu.clear();
-    while ((!imu_buffer_.empty()) && (imu_time < lidar_end_time_))
+    while (!imu_buffer_.empty())
     {
-        imu_time = rclcpp::Time(imu_buffer_.front()->header.stamp).seconds();
+        const double imu_time = rclcpp::Time(imu_buffer_.front()->header.stamp).seconds();
         if (imu_time > lidar_end_time_)
         {
+            next_imu_time = imu_time;
             break;
         }
         measurements.imu.push_back(imu_buffer_.front());
@@ -333,7 +347,39 @@ bool SPARKFastLIO2::syncPackages(MeasureGroup &measurements, bool verbose)
                              imu_gap_lidar_skip_count_,
                              measurements.lidar_beg_time,
                              lidar_end_time_,
-                             imu_time);
+                             next_imu_time);
+        lidar_pushed_ = false;
+        return false;
+    }
+
+    double largest_imu_gap = 0.0;
+    std::optional<double> previous_imu_time = last_consumed_imu_time_;
+    for (const auto &imu : measurements.imu)
+    {
+        const double imu_time = rclcpp::Time(imu->header.stamp).seconds();
+        if (previous_imu_time.has_value())
+        {
+            largest_imu_gap = std::max(largest_imu_gap, imu_time - *previous_imu_time);
+        }
+        previous_imu_time = imu_time;
+    }
+    largest_imu_gap = std::max(largest_imu_gap, lidar_end_time_ - *previous_imu_time);
+    last_consumed_imu_time_ = previous_imu_time;
+
+    if (largest_imu_gap > max_imu_gap_)
+    {
+        ++imu_gap_lidar_skip_count_;
+        RCLCPP_WARN_THROTTLE(this->get_logger(),
+                             *this->get_clock(),
+                             1000,
+                             "Skipping LiDAR scan due to IMU coverage gap: count=%d "
+                             "lidar=[%.6f, %.6f] largest_imu_gap=%.6f max_imu_gap=%.6f",
+                             imu_gap_lidar_skip_count_,
+                             measurements.lidar_beg_time,
+                             lidar_end_time_,
+                             largest_imu_gap,
+                             max_imu_gap_);
+        imu_processor_->skipLidarFrame(measurements);
         lidar_pushed_ = false;
         return false;
     }
