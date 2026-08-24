@@ -17,6 +17,7 @@ namespace spark_fast_lio
 namespace
 {
 constexpr double kMaximumImuGapScanPeriods = 1.2;
+constexpr double kExtrinsicRotationTolerance = 1.0e-3;
 
 bool hasFiniteState(const state_ikfom &state)
 {
@@ -52,6 +53,39 @@ rclcpp::ReliabilityPolicy parseReliabilityPolicy(const std::string &value,
 const char *reliabilityPolicyName(const rclcpp::ReliabilityPolicy policy)
 {
     return policy == rclcpp::ReliabilityPolicy::BestEffort ? "best_effort" : "reliable";
+}
+
+void validateExtrinsicParameters(const std::vector<double> &translation,
+                                 const std::vector<double> &rotation)
+{
+    if (translation.size() != 3)
+    {
+        throw std::invalid_argument("mapping.extrinsic_T must contain exactly three values");
+    }
+    if (rotation.size() != 9)
+    {
+        throw std::invalid_argument("mapping.extrinsic_R must contain exactly nine values");
+    }
+    const auto is_finite = [](const double value) { return std::isfinite(value); };
+    if (!std::all_of(translation.begin(), translation.end(), is_finite) ||
+        !std::all_of(rotation.begin(), rotation.end(), is_finite))
+    {
+        throw std::invalid_argument("mapping.extrinsic_T and mapping.extrinsic_R must be finite");
+    }
+
+    Eigen::Matrix3d lidar_rotation;
+    lidar_rotation << rotation[0], rotation[1], rotation[2], rotation[3], rotation[4], rotation[5],
+        rotation[6], rotation[7], rotation[8];
+
+    const double orthogonality_error =
+        (lidar_rotation.transpose() * lidar_rotation - Eigen::Matrix3d::Identity()).norm();
+    const double determinant = lidar_rotation.determinant();
+    if (orthogonality_error > kExtrinsicRotationTolerance || determinant <= 0.0 ||
+        std::abs(determinant - 1.0) > kExtrinsicRotationTolerance)
+    {
+        throw std::invalid_argument(
+            "mapping.extrinsic_R must be a proper rotation matrix");
+    }
 }
 }  // namespace
 
@@ -190,6 +224,7 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
         declare_parameter<std::vector<double>>("mapping.extrinsic_T", extrinsic_translation_);
     extrinsic_rotation_ =
         declare_parameter<std::vector<double>>("mapping.extrinsic_R", extrinsic_rotation_);
+    validateExtrinsicParameters(extrinsic_translation_, extrinsic_rotation_);
 
     const auto gravity_vector =
         declare_parameter<std::vector<double>>("gravity_alignment.g_base", {0.0, 0.0, -1.0});

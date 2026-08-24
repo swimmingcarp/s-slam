@@ -2,6 +2,7 @@
 
 #include <geometry_msgs/msg/transform_stamped.hpp>
 
+#include <limits>
 #include <memory>
 
 #include "common/gravity_alignment.hpp"
@@ -568,6 +569,69 @@ TEST_F(SPARKFastLIO2Test, RejectsNonPositiveMapFilterSize)
     options.append_parameter_override("filter_size_map", 0.0);
 
     EXPECT_THROW(std::make_shared<SPARKFastLIO2>(options), std::invalid_argument);
+}
+
+TEST_F(SPARKFastLIO2Test, RejectsInvalidImuLidarExtrinsics)
+{
+    rclcpp::NodeOptions short_translation;
+    short_translation.append_parameter_override(
+        "mapping.extrinsic_T", std::vector<double>{0.0, 0.0});
+    EXPECT_THROW(std::make_shared<SPARKFastLIO2>(short_translation), std::invalid_argument);
+
+    rclcpp::NodeOptions short_rotation;
+    short_rotation.append_parameter_override(
+        "mapping.extrinsic_R", std::vector<double>{1.0, 0.0, 0.0});
+    EXPECT_THROW(std::make_shared<SPARKFastLIO2>(short_rotation), std::invalid_argument);
+
+    rclcpp::NodeOptions nonfinite_translation;
+    nonfinite_translation.append_parameter_override(
+        "mapping.extrinsic_T",
+        std::vector<double>{0.0, std::numeric_limits<double>::quiet_NaN(), 0.0});
+    EXPECT_THROW(std::make_shared<SPARKFastLIO2>(nonfinite_translation), std::invalid_argument);
+
+    rclcpp::NodeOptions nonfinite_rotation;
+    nonfinite_rotation.append_parameter_override(
+        "mapping.extrinsic_R",
+        std::vector<double>{1.0,
+                            0.0,
+                            0.0,
+                            0.0,
+                            std::numeric_limits<double>::quiet_NaN(),
+                            0.0,
+                            0.0,
+                            0.0,
+                            1.0});
+    EXPECT_THROW(std::make_shared<SPARKFastLIO2>(nonfinite_rotation), std::invalid_argument);
+
+    rclcpp::NodeOptions reflected_rotation;
+    reflected_rotation.append_parameter_override(
+        "mapping.extrinsic_R", std::vector<double>{-1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0});
+    EXPECT_THROW(std::make_shared<SPARKFastLIO2>(reflected_rotation), std::invalid_argument);
+
+    rclcpp::NodeOptions nonorthogonal_rotation;
+    nonorthogonal_rotation.append_parameter_override(
+        "mapping.extrinsic_R", std::vector<double>{1.0, 0.0, 0.0, 0.0, 1.0, 0.1, 0.0, 0.0, 1.0});
+    EXPECT_THROW(std::make_shared<SPARKFastLIO2>(nonorthogonal_rotation), std::invalid_argument);
+}
+
+TEST_F(SPARKFastLIO2Test, AcceptsRoundedImuLidarRotation)
+{
+    rclcpp::NodeOptions options;
+    options.append_parameter_override(
+        "mapping.extrinsic_T", std::vector<double>{0.0420405650, -0.0738194508, -0.159149569});
+    options.append_parameter_override(
+        "mapping.extrinsic_R",
+        std::vector<double>{-0.0009486970,
+                            0.9999950000,
+                            0.0029021900,
+                            -0.0001855830,
+                            0.0029020100,
+                            -0.9999960000,
+                            -1.0000000000,
+                            -0.0009492320,
+                            0.0001828290});
+
+    EXPECT_NO_THROW(std::make_shared<SPARKFastLIO2>(options));
 }
 
 TEST_F(SPARKFastLIO2Test, PreAlignmentAcceptedFrameKeepsMapCurrent)
