@@ -4,11 +4,13 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <vector>
 
 #include <sensor_msgs/msg/point_field.hpp>
 
 #include "adapters/robosense_fairy_adapter.hpp"
+#include "data_processors/lidar_processor.hpp"
 
 namespace
 {
@@ -91,7 +93,7 @@ TEST(RoboSenseFairyAdapter, PreservesXYZIRTFilteringAndFeatureInputSemantics)
     sensor_adapter::RoboSenseFairyAdapter adapter;
 
     sensor_adapter::InternalScan scan;
-    ASSERT_TRUE(adapter.convert(input, scan));
+    ASSERT_TRUE(adapter.convert(input, 0.12, scan));
     EXPECT_DOUBLE_EQ(scan.start_time, 10.000);
     EXPECT_DOUBLE_EQ(scan.end_time, 10.011);
     ASSERT_EQ(scan.points.size(), 5U);
@@ -105,7 +107,7 @@ TEST(RoboSenseFairyAdapter, PreservesXYZIRTFilteringAndFeatureInputSemantics)
     double scan_start_time = -1.0;
     double scan_end_time   = -1.0;
     ASSERT_TRUE(adapter.convertToFilteredCloud(
-        input, filtered_cloud, 1, 2, 0.5, scan_start_time, scan_end_time));
+        input, filtered_cloud, 1, 2, 0.5, 0.12, scan_start_time, scan_end_time));
     EXPECT_DOUBLE_EQ(scan_start_time, 10.000);
     EXPECT_DOUBLE_EQ(scan_end_time, 10.011);
     ASSERT_EQ(filtered_cloud.size(), 2U);
@@ -115,4 +117,87 @@ TEST(RoboSenseFairyAdapter, PreservesXYZIRTFilteringAndFeatureInputSemantics)
     EXPECT_FLOAT_EQ(filtered_cloud.points[1].x, 4.0F);
     EXPECT_FLOAT_EQ(filtered_cloud.points[1].intensity, 14.0F);
     EXPECT_FLOAT_EQ(filtered_cloud.points[1].curvature, 9.0F);
+}
+
+TEST(RoboSenseFairyAdapter, IgnoresSingleTimestampOutlier)
+{
+    const sensor_msgs::msg::PointCloud2 input = makeXYZIRTCloud({
+        {1.0F, 0.0F, 0.0F, 10.0F, 0, 10.000},
+        {2.0F, 0.0F, 0.0F, 11.0F, 0, 10.025},
+        {3.0F, 0.0F, 0.0F, 12.0F, 0, 10.050},
+        {4.0F, 0.0F, 0.0F, 13.0F, 0, 10.090},
+        {5.0F, 0.0F, 0.0F, 14.0F, 0, 12.000},
+    });
+    sensor_adapter::RoboSenseFairyAdapter adapter;
+
+    sensor_adapter::InternalScan scan;
+    ASSERT_TRUE(adapter.convert(input, 0.12, scan));
+    EXPECT_DOUBLE_EQ(scan.start_time, 10.000);
+    EXPECT_DOUBLE_EQ(scan.end_time, 10.090);
+    ASSERT_EQ(scan.points.size(), 4U);
+    EXPECT_EQ(scan.points.back().source_index, 3U);
+    EXPECT_FLOAT_EQ(scan.points.back().point.curvature, 90.0F);
+
+    pcl::PointCloud<sensor_adapter::InternalPointType> filtered_cloud;
+    double scan_start_time = -1.0;
+    double scan_end_time   = -1.0;
+    ASSERT_TRUE(adapter.convertToFilteredCloud(
+        input, filtered_cloud, 1, 1, 0.5, 0.12, scan_start_time, scan_end_time));
+    EXPECT_DOUBLE_EQ(scan_start_time, 10.000);
+    EXPECT_DOUBLE_EQ(scan_end_time, 10.090);
+    ASSERT_EQ(filtered_cloud.size(), 4U);
+    EXPECT_FLOAT_EQ(filtered_cloud.points.back().x, 4.0F);
+    EXPECT_FLOAT_EQ(filtered_cloud.points.back().curvature, 90.0F);
+}
+
+TEST(LidarProcessor, FiltersRoboSenseTimestampOutlierBeforeSynchronization)
+{
+    const sensor_msgs::msg::PointCloud2 input = makeXYZIRTCloud({
+        {1.0F, 0.0F, 0.0F, 10.0F, 0, 10.000},
+        {2.0F, 0.0F, 0.0F, 11.0F, 0, 10.025},
+        {3.0F, 0.0F, 0.0F, 12.0F, 0, 10.050},
+        {4.0F, 0.0F, 0.0F, 13.0F, 0, 10.090},
+        {5.0F, 0.0F, 0.0F, 14.0F, 0, 12.000},
+    });
+    LidarProcessor::Config config;
+    config.lidar_type          = LidarType::kRoboSense;
+    config.scan_line_count     = 1;
+    config.scan_rate_hz        = 10;
+    config.point_filter_stride = 1;
+    config.blind_distance      = 0.5;
+    LidarProcessor processor(config);
+    auto output = std::make_shared<PointCloudXYZI>();
+
+    ASSERT_TRUE(processor.process(input, output));
+    EXPECT_DOUBLE_EQ(processor.scanStartTime(), 10.000);
+    EXPECT_DOUBLE_EQ(processor.scanEndTime(), 10.090);
+    ASSERT_EQ(output->size(), 4U);
+    EXPECT_FLOAT_EQ(output->points.back().x, 4.0F);
+    EXPECT_FLOAT_EQ(output->points.back().curvature, 90.0F);
+}
+
+TEST(RoboSenseFairyAdapter, RejectsAmbiguousTimestampWindows)
+{
+    const sensor_msgs::msg::PointCloud2 input = makeXYZIRTCloud({
+        {1.0F, 0.0F, 0.0F, 10.0F, 0, 10.000},
+        {2.0F, 0.0F, 0.0F, 11.0F, 0, 10.025},
+        {3.0F, 0.0F, 0.0F, 12.0F, 0, 12.000},
+        {4.0F, 0.0F, 0.0F, 13.0F, 0, 12.025},
+    });
+    sensor_adapter::RoboSenseFairyAdapter adapter;
+
+    sensor_adapter::InternalScan scan;
+    EXPECT_FALSE(adapter.convert(input, 0.12, scan));
+    EXPECT_TRUE(scan.points.empty());
+    EXPECT_DOUBLE_EQ(scan.start_time, -1.0);
+    EXPECT_DOUBLE_EQ(scan.end_time, -1.0);
+
+    pcl::PointCloud<sensor_adapter::InternalPointType> filtered_cloud;
+    double scan_start_time = -1.0;
+    double scan_end_time   = -1.0;
+    EXPECT_FALSE(adapter.convertToFilteredCloud(
+        input, filtered_cloud, 1, 1, 0.5, 0.12, scan_start_time, scan_end_time));
+    EXPECT_TRUE(filtered_cloud.empty());
+    EXPECT_DOUBLE_EQ(scan_start_time, -1.0);
+    EXPECT_DOUBLE_EQ(scan_end_time, -1.0);
 }

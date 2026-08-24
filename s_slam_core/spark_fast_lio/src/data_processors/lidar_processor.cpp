@@ -21,6 +21,7 @@ constexpr double kMaxToMinDistanceRatio = 3.24;
 constexpr double kEdgeDistanceRatio = 2.0;
 constexpr double kEdgeDistanceDifference = 0.1;
 constexpr double kSmallPlaneDistanceRatio = 1.2;
+constexpr double kRoboSenseMaximumScanDurationScale = 1.2;
 constexpr double kPi = 3.14159265358979323846;
 constexpr float kPilotZoneHalfWidth = 0.6F;
 constexpr double kPlaneDirectionMinimumNorm = 0.1;
@@ -509,27 +510,36 @@ void LidarProcessor::handleRoboSensePointCloud(
 {
     scan_start_time_ = -1.0;
     scan_end_time_   = -1.0;
+    // A RoboSense cloud represents one rotation. Reuse the existing 20%
+    // timing tolerance to prevent a single bad point timestamp from extending
+    // the synchronized LiDAR frame.
+    const double maximum_scan_duration =
+        kRoboSenseMaximumScanDurationScale / static_cast<double>(scan_rate_hz_);
 
     if (!feature_extraction_enabled_)
     {
         // When !feature_extraction_enabled_, FAST-LIO needs only the filtered output cloud.
         // Avoid materializing InternalScan/InternalPoint; the feature-enabled path below
         // preserves them for ring grouping and source-index filtering.
-        robosense_fairy_adapter_.convertToFilteredCloud(
-            msg,
-            output,
-            static_cast<std::uint16_t>(scan_line_count_),
-            point_filter_stride_,
-            blind_distance_,
-            scan_start_time_,
-            scan_end_time_);
+        if (!robosense_fairy_adapter_.convertToFilteredCloud(
+                msg,
+                output,
+                static_cast<std::uint16_t>(scan_line_count_),
+                point_filter_stride_,
+                blind_distance_,
+                maximum_scan_duration,
+                scan_start_time_,
+                scan_end_time_))
+        {
+            return;
+        }
         return;
     }
 
     resetFrameClouds();
 
     sensor_adapter::InternalScan scan;
-    if (!robosense_fairy_adapter_.convert(msg, scan))
+    if (!robosense_fairy_adapter_.convert(msg, maximum_scan_duration, scan))
     {
         return;
     }

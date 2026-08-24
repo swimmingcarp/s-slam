@@ -9,6 +9,7 @@
 #include <optional>
 #include <sstream>
 #include <utility>
+#include <vector>
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -43,6 +44,12 @@ struct XYZIRTFieldLayout
     std::uint32_t intensity_offset = 0;
     std::uint32_t ring_offset = 0;
     std::uint32_t timestamp_offset = 0;
+};
+
+struct TimestampWindow
+{
+    double start_time = -1.0;
+    double end_time = -1.0;
 };
 
 constexpr bool hostIsBigEndian()
@@ -215,9 +222,115 @@ void logInvalidTimestampCloud()
                  "RoboSense XYZIRT point cloud has no finite point with a valid per-point "
                  "timestamp. Drop this scan.");
 }
+
+bool isWithinTimestampWindow(const double timestamp, const TimestampWindow &window)
+{
+    return timestamp >= window.start_time && timestamp <= window.end_time;
+}
+
+bool hasValidMaximumScanDuration(const double maximum_scan_duration)
+{
+    if (std::isfinite(maximum_scan_duration) && maximum_scan_duration > 0.0)
+    {
+        return true;
+    }
+
+    RCLCPP_ERROR(rclcpp::get_logger("LidarProcessor"),
+                 "RoboSense maximum scan duration must be positive and finite. Drop this scan.");
+    return false;
+}
+
+std::optional<TimestampWindow> findDominantTimestampWindow(
+    const sensor_msgs::msg::PointCloud2 &msg,
+    const XYZIRTFieldLayout &layout,
+    const double maximum_scan_duration,
+    const std::size_t valid_timestamp_count)
+{
+    // The raw span is impossible for one LiDAR revolution. Recover the
+    // majority time cluster so one corrupted point cannot extend frame timing.
+    std::vector<double> timestamps;
+    timestamps.reserve(valid_timestamp_count);
+    forEachXYZRTPoint(msg, layout, [&](const std::size_t, const RoboSensePointFilterData &point) {
+        if (isValidPoint(point))
+        {
+            timestamps.push_back(point.timestamp);
+        }
+    });
+    std::sort(timestamps.begin(), timestamps.end());
+
+    std::size_t window_begin = 0;
+    std::size_t best_begin   = 0;
+    std::size_t best_end     = 0;
+    for (std::size_t window_end = 0; window_end < timestamps.size(); ++window_end)
+    {
+        while (timestamps[window_end] - timestamps[window_begin] > maximum_scan_duration)
+        {
+            ++window_begin;
+        }
+        if (window_end - window_begin > best_end - best_begin)
+        {
+            best_begin = window_begin;
+            best_end   = window_end;
+        }
+    }
+
+    const std::size_t inlier_count = best_end - best_begin + 1;
+    if (inlier_count <= timestamps.size() / 2)
+    {
+        RCLCPP_ERROR(rclcpp::get_logger("LidarProcessor"),
+                     "RoboSense XYZIRT point cloud has no dominant timestamp window. Drop this scan.");
+        return std::nullopt;
+    }
+
+    RCLCPP_WARN(rclcpp::get_logger("LidarProcessor"),
+                "RoboSense XYZIRT point cloud has %zu timestamp outlier points; ignore them.",
+                timestamps.size() - inlier_count);
+    return TimestampWindow{timestamps[best_begin], timestamps[best_end]};
+}
+
+std::optional<TimestampWindow> findTimestampWindow(
+    const sensor_msgs::msg::PointCloud2 &msg,
+    const XYZIRTFieldLayout &layout,
+    const double maximum_scan_duration)
+{
+    if (!hasValidMaximumScanDuration(maximum_scan_duration))
+    {
+        return std::nullopt;
+    }
+
+    double first_timestamp = std::numeric_limits<double>::max();
+    double last_timestamp  = -std::numeric_limits<double>::max();
+    std::size_t valid_timestamp_count = 0;
+    forEachXYZRTPoint(msg, layout, [&](const std::size_t, const RoboSensePointFilterData &point) {
+        if (!isValidPoint(point))
+        {
+            return;
+        }
+
+        first_timestamp = std::min(first_timestamp, point.timestamp);
+        last_timestamp  = std::max(last_timestamp, point.timestamp);
+        ++valid_timestamp_count;
+    });
+
+    if (valid_timestamp_count == 0)
+    {
+        logInvalidTimestampCloud();
+        return std::nullopt;
+    }
+
+    if (last_timestamp - first_timestamp <= maximum_scan_duration)
+    {
+        return TimestampWindow{first_timestamp, last_timestamp};
+    }
+
+    return findDominantTimestampWindow(
+        msg, layout, maximum_scan_duration, valid_timestamp_count);
+}
 }  // namespace
 
-bool RoboSenseFairyAdapter::convert(const sensor_msgs::msg::PointCloud2 &msg, InternalScan &scan) const
+bool RoboSenseFairyAdapter::convert(const sensor_msgs::msg::PointCloud2 &msg,
+                                    const double maximum_scan_duration,
+                                    InternalScan &scan) const
 {
     scan.points.clear();
     scan.start_time = -1.0;
@@ -230,34 +343,23 @@ bool RoboSenseFairyAdapter::convert(const sensor_msgs::msg::PointCloud2 &msg, In
     }
 
     // RoboSense Fairy publishes absolute per-point timestamps in seconds.
-    double scan_start_time = std::numeric_limits<double>::max();
-    double scan_end_time   = -std::numeric_limits<double>::max();
-    forEachXYZIRTPoint(msg, *layout, [&](const std::size_t, const RoboSensePoint &point) {
-        if (!isValidPoint(point))
-        {
-            return;
-        }
-        scan_start_time = std::min(scan_start_time, point.timestamp);
-        scan_end_time   = std::max(scan_end_time, point.timestamp);
-    });
-
-    if (scan_start_time == std::numeric_limits<double>::max())
+    const auto timestamp_window = findTimestampWindow(msg, *layout, maximum_scan_duration);
+    if (!timestamp_window)
     {
-        logInvalidTimestampCloud();
         return false;
     }
 
-    scan.start_time = scan_start_time;
-    scan.end_time   = scan_end_time;
+    scan.start_time = timestamp_window->start_time;
+    scan.end_time   = timestamp_window->end_time;
     scan.points.reserve(static_cast<std::size_t>(msg.width) * msg.height);
     forEachXYZIRTPoint(msg, *layout, [&](const std::size_t point_index, const RoboSensePoint &src) {
-        if (!isValidPoint(src))
+        if (!isValidPoint(src) || !isWithinTimestampWindow(src.timestamp, *timestamp_window))
         {
             return;
         }
 
         InternalPoint dst;
-        fillPoint(src, scan_start_time, dst.point);
+        fillPoint(src, scan.start_time, dst.point);
         dst.ring         = src.ring;
         dst.source_index = point_index;
         scan.points.push_back(dst);
@@ -271,6 +373,7 @@ bool RoboSenseFairyAdapter::convertToFilteredCloud(
     const std::uint16_t scan_line_count,
     const int point_filter_num,
     const double blind,
+    const double maximum_scan_duration,
     double &scan_start_time,
     double &scan_end_time) const
 {
@@ -283,12 +386,17 @@ bool RoboSenseFairyAdapter::convertToFilteredCloud(
     {
         return false;
     }
+    if (!hasValidMaximumScanDuration(maximum_scan_duration))
+    {
+        return false;
+    }
 
-    const std::size_t point_stride = static_cast<std::size_t>(std::max(1, point_filter_num));
-    const double blind_squared     = blind * blind;
-    double first_timestamp         = std::numeric_limits<double>::max();
-    double last_timestamp          = -std::numeric_limits<double>::max();
-    std::size_t output_size        = 0;
+    const std::size_t point_stride  = static_cast<std::size_t>(std::max(1, point_filter_num));
+    const double blind_squared      = blind * blind;
+    std::size_t output_size         = 0;
+    double first_timestamp          = std::numeric_limits<double>::max();
+    double last_timestamp           = -std::numeric_limits<double>::max();
+    std::size_t valid_timestamp_count = 0;
 
     forEachXYZRTPoint(msg, *layout, [&](const std::size_t point_index, const RoboSensePointFilterData &point) {
         if (!isValidPoint(point))
@@ -298,6 +406,7 @@ bool RoboSenseFairyAdapter::convertToFilteredCloud(
 
         first_timestamp = std::min(first_timestamp, point.timestamp);
         last_timestamp  = std::max(last_timestamp, point.timestamp);
+        ++valid_timestamp_count;
         if (point_index % point_stride != 0 || point.ring >= scan_line_count)
         {
             return;
@@ -311,18 +420,48 @@ bool RoboSenseFairyAdapter::convertToFilteredCloud(
         }
     });
 
-    if (first_timestamp == std::numeric_limits<double>::max())
+    if (valid_timestamp_count == 0)
     {
         logInvalidTimestampCloud();
         return false;
     }
 
-    scan_start_time = first_timestamp;
-    scan_end_time   = last_timestamp;
+    TimestampWindow timestamp_window{first_timestamp, last_timestamp};
+    if (timestamp_window.end_time - timestamp_window.start_time > maximum_scan_duration)
+    {
+        const auto recovered_window = findDominantTimestampWindow(
+            msg, *layout, maximum_scan_duration, valid_timestamp_count);
+        if (!recovered_window)
+        {
+            return false;
+        }
+        timestamp_window = *recovered_window;
+        output_size      = 0;
+        forEachXYZRTPoint(
+            msg, *layout, [&](const std::size_t point_index, const RoboSensePointFilterData &point) {
+                if (!isValidPoint(point) ||
+                    !isWithinTimestampWindow(point.timestamp, timestamp_window) ||
+                    point_index % point_stride != 0 || point.ring >= scan_line_count)
+                {
+                    return;
+                }
+
+                const double distance_squared =
+                    point.x * point.x + point.y * point.y + point.z * point.z;
+                if (distance_squared > blind_squared)
+                {
+                    ++output_size;
+                }
+            });
+    }
+
+    scan_start_time = timestamp_window.start_time;
+    scan_end_time   = timestamp_window.end_time;
     output.reserve(output_size);
 
     forEachXYZIRTPoint(msg, *layout, [&](const std::size_t point_index, const RoboSensePoint &point) {
-        if (!isValidPoint(point) || point_index % point_stride != 0 ||
+        if (!isValidPoint(point) || !isWithinTimestampWindow(point.timestamp, timestamp_window) ||
+            point_index % point_stride != 0 ||
             point.ring >= scan_line_count)
         {
             return;
