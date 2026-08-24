@@ -213,6 +213,115 @@ protected:
         return node.transformPoseToBaseFrame(state);
     }
 
+    static SPARKFastLIO2::PoseCovariance odometryCovariance(const SPARKFastLIO2 &node)
+    {
+        SPARKFastLIO2::PoseCovariance covariance;
+        for (int row = 0; row < 6; ++row)
+        {
+            for (int column = 0; column < 6; ++column)
+            {
+                covariance(row, column) = node.odomAftMapped_.pose.covariance[row * 6 + column];
+            }
+        }
+        return covariance;
+    }
+
+    static void setVisualizationFrame(SPARKFastLIO2 &node, const std::string &frame)
+    {
+        node.viz_frame_ = frame;
+    }
+
+    static SPARKFastLIO2::PoseCovariance transformedPoseCovariance(
+        const SPARKFastLIO2 &node,
+        const state_ikfom &state,
+        const SPARKFastLIO2::StateCovariance &state_covariance,
+        const M3D &world_rotation)
+    {
+        return node.poseCovariance(state, state_covariance, world_rotation);
+    }
+
+    static void publishGravityAlignedFrame(SPARKFastLIO2 &node,
+                                           const state_ikfom &state,
+                                           SPARKFastLIO2::StateCovariance &state_covariance,
+                                           const M3D &gravity_rotation)
+    {
+        node.viz_frame_                  = "base";
+        node.is_gravity_aligned_         = true;
+        node.gravity_alignment_rotation_ = gravity_rotation;
+        state_ikfom filter_state = state;
+        node.kf_.change_x(filter_state);
+        node.kf_.change_P(state_covariance);
+        node.publishCurrentFrame(state, rclcpp::Time(1000000000LL), false, false);
+    }
+
+    static PoseStruct outputPose(const SPARKFastLIO2 &node,
+                                 const state_ikfom &state,
+                                 const M3D &world_rotation)
+    {
+        const state_ikfom output_state = gravityAlignedState(state, world_rotation);
+        if (node.viz_frame_ == "imu")
+        {
+            return {output_state.pos, Eigen::Quaterniond(output_state.rot)};
+        }
+        if (node.viz_frame_ == "lidar")
+        {
+            return node.transformPoseToLidarFrame(output_state);
+        }
+        return node.transformPoseToBaseFrame(output_state);
+    }
+
+    static Eigen::Matrix<double, 6, state_ikfom::DOF> numericalPoseJacobian(
+        const SPARKFastLIO2 &node,
+        const state_ikfom &state,
+        const M3D &world_rotation)
+    {
+        constexpr double kPerturbation = 1.0e-6;
+        Eigen::Matrix<double, 6, state_ikfom::DOF> jacobian =
+            Eigen::Matrix<double, 6, state_ikfom::DOF>::Zero();
+
+        for (int state_index = 0; state_index < state_ikfom::DOF; ++state_index)
+        {
+            Eigen::Matrix<double, state_ikfom::DOF, 1> perturbation =
+                Eigen::Matrix<double, state_ikfom::DOF, 1>::Zero();
+            perturbation(state_index) = kPerturbation;
+
+            state_ikfom plus_state = state;
+            plus_state.boxplus(perturbation);
+            perturbation(state_index) = -kPerturbation;
+            state_ikfom minus_state = state;
+            minus_state.boxplus(perturbation);
+
+            const PoseStruct plus_pose  = outputPose(node, plus_state, world_rotation);
+            const PoseStruct minus_pose = outputPose(node, minus_state, world_rotation);
+            jacobian.template block<3, 1>(0, state_index) =
+                (plus_pose.position_ - minus_pose.position_) / (2.0 * kPerturbation);
+
+            const Eigen::Quaterniond orientation_difference =
+                (plus_pose.orientation_ * minus_pose.orientation_.conjugate()).normalized();
+            jacobian.template block<3, 1>(3, state_index) =
+                SO3::log(SO3(orientation_difference)) / (2.0 * kPerturbation);
+        }
+
+        return jacobian;
+    }
+
+    static SPARKFastLIO2::StateCovariance stateCovarianceWithCrossTerms()
+    {
+        SPARKFastLIO2::StateCovariance covariance =
+            SPARKFastLIO2::StateCovariance::Zero();
+        Eigen::Matrix<double, 12, 12> factor = Eigen::Matrix<double, 12, 12>::Zero();
+        for (int index = 0; index < factor.rows(); ++index)
+        {
+            factor(index, index) = 0.1 * (index + 1);
+            if (index + 1 < factor.cols())
+            {
+                factor(index, index + 1) = 0.02 * (index + 1);
+            }
+        }
+        covariance.template block<12, 12>(0, 0) = factor * factor.transpose();
+        return covariance;
+    }
+
     static void setLidarPoseInBase(SPARKFastLIO2 &node,
                                    const M3D &rotation_base_lidar,
                                    const V3D &translation_base_lidar)
@@ -483,6 +592,67 @@ TEST_F(SPARKFastLIO2Test, GravityAlignedLidarPoseAndRegisteredPointUseSamePublic
 
     EXPECT_TRUE(V3D(registered_point.x, registered_point.y, registered_point.z)
                     .isApprox(expected_point, 1.0e-5));
+}
+
+TEST_F(SPARKFastLIO2Test, TransformsOdometryCovarianceForEveryOutputFrame)
+{
+    auto node = std::make_shared<SPARKFastLIO2>();
+
+    state_ikfom state;
+    state.pos          = V3D(2.0, -1.0, 3.0);
+    state.offset_T_L_I = V3D(0.4, -0.3, 0.2);
+    state.rot          = SO3(Eigen::AngleAxisd(0.6, V3D(0.2, 0.5, 0.8).normalized()));
+    state.offset_R_L_I = SO3(Eigen::AngleAxisd(-0.4, V3D(0.7, -0.1, 0.6).normalized()));
+
+    setLidarPoseInBase(
+        *node,
+        Eigen::AngleAxisd(0.3, V3D(-0.4, 0.8, 0.2).normalized()).toRotationMatrix(),
+        V3D(-0.2, 0.5, 0.1));
+    const M3D gravity_rotation =
+        Eigen::AngleAxisd(-0.5, V3D(0.3, 0.4, 0.7).normalized()).toRotationMatrix();
+    const auto state_covariance = stateCovarianceWithCrossTerms();
+
+    for (const std::string &frame : {"imu", "lidar", "base"})
+    {
+        setVisualizationFrame(*node, frame);
+        const auto jacobian = numericalPoseJacobian(*node, state, gravity_rotation);
+        const auto expected_covariance =
+            0.5 * (jacobian * state_covariance * jacobian.transpose() +
+                   (jacobian * state_covariance * jacobian.transpose()).transpose());
+        const auto actual_covariance =
+            transformedPoseCovariance(*node, state, state_covariance, gravity_rotation);
+
+        EXPECT_TRUE(actual_covariance.isApprox(expected_covariance, 1.0e-6)) << frame;
+    }
+}
+
+TEST_F(SPARKFastLIO2Test, PublishesTransformedOdometryCovarianceInRosOrder)
+{
+    auto node = std::make_shared<SPARKFastLIO2>();
+    setBaseFrame(*node);
+
+    state_ikfom state;
+    state.pos          = V3D(-2.0, 4.0, 1.0);
+    state.offset_T_L_I = V3D(0.6, 0.1, -0.3);
+    state.rot          = SO3(Eigen::AngleAxisd(0.4, V3D(0.2, -0.6, 0.5).normalized()));
+    state.offset_R_L_I = SO3(Eigen::AngleAxisd(-0.7, V3D(0.1, 0.9, -0.2).normalized()));
+
+    setLidarPoseInBase(
+        *node,
+        Eigen::AngleAxisd(0.2, V3D(0.5, -0.3, 0.7).normalized()).toRotationMatrix(),
+        V3D(0.3, -0.4, 0.2));
+    const M3D gravity_rotation =
+        Eigen::AngleAxisd(0.5, V3D(-0.5, 0.1, 0.8).normalized()).toRotationMatrix();
+    auto state_covariance = stateCovarianceWithCrossTerms();
+
+    publishGravityAlignedFrame(*node, state, state_covariance, gravity_rotation);
+
+    const auto jacobian = numericalPoseJacobian(*node, state, gravity_rotation);
+    const auto expected_covariance =
+        0.5 * (jacobian * state_covariance * jacobian.transpose() +
+               (jacobian * state_covariance * jacobian.transpose()).transpose());
+
+    EXPECT_TRUE(odometryCovariance(*node).isApprox(expected_covariance, 1.0e-6));
 }
 
 TEST_F(SPARKFastLIO2Test, RejectsZeroAccelerationDuringImuInitialization)

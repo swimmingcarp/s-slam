@@ -190,18 +190,23 @@ void SPARKFastLIO2::integrateIMU(esekfom::esekf<state_ikfom, 12, input_ikfom> &s
     auto integrated_state = imu_processor_->integrateImu(imu_integration_queue_, state);
     const auto &stamp     = imu_integration_queue_[1].header.stamp;
     imu_integration_queue_.pop_front();
+    const M3D world_rotation =
+        is_gravity_aligned_ ? gravity_alignment_rotation_ : M3D::Identity();
+    const PoseCovariance pose_covariance =
+        poseCovariance(integrated_state, state.get_P(), world_rotation);
 
     if (is_gravity_aligned_)
     {
         publishOdometry(
             gravityAlignedState(integrated_state, gravity_alignment_rotation_),
+            pose_covariance,
             stamp,
             pub_imu_predicted_odom_,
             false);
         return;
     }
 
-    publishOdometry(integrated_state, stamp, pub_imu_predicted_odom_, false);
+    publishOdometry(integrated_state, pose_covariance, stamp, pub_imu_predicted_odom_, false);
 }
 void SPARKFastLIO2::main()
 {

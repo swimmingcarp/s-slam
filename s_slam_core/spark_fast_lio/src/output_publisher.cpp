@@ -10,13 +10,70 @@
 
 namespace spark_fast_lio
 {
-void SPARKFastLIO2::publishOdometry(const state_ikfom &state, const rclcpp::Time &stamp)
+namespace
 {
-    publishOdometry(state, stamp, pub_odom_, true);
+constexpr int kPositionStateIndex             = 0;
+constexpr int kOrientationStateIndex          = 3;
+constexpr int kExtrinsicRotationStateIndex    = 6;
+constexpr int kExtrinsicTranslationStateIndex = 9;
+}
+
+SPARKFastLIO2::PoseCovariance SPARKFastLIO2::poseCovariance(
+    const state_ikfom &state,
+    const StateCovariance &state_covariance,
+    const M3D &world_rotation) const
+{
+    Eigen::Matrix<double, 6, state_ikfom::DOF> pose_jacobian =
+        Eigen::Matrix<double, 6, state_ikfom::DOF>::Zero();
+    const M3D imu_rotation_in_world = world_rotation * state.rot.toRotationMatrix();
+    const M3D lidar_rotation_in_imu = state.offset_R_L_I.toRotationMatrix();
+
+    // The EKF's SO3 errors are right perturbations. ROS pose covariance uses
+    // fixed map-frame axes, so rotate every pose error into the published map frame.
+    pose_jacobian.template block<3, 3>(0, kPositionStateIndex) = world_rotation;
+    pose_jacobian.template block<3, 3>(3, kOrientationStateIndex) = imu_rotation_in_world;
+
+    if (viz_frame_ == "lidar")
+    {
+        pose_jacobian.template block<3, 3>(0, kOrientationStateIndex) =
+            -imu_rotation_in_world * skew_sym_mat(state.offset_T_L_I);
+        pose_jacobian.template block<3, 3>(0, kExtrinsicTranslationStateIndex) =
+            imu_rotation_in_world;
+        pose_jacobian.template block<3, 3>(3, kExtrinsicRotationStateIndex) =
+            imu_rotation_in_world * lidar_rotation_in_imu;
+    }
+    else if (viz_frame_ == "base")
+    {
+        const M3D base_rotation_in_lidar = lidar_rotation_in_base_.transpose();
+        const M3D base_rotation_in_imu   = lidar_rotation_in_imu * base_rotation_in_lidar;
+        const V3D base_translation_in_imu =
+            state.offset_T_L_I - base_rotation_in_imu * lidar_translation_in_base_;
+        const V3D base_to_lidar_translation_in_lidar =
+            base_rotation_in_lidar * lidar_translation_in_base_;
+
+        pose_jacobian.template block<3, 3>(0, kOrientationStateIndex) =
+            -imu_rotation_in_world * skew_sym_mat(base_translation_in_imu);
+        pose_jacobian.template block<3, 3>(0, kExtrinsicRotationStateIndex) =
+            imu_rotation_in_world * lidar_rotation_in_imu *
+            skew_sym_mat(base_to_lidar_translation_in_lidar);
+        pose_jacobian.template block<3, 3>(0, kExtrinsicTranslationStateIndex) =
+            imu_rotation_in_world;
+        pose_jacobian.template block<3, 3>(3, kExtrinsicRotationStateIndex) =
+            imu_rotation_in_world * lidar_rotation_in_imu;
+    }
+    else if (viz_frame_ != "imu")
+    {
+        throw std::invalid_argument("Invalid visualization frame has been given");
+    }
+
+    const PoseCovariance covariance =
+        pose_jacobian * state_covariance * pose_jacobian.transpose();
+    return 0.5 * (covariance + covariance.transpose());
 }
 
 void SPARKFastLIO2::publishOdometry(
     const state_ikfom &state,
+    const PoseCovariance &pose_covariance,
     const rclcpp::Time &stamp,
     const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr &publisher,
     bool publish_tf)
@@ -43,17 +100,12 @@ void SPARKFastLIO2::publishOdometry(
         throw std::invalid_argument("Invalid visualization frame has been given");
     }
 
-    // fill the covariance
-    auto P = kf_.get_P();
-    for (int i = 0; i < 6; ++i)
+    for (int row = 0; row < 6; ++row)
     {
-        int k                                     = (i < 3) ? (i + 3) : (i - 3);
-        odomAftMapped_.pose.covariance[i * 6 + 0] = P(k, 3);
-        odomAftMapped_.pose.covariance[i * 6 + 1] = P(k, 4);
-        odomAftMapped_.pose.covariance[i * 6 + 2] = P(k, 5);
-        odomAftMapped_.pose.covariance[i * 6 + 3] = P(k, 0);
-        odomAftMapped_.pose.covariance[i * 6 + 4] = P(k, 1);
-        odomAftMapped_.pose.covariance[i * 6 + 5] = P(k, 2);
+        for (int column = 0; column < 6; ++column)
+        {
+            odomAftMapped_.pose.covariance[row * 6 + column] = pose_covariance(row, column);
+        }
     }
 
     // publish
@@ -107,6 +159,10 @@ void SPARKFastLIO2::publishCurrentFrame(const state_ikfom &state,
                                         bool insert_into_map,
                                         bool append_path)
 {
+    const M3D world_rotation =
+        is_gravity_aligned_ ? gravity_alignment_rotation_ : M3D::Identity();
+    const PoseCovariance pose_covariance = poseCovariance(state, kf_.get_P(), world_rotation);
+
     std::optional<state_ikfom> aligned_state;
     const state_ikfom *output_state = &state;
     if (is_gravity_aligned_)
@@ -115,7 +171,7 @@ void SPARKFastLIO2::publishCurrentFrame(const state_ikfom &state,
         output_state = &*aligned_state;
     }
 
-    publishOdometry(*output_state, stamp);
+    publishOdometry(*output_state, pose_covariance, stamp, pub_odom_, true);
 
     if (insert_into_map)
     {

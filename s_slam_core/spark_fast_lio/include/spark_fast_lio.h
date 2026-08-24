@@ -117,9 +117,15 @@ private:
     void insertScanIntoMap(const state_ikfom &state);
 
     // Output publication.
-    void publishOdometry(const state_ikfom &state, const rclcpp::Time &stamp);
+    using StateCovariance = esekfom::esekf<state_ikfom, 12, input_ikfom>::cov;
+    using PoseCovariance  = Eigen::Matrix<double, 6, 6>;
+
+    PoseCovariance poseCovariance(const state_ikfom &state,
+                                  const StateCovariance &state_covariance,
+                                  const M3D &world_rotation) const;
     void publishOdometry(
         const state_ikfom &state,
+        const PoseCovariance &pose_covariance,
         const rclcpp::Time &stamp,
         const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr &publisher,
         bool publish_tf);
