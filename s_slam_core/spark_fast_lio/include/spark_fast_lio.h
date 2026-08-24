@@ -54,51 +54,7 @@ public:
 private:
     friend class SPARKFastLIO2Test;
 
-    M3D computeRelativeRotation(const Eigen::Vector3d &gravity_from,
-                                const Eigen::Vector3d &gravity_to);
-
-    bool tryLookupBaseExtrinsics(V3D &lidar_translation_in_base,
-                                 M3D &lidar_rotation_in_base,
-                                 std::string &error);
-    void retryBaseExtrinsics();
-    void activateSensorProcessing();
-
-    void pointBodyToWorld(PointType const *const input_point,
-                          PointType *const output_point,
-                          const state_ikfom &state);
-
-    template <typename T>
-    void pointBodyToWorld(const Eigen::Matrix<T, 3, 1> &input_point,
-                          Eigen::Matrix<T, 3, 1> &output_point,
-                          const state_ikfom &state) const
-    {
-        V3D point_in_body(input_point[0], input_point[1], input_point[2]);
-        V3D point_in_world(
-            state.rot * (state.offset_R_L_I * point_in_body + state.offset_T_L_I) + state.pos);
-
-        output_point[0] = point_in_world(0);
-        output_point[1] = point_in_world(1);
-        output_point[2] = point_in_world(2);
-    }
-
-    void pclPointBodyToWorld(PointType const *const input_point,
-                             PointType *const output_point,
-                             const state_ikfom &state);
-
-    void pclPointBodyLidarToIMU(PointType const *const input_point, PointType *const output_point);
-
-    void pclPointBodyLidarToBase(PointType const *const input_point, PointType *const output_point);
-
-    void collectRemovedPoints();
-
-    void standardLiDARCallback(const sensor_msgs::msg::PointCloud2 &msg);
-
-#if defined(LIVOX_ROS_DRIVER_FOUND) && LIVOX_ROS_DRIVER_FOUND
-    void livoxLiDARCallback(const livox_ros_driver2::msg::CustomMsg::ConstSharedPtr msg);
-#endif
-
-    void imuCallback(const sensor_msgs::msg::Imu::ConstSharedPtr msg);
-
+    // Node lifecycle and recovery.
     // How resetEstimatorState treats the next IMU initialization.
     // kCold is the safe default: everything is discarded and a fresh
     // stationary initialization is required — use it whenever the estimator
@@ -112,17 +68,55 @@ private:
     };
 
     void resetEstimatorState(const std::string &reason, ResetMode mode = ResetMode::kCold);
+    M3D computeRelativeRotation(const Eigen::Vector3d &gravity_from,
+                                const Eigen::Vector3d &gravity_to);
+    bool tryLookupBaseExtrinsics(V3D &lidar_translation_in_base,
+                                 M3D &lidar_rotation_in_base,
+                                 std::string &error);
+    void retryBaseExtrinsics();
+    void activateSensorProcessing();
 
+    // Sensor input and package synchronization.
+    void standardLiDARCallback(const sensor_msgs::msg::PointCloud2 &msg);
+#if defined(LIVOX_ROS_DRIVER_FOUND) && LIVOX_ROS_DRIVER_FOUND
+    void livoxLiDARCallback(const livox_ros_driver2::msg::CustomMsg::ConstSharedPtr msg);
+#endif
+    void imuCallback(const sensor_msgs::msg::Imu::ConstSharedPtr msg);
     void integrateIMU(esekfom::esekf<state_ikfom, 12, input_ikfom> &state,
                       const sensor_msgs::msg::Imu &msg);
+    void main();
+    void processPendingMeasurements();
+    bool syncPackages(MeasureGroup &measurements, bool verbose);
 
+    // Map matching and local map maintenance.
+    void pointBodyToWorld(PointType const *const input_point,
+                          PointType *const output_point,
+                          const state_ikfom &state);
+    template <typename T>
+    void pointBodyToWorld(const Eigen::Matrix<T, 3, 1> &input_point,
+                          Eigen::Matrix<T, 3, 1> &output_point,
+                          const state_ikfom &state) const
+    {
+        V3D point_in_body(input_point[0], input_point[1], input_point[2]);
+        V3D point_in_world(
+            state.rot * (state.offset_R_L_I * point_in_body + state.offset_T_L_I) + state.pos);
+
+        output_point[0] = point_in_world(0);
+        output_point[1] = point_in_world(1);
+        output_point[2] = point_in_world(2);
+    }
+    void pclPointBodyToWorld(PointType const *const input_point,
+                             PointType *const output_point,
+                             const state_ikfom &state);
+    void pclPointBodyLidarToIMU(PointType const *const input_point, PointType *const output_point);
+    void pclPointBodyLidarToBase(PointType const *const input_point, PointType *const output_point);
+    void collectRemovedPoints();
     void computeMeasurementModel(state_ikfom &state,
                                  esekfom::dyn_share_datastruct<double> &ekfom_data);
-
     void updateLocalMapWindow();
-
     void insertScanIntoMap(const state_ikfom &state);
 
+    // Output publication.
     void publishOdometry(const state_ikfom &state, const rclcpp::Time &stamp);
     void publishOdometry(
         const state_ikfom &state,
@@ -136,20 +130,14 @@ private:
                              const rclcpp::Time &stamp,
                              bool insert_into_map,
                              bool append_path);
-
     bool topicSubscribed(
         const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr &publisher) const;
-
     void publishMapScan(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubCloud,
                         const state_ikfom &state);
-
     void publishScan(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubCloud,
                      const std::string &frame);
-
     PoseStruct transformPoseToLidarFrame(const state_ikfom &state) const;
-
     PoseStruct transformPoseToBaseFrame(const state_ikfom &state) const;
-
     template <typename T>
     void setPoseStamp(const state_ikfom &state, T &out, const std::string &frame) const
     {
@@ -192,16 +180,9 @@ private:
         }
     }
 
-    void main();
-
-    void processPendingMeasurements();
-
-    bool syncPackages(MeasureGroup &measurements, bool verbose);
-
+    // State estimation and recovery.
     bool isMotionStopped(const V3D &acc_ref, const V3D &acc_curr, const double acc_diff_thr);
-
     void processLidarAndImu(MeasureGroup &measures);
-
     struct PropagationCheckpoint;
     struct MotionQualityReport
     {
@@ -251,7 +232,7 @@ private:
                            const state_ikfom &propagated_state,
                            const MotionQualityReport &quality);
 
-private:
+    // ROS interfaces and lifecycle.
     std::mutex buffer_mutex_;
 
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_lidar_;
@@ -278,7 +259,7 @@ private:
     rclcpp::TimerBase::SharedPtr main_loop_timer_;
     rclcpp::TimerBase::SharedPtr extrinsics_retry_timer_;
 
-    /*** Time Log Variables ***/
+    // Runtime diagnostics.
     double map_insertion_time_ = 0.0;
     double map_search_time_    = 0.0;
     double map_removal_time_   = 0.0;
@@ -287,7 +268,6 @@ private:
     double solve_time_         = 0.0;
 
     bool runtime_pos_log_ = false;
-    /**************************/
     int inserted_point_count_    = 0;
     int removed_map_point_count_ = 0;
     bool local_map_initialized_  = false;
@@ -296,6 +276,7 @@ private:
     // break bit-reproducible replay.
     int lio_state_log_counter_ = 0;
 
+    // Runtime configuration.
     bool pcd_save_enabled_                 = false;
     bool time_sync_enabled_                = false;
     bool extrinsic_est_enabled_            = false;
@@ -317,15 +298,18 @@ private:
     std::size_t lidar_buffer_capacity_     = 20;
     std::size_t imu_buffer_capacity_       = 1000;
 
+    // Verbose logging and gravity alignment.
     bool verbose_     = false;
     bool pcl_verbose_ = true;
 
     bool enable_gravity_alignment_ = false;
     bool is_gravity_aligned_       = false;
 
+    // Map and output configuration.
     std::vector<float> point_residuals_;
     float detection_range_ = 300.0f;
 
+    // Persistent paths and frame names.
     std::string map_file_path_;
     std::string save_dir_;
     std::string sequence_name_;
@@ -335,6 +319,7 @@ private:
     std::string imu_frame_;
     std::string viz_frame_;
 
+    // Input timing and synchronization state.
     double mean_residual_  = 0.05;
     double total_residual_ = 0.0;
     rclcpp::Time last_lidar_timestamp_;
@@ -344,6 +329,7 @@ private:
     int64_t last_not_enough_imu_log_timestamp_ns_ = -1;
     int64_t lidar_imu_time_offset_                = 0;
 
+    // Estimator and motion-quality configuration.
     double gyroscope_covariance_      = 0.1;
     double accelerometer_covariance_  = 0.1;
     double gyroscope_bias_covariance_ = 0.0001;
@@ -355,6 +341,7 @@ private:
     double motion_gate_min_effective_ratio_   = 0.25;
     bool motion_gate_reject_weak_lidar_       = true;
 
+    // Mapping parameters and per-frame counters.
     double filter_size_map_min_   = 0.0;
     double fov_deg_               = 0.0;
     double local_map_side_length_ = 0.0;
@@ -380,6 +367,7 @@ private:
     std::size_t verbose_lidar_buffer_size_ = 0;
     std::size_t verbose_imu_buffer_size_   = 0;
 
+    // Gravity-alignment state.
     double acceleration_difference_threshold_ = 0.2;
     int moving_frame_threshold_               = 10;
     int gravity_measurement_threshold_        = 10;
@@ -392,6 +380,7 @@ private:
 
     std::deque<V3D> global_gravity_directions_;
 
+    // Local-map workspace and extrinsics lookup state.
     BoxPointType local_map_bounds_;
     std::vector<BoxPointType> map_boxes_to_remove_;
 
@@ -403,6 +392,7 @@ private:
     std::chrono::steady_clock::time_point last_extrinsics_wait_log_;
     bool extrinsics_timeout_reported_ = false;
 
+    // Sensor buffers and point-cloud workspace.
     struct BufferedLidarFrame
     {
         PointCloudXYZI::Ptr cloud;
@@ -426,6 +416,7 @@ private:
     pcl::VoxelGrid<PointType> down_size_filter_;
     KD_TREE<PointType> ikd_tree_;
 
+    // Map transforms and gravity alignment.
     V3F xaxis_point_body_;
     V3F xaxis_point_world_;
     V3D base_gravity_;
@@ -433,11 +424,11 @@ private:
     V3D position_last_;
     M3D gravity_alignment_rotation_;
 
-    /*** Only used for integration with the Hydra system ***/
+    // Base-frame extrinsics.
     V3D lidar_translation_in_base_;
     M3D lidar_rotation_in_base_;
 
-    /*** EKF inputs and output ***/
+    // EKF, recovery, and published state.
     MeasureGroup measures_;
     esekfom::esekf<state_ikfom, 12, input_ikfom> kf_;
     std::optional<esekfom::esekf<state_ikfom, 12, input_ikfom>> kf_for_preintegration_;

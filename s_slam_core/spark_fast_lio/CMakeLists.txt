@@ -102,6 +102,10 @@ add_library(spark_lio_component SHARED
   src/data_processors/imu_processor.cpp
   src/data_processors/lidar_processor.cpp
   src/spark_fast_lio.cpp
+  src/input_handler.cpp
+  src/mapping.cpp
+  src/output_publisher.cpp
+  src/estimation.cpp
 )
 
 # Example: C++ standard
