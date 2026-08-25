@@ -515,9 +515,8 @@ void SPARKFastLIO2::logLargeStateJump(const MeasureGroup &measures,
                                       const state_ikfom &propagated_state,
                                       const MotionQualityReport &quality)
 {
-    if (!have_last_lio_debug_state_ ||
-        ((quality.delta_time <= 0.0 || quality.state_step <= 0.5) &&
-         latest_state_.pos.norm() <= 50.0))
+    if (!have_last_lio_debug_state_ || quality.delta_time <= 0.0 ||
+        quality.state_step <= 0.5)
     {
         return;
     }
