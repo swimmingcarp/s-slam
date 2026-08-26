@@ -43,7 +43,6 @@ public:
         LoopClosureConfig lc_config;
 
         auto &gc = lc_config.gicp_config_;
-        auto &mc = lc_config.matcher_config_;
 
         source_frame_   = declare_parameter<std::string>("source_frame", "");
         target_frame_   = declare_parameter<std::string>("target_frame", "");
@@ -151,13 +150,12 @@ public:
 
         need_cloud_vis_update_ = true;
 
-        const double eps = 1e-6;
-
         if (!reg_output.is_valid_)
         {
             RCLCPP_WARN_STREAM(
                 this->get_logger(),
                 "Alignment rejected. # of inliers: " << reg_output.num_final_inliers_);
+            return;
         }
 
         target_T_source_ = reg_output.pose_;

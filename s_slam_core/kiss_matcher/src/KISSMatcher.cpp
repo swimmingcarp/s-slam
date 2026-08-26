@@ -159,6 +159,7 @@ RegistrationSolution KISSMatcher::solve(const Eigen::Matrix<double, 3, Eigen::Dy
     // Just return invalid solution with the identity matrix
     if (src_matched.cols() < 2)
     {
+        resetSolver();
         return solver_->getSolution();
     }
 

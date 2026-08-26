@@ -1,5 +1,7 @@
 #include "slam/loop_closure.h"
 
+#include <cmath>
+
 using namespace kiss_matcher;
 
 LoopClosure::LoopClosure(const LoopClosureConfig &config, const rclcpp::Logger &logger)
@@ -21,6 +23,7 @@ LoopClosure::LoopClosure(const LoopClosureConfig &config, const rclcpp::Logger &
 
     local_reg_handler_->setNumThreads(gc.num_threads_);
     local_reg_handler_->setCorrespondenceRandomness(gc.correspondence_randomness_);
+    local_reg_handler_->setMaximumIterations(gc.max_num_iter_);
     local_reg_handler_->setMaxCorrespondenceDistance(gc.max_corr_dist_);
     local_reg_handler_->setVoxelResolution(config.voxel_res_);
     local_reg_handler_->setRegistrationType("VGICP");  // "VGICP" or "GICP"
@@ -218,6 +221,16 @@ RegOutput LoopClosure::icpAlignment(const pcl::PointCloud<PointType> &src,
 {
     RegOutput reg_output;
     aligned_->clear();
+
+    if (src.empty() || tgt.empty())
+    {
+        RCLCPP_WARN(logger_,
+                    "LC rejected. Cannot align an empty cloud: source=%zu, target=%zu",
+                    src.size(),
+                    tgt.size());
+        return reg_output;
+    }
+
     // merge subkeyframes before ICP
     pcl::PointCloud<PointType>::Ptr src_cloud(new pcl::PointCloud<PointType>());
     pcl::PointCloud<PointType>::Ptr tgt_cloud(new pcl::PointCloud<PointType>());
@@ -230,18 +243,24 @@ RegOutput LoopClosure::icpAlignment(const pcl::PointCloud<PointType> &src,
 
     const auto &local_reg_result = local_reg_handler_->getRegistrationResult();
 
-    double overlapness =
+    const double overlapness =
         static_cast<double>(local_reg_result.num_inliers) / src_cloud->size() * 100.0;
     reg_output.overlapness_ = overlapness;
+    reg_output.is_converged_ = local_reg_result.converged;
 
     // NOTE(hlim): fine_T_coarse
-    reg_output.pose_ = local_reg_handler_->getFinalTransformation().cast<double>();
+    const Eigen::Matrix4d final_transformation =
+        local_reg_handler_->getFinalTransformation().cast<double>();
+    reg_output.pose_ = final_transformation;
+
+    const bool registration_result_is_finite =
+        std::isfinite(local_reg_result.error) && final_transformation.allFinite();
     // if matchness overlapness is over than threshold,
     // that means the registration result is likely to be sufficiently overlapped
-    if (overlapness > config_.gicp_config_.overlap_threshold_)
+    if (local_reg_result.converged && registration_result_is_finite &&
+        overlapness > config_.gicp_config_.overlap_threshold_)
     {
         reg_output.is_valid_     = true;
-        reg_output.is_converged_ = true;
 
         last_success_icp_time_ = std::chrono::steady_clock::now();
         has_success_icp_time_  = true;
@@ -277,12 +296,6 @@ RegOutput LoopClosure::coarseToFineAlignment(const pcl::PointCloud<PointType> &s
 
     const auto &solution = global_reg_handler_->estimate(src_vec, tgt_vec);
 
-    Eigen::Matrix4d coarse_alignment      = Eigen::Matrix4d::Identity();
-    coarse_alignment.block<3, 3>(0, 0)    = solution.rotation.cast<double>();
-    coarse_alignment.topRightCorner(3, 1) = solution.translation.cast<double>();
-
-    *coarse_aligned_ = transformPcd(src, coarse_alignment);
-
     const size_t num_inliers      = global_reg_handler_->getNumFinalInliers();
     reg_output.num_final_inliers_ = num_inliers;
     if (config_.verbose_)
@@ -303,19 +316,37 @@ RegOutput LoopClosure::coarseToFineAlignment(const pcl::PointCloud<PointType> &s
 
     // NOTE(hlim): A small number of inliers suggests that the initial alignment may have failed,
     // so fine alignment is meaningless.
-    if (!solution.valid || num_inliers < config_.num_inliers_threshold_)
+    if (!solution.valid || !solution.rotation.allFinite() || !solution.translation.allFinite() ||
+        num_inliers < config_.num_inliers_threshold_)
     {
         return reg_output;
     }
-    else
-    {
-        const auto &fine_output = icpAlignment(*coarse_aligned_, tgt);
-        reg_output              = fine_output;
-        reg_output.pose_        = fine_output.pose_ * coarse_alignment;
 
-        // Use this cloud to debug whether the transformation is correct.
-        // *debug_cloud_        = transformPcd(src, reg_output.pose_);
+    Eigen::Matrix4d coarse_alignment      = Eigen::Matrix4d::Identity();
+    coarse_alignment.block<3, 3>(0, 0)    = solution.rotation.cast<double>();
+    coarse_alignment.topRightCorner(3, 1) = solution.translation.cast<double>();
+    *coarse_aligned_                       = transformPcd(src, coarse_alignment);
+
+    const auto &fine_output = icpAlignment(*coarse_aligned_, tgt);
+    reg_output              = fine_output;
+    if (!reg_output.is_valid_)
+    {
+        return reg_output;
     }
+
+    const Eigen::Matrix4d final_transformation = fine_output.pose_ * coarse_alignment;
+    if (!final_transformation.allFinite())
+    {
+        RCLCPP_WARN(logger_, "LC rejected. Coarse-to-fine transformation is not finite");
+        reg_output.is_valid_     = false;
+        reg_output.is_converged_ = false;
+        reg_output.pose_.setIdentity();
+        return reg_output;
+    }
+    reg_output.pose_ = final_transformation;
+
+    // Use this cloud to debug whether the transformation is correct.
+    // *debug_cloud_        = transformPcd(src, reg_output.pose_);
     return reg_output;
 }
 

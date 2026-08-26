@@ -196,4 +196,23 @@ install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(kiss_matcher_sparse_solution_test
+    test/kiss_matcher_sparse_solution_test.cpp)
+  target_link_libraries(kiss_matcher_sparse_solution_test
+    kiss_matcher::kiss_matcher_core)
+
+  ament_add_gtest(loop_closure_input_validation_test
+    test/loop_closure_input_validation_test.cpp
+    src/slam/loop_closure.cpp)
+  ament_target_dependencies(loop_closure_input_validation_test
+    rclcpp tf2_ros sensor_msgs nav_msgs visualization_msgs message_filters pcl_conversions PCL)
+  target_link_libraries(loop_closure_input_validation_test
+    kiss_matcher::kiss_matcher_core
+    ${PCL_LIBRARIES}
+    small_gicp
+    gtsam)
+endif()
+
 ament_package()
