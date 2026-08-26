@@ -240,85 +240,53 @@ void PoseGraphManager::callbackNode(const nav_msgs::msg::Odometry::ConstSharedPt
     else
     {
         const auto t_keyframe_processing = local_timer.toc();
-        PoseGraphNode latest_keyframe;
+        bool keyframe_was_added = false;
         {
-            std::lock_guard<std::mutex> lock(keyframes_mutex_);
+            std::lock_guard<std::mutex> graph_lock(graph_mutex_);
+            std::lock_guard<std::mutex> keyframes_lock(keyframes_mutex_);
             if (keyframes_.empty())
             {
                 return;
             }
-            latest_keyframe = keyframes_.back();
-        }
 
-        if (checkIfKeyframe(current_frame_, latest_keyframe))
-        {
-            const size_t new_keyframe_idx = latest_keyframe_idx_;
-            const size_t prev_keyframe_idx = new_keyframe_idx - 1;
+            const PoseGraphNode &latest_keyframe = keyframes_.back();
+            if (!checkIfKeyframe(current_frame_, latest_keyframe))
             {
-                std::lock_guard<std::mutex> lock(keyframes_mutex_);
-                keyframes_.push_back(current_frame_);
+                return;
             }
+
+            const size_t new_keyframe_idx  = latest_keyframe_idx_;
+            const size_t prev_keyframe_idx  = new_keyframe_idx - 1;
+            const gtsam::Pose3 pose_from    = eigenToGtsam(latest_keyframe.pose_corrected_);
+            const gtsam::Pose3 pose_to      = eigenToGtsam(current_frame_.pose_corrected_);
 
             auto variance_vector =
                 (gtsam::Vector(6) << 1e-4, 1e-4, 1e-4, 1e-2, 1e-2, 1e-2).finished();
             gtsam::noiseModel::Diagonal::shared_ptr odom_noise =
                 gtsam::noiseModel::Diagonal::Variances(variance_vector);
 
-            gtsam::Pose3 pose_from = eigenToGtsam(latest_keyframe.pose_corrected_);
-            gtsam::Pose3 pose_to = eigenToGtsam(current_frame_.pose_corrected_);
-
-            {
-                std::lock_guard<std::mutex> lock(graph_mutex_);
-                gtsam_graph_.add(gtsam::BetweenFactor<gtsam::Pose3>(prev_keyframe_idx,
-                                                                    new_keyframe_idx,
-                                                                    pose_from.between(pose_to),
-                                                                    odom_noise));
-                init_esti_.insert(new_keyframe_idx, pose_to);
-            }
+            keyframes_.push_back(current_frame_);
+            gtsam_graph_.add(gtsam::BetweenFactor<gtsam::Pose3>(prev_keyframe_idx,
+                                                                new_keyframe_idx,
+                                                                pose_from.between(pose_to),
+                                                                odom_noise));
+            init_esti_.insert(new_keyframe_idx, pose_to);
+            pending_keyframe_update_ = true;
 
             ++latest_keyframe_idx_;
+            keyframe_was_added = true;
+        }
+
+        if (keyframe_was_added)
+        {
             {
                 std::lock_guard<std::mutex> lock(vis_mutex_);
                 appendKeyframePose(current_frame_);
             }
 
             local_timer.tic();
-            bool loop_closure_was_added = false;
-            {
-                std::lock_guard<std::mutex> lock(graph_mutex_);
-                loop_closure_was_added = loop_closure_added_.exchange(false);
-                isam_handler_->update(gtsam_graph_, init_esti_);
-                isam_handler_->update();
-                if (loop_closure_was_added)
-                {
-                    isam_handler_->update();
-                    isam_handler_->update();
-                    isam_handler_->update();
-                }
-                gtsam_graph_.resize(0);
-                init_esti_.clear();
-            }
+            applyPendingGraphUpdate();
             const auto t_optim = local_timer.toc();
-
-            gtsam::Values corrected_esti_copied;
-            {
-                std::lock_guard<std::mutex> lock(realtime_pose_mutex_);
-                corrected_esti_ = isam_handler_->calculateEstimate();
-                last_corrected_pose_ =
-                    gtsamToEigen(corrected_esti_.at<gtsam::Pose3>(corrected_esti_.size() - 1));
-                odom_delta_ = Eigen::Matrix4d::Identity();
-                corrected_esti_copied = corrected_esti_;
-            }
-            if (loop_closure_was_added)
-            {
-                std::lock_guard<std::mutex> lock(keyframes_mutex_);
-                const size_t num_updates = std::min(corrected_esti_copied.size(), keyframes_.size());
-                for (size_t i = 0; i < num_updates; ++i)
-                {
-                    keyframes_[i].pose_corrected_ =
-                        gtsamToEigen(corrected_esti_copied.at<gtsam::Pose3>(i));
-                }
-            }
 
             const auto t_total = total_timer.toc();
             size_t keyframe_count = 0;
@@ -334,6 +302,52 @@ void PoseGraphManager::callbackNode(const nav_msgs::msg::Odometry::ConstSharedPt
                 t_total,
                 t_keyframe_processing,
                 t_optim);
+        }
+    }
+}
+
+void PoseGraphManager::applyPendingGraphUpdate()
+{
+    bool loop_closure_was_added = false;
+    bool keyframe_was_added     = false;
+    gtsam::Values corrected_esti_copied;
+    {
+        std::lock_guard<std::mutex> lock(graph_mutex_);
+        loop_closure_was_added = loop_closure_added_.exchange(false);
+        keyframe_was_added     = pending_keyframe_update_;
+        isam_handler_->update(gtsam_graph_, init_esti_);
+        isam_handler_->update();
+        if (loop_closure_was_added)
+        {
+            isam_handler_->update();
+            isam_handler_->update();
+            isam_handler_->update();
+        }
+        gtsam_graph_.resize(0);
+        init_esti_.clear();
+        pending_keyframe_update_ = false;
+        corrected_esti_copied    = isam_handler_->calculateEstimate();
+
+        {
+            std::lock_guard<std::mutex> lock(realtime_pose_mutex_);
+            corrected_esti_ = corrected_esti_copied;
+            last_corrected_pose_ =
+                gtsamToEigen(corrected_esti_.at<gtsam::Pose3>(corrected_esti_.size() - 1));
+            if (keyframe_was_added)
+            {
+                odom_delta_ = Eigen::Matrix4d::Identity();
+            }
+        }
+
+        if (loop_closure_was_added)
+        {
+            std::lock_guard<std::mutex> lock(keyframes_mutex_);
+            const size_t num_updates = std::min(corrected_esti_copied.size(), keyframes_.size());
+            for (size_t i = 0; i < num_updates; ++i)
+            {
+                keyframes_[i].pose_corrected_ =
+                    gtsamToEigen(corrected_esti_copied.at<gtsam::Pose3>(i));
+            }
         }
     }
 }
@@ -509,6 +523,7 @@ void PoseGraphManager::performRegistration()
                                  query_idx, match_idx, pose_from.between(pose_to), loop_noise));
             loop_closure_added_.store(true);
         }
+        applyPendingGraphUpdate();
 
         {
             std::lock_guard<std::mutex> lock(vis_mutex_);

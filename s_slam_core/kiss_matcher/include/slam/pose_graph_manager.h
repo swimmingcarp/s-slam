@@ -92,6 +92,7 @@ private:
     void visualizePoseGraph();
 
     void performRegistration();
+    void applyPendingGraphUpdate();
 
     void visualizeLoopClosureClouds();
 
@@ -127,6 +128,7 @@ private:
     std::atomic_bool need_map_update_{false};
     std::atomic_bool need_graph_vis_update_{false};
     std::atomic_bool need_lc_cloud_vis_update_{false};
+    bool pending_keyframe_update_ = false;
 
     std::shared_ptr<gtsam::ISAM2> isam_handler_ = nullptr;
     gtsam::NonlinearFactorGraph gtsam_graph_;
