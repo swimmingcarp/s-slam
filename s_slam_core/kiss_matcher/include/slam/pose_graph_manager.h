@@ -76,6 +76,18 @@ public:
     ~PoseGraphManager();
 
 private:
+    enum class LoopCandidateSource
+    {
+        kLoopDetector,
+        kNNSearch,
+    };
+
+    struct QueuedLoopCandidate
+    {
+        LoopIdxPair indices_;
+        LoopCandidateSource source_;
+    };
+
     void appendKeyframePose(const kiss_matcher::PoseGraphNode &node);
 
     void callbackNode(const nav_msgs::msg::Odometry::ConstSharedPtr &odom_msg,
@@ -93,6 +105,12 @@ private:
 
     void performRegistration();
     void applyPendingGraphUpdate();
+    bool loopSearchBlocked();
+    bool loopSearchBlockedLocked() const;
+    bool hasAcceptedLoop();
+    bool enqueueLoopCandidates(const LoopIdxPairs &loop_idx_pairs, LoopCandidateSource source);
+    void beginLoopCorrection();
+    void startLoopSearchCooldown();
 
     void visualizeLoopClosureClouds();
 
@@ -117,6 +135,7 @@ private:
     std::mutex lc_mutex_;
     std::mutex vis_mutex_;
     std::mutex loop_queue_mutex_;
+    std::mutex registration_mutex_;
 
     Eigen::Matrix4d last_corrected_pose_ = Eigen::Matrix4d::Identity();
     Eigen::Matrix4d odom_delta_          = Eigen::Matrix4d::Identity();
@@ -139,7 +158,7 @@ private:
     double scan_voxel_res_;
     double map_voxel_res_;
     double save_voxel_res_;
-    double loop_pub_delayed_time_;
+    double loop_candidate_cooldown_;
     double loop_detection_radius_; // Only for visualization
     int sub_key_num_;
 
@@ -147,7 +166,7 @@ private:
     size_t succeeded_query_idx_   = 0;
     std::vector<std::pair<size_t, size_t> > vis_loop_edges_;
     // pose_graph_tools_msgs::msg::PoseGraph loop_msgs_;
-    std::queue<LoopIdxPair> loop_idx_pair_queue_;
+    std::queue<QueuedLoopCandidate> loop_idx_pair_queue_;
 
     kiss_matcher::TicToc timer_;
 
@@ -162,7 +181,9 @@ private:
     bool save_map_bag_         = false;
     bool save_map_pcd_         = false;
     bool save_in_kitti_format_ = false;
-    double last_lc_time_       = 0.0;
+    std::chrono::steady_clock::time_point last_accepted_loop_time_;
+    bool has_accepted_loop_           = false;
+    bool loop_correction_in_progress_ = false;
 
     std::shared_ptr<kiss_matcher::LoopClosure> loop_closure_;
 

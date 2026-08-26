@@ -8,7 +8,7 @@
     loop_pub_hz: 0.1                 # Frequency to publish loop closures (Hz)
     loop_detector_hz: 2.0            # Frequency to update loop by external loop detector (Hz)
     loop_nnsearch_hz: 2.0            # Frequency to update loop by nearest neighbor search (Hz)
-    loop_pub_delayed_time: 30.0      # Delay before publishing loop closure results (sec)
+    loop_pub_delayed_time: 30.0      # Cooldown after an accepted loop before searching again (sec)
     map_update_hz: 0.2               # Frequency to update the map (Hz)
     vis_hz: 1.0                      # Visualization update frequency (Hz)
     odom_frame: odom                 # Front-end local odometry frame.

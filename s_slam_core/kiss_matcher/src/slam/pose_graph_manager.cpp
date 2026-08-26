@@ -19,11 +19,11 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
     odom_frame_             = declare_parameter<std::string>("odom_frame", "odom");
     publish_map_to_odom_tf_ = declare_parameter<bool>("publish_map_to_odom_tf", false);
     declare_parameter<double>("loop_pub_hz", 0.1);
-    loop_detector_hz       = declare_parameter<double>("loop_detector_hz", 1.0);
-    loop_nnsearch_hz       = declare_parameter<double>("loop_nnsearch_hz", 1.0);
-    loop_pub_delayed_time_ = declare_parameter<double>("loop_pub_delayed_time", 60.0);
-    map_update_hz          = declare_parameter<double>("map_update_hz", 0.2);
-    vis_hz                 = declare_parameter<double>("vis_hz", 0.5);
+    loop_detector_hz          = declare_parameter<double>("loop_detector_hz", 1.0);
+    loop_nnsearch_hz          = declare_parameter<double>("loop_nnsearch_hz", 1.0);
+    loop_candidate_cooldown_ = declare_parameter<double>("loop_pub_delayed_time", 60.0);
+    map_update_hz             = declare_parameter<double>("map_update_hz", 0.2);
+    vis_hz                    = declare_parameter<double>("vis_hz", 0.5);
 
     store_voxelized_scan_           = declare_parameter<bool>("store_voxelized_scan", false);
     lc_config.voxel_res_            = declare_parameter<double>("voxel_resolution", 0.3);
@@ -352,22 +352,6 @@ void PoseGraphManager::applyPendingGraphUpdate()
     }
 }
 
-// void PoseGraphManager::loopPubTimerFunc()
-// {
-//   if (loop_msgs_.edges.empty()) {
-//     RCLCPP_WARN(this->get_logger(),
-//       "`loop_msgs_.edges` is empty. Skipping loop closure publishing.");
-//     return;
-//   }
-//   if (last_lc_time_ + loop_pub_delayed_time_ < this->now().seconds()) {
-//     loop_closures_pub_->publish(loop_msgs_);
-//     loop_msgs_.nodes.clear();
-//     loop_msgs_.edges.clear();
-//     RCLCPP_INFO(this->get_logger(), "`loop_msgs_` is successfully published!");
-//     return;
-//   }
-// }
-
 void PoseGraphManager::buildMap()
 {
     static size_t start_idx = 0;
@@ -423,6 +407,11 @@ void PoseGraphManager::buildMap()
 
 void PoseGraphManager::detectLoopClosureByLoopDetector()
 {
+    if (loopSearchBlocked())
+    {
+        return;
+    }
+
     LoopIdxPairs loop_idx_pairs;
     {
         std::lock_guard<std::mutex> lock(keyframes_mutex_);
@@ -433,19 +422,30 @@ void PoseGraphManager::detectLoopClosureByLoopDetector()
         }
         auto &query = keyframes_.back();
         query.loop_detector_processed_ = true;
+        const size_t query_idx = query.idx_;
 
         loop_idx_pairs = loop_detector_->fetchLoopCandidates(query, keyframes_);
-    }
 
-    std::lock_guard<std::mutex> lock(loop_queue_mutex_);
-    for (const auto &loop_candidate : loop_idx_pairs)
-    {
-        loop_idx_pair_queue_.push(loop_candidate);
+        if (enqueueLoopCandidates(loop_idx_pairs, LoopCandidateSource::kLoopDetector))
+        {
+            return;
+        }
+
+        if (query_idx < keyframes_.size())
+        {
+            keyframes_[query_idx].loop_detector_processed_ = false;
+        }
     }
 }
 
 void PoseGraphManager::detectLoopClosureByNNSearch()
 {
+    if (loopSearchBlocked())
+    {
+        return;
+    }
+
+    const bool has_accepted_loop = hasAcceptedLoop();
     LoopIdxPairs loop_idx_pairs;
     {
         std::lock_guard<std::mutex> lock(keyframes_mutex_);
@@ -455,32 +455,119 @@ void PoseGraphManager::detectLoopClosureByNNSearch()
         }
         auto &query = keyframes_.back();
         query.nnsearch_processed_ = true;
+        const size_t query_idx = query.idx_;
 
         std::lock_guard<std::mutex> lc_lock(lc_mutex_);
-        loop_idx_pairs = loop_closure_->fetchLoopCandidates(query, keyframes_);
+        loop_idx_pairs = has_accepted_loop
+                             ? loop_closure_->fetchClosestLoopCandidate(query, keyframes_)
+                             : loop_closure_->fetchLoopCandidates(query, keyframes_);
+
+        if (enqueueLoopCandidates(loop_idx_pairs, LoopCandidateSource::kNNSearch))
+        {
+            return;
+        }
+
+        if (query_idx < keyframes_.size())
+        {
+            keyframes_[query_idx].nnsearch_processed_ = false;
+        }
+    }
+}
+
+bool PoseGraphManager::loopSearchBlocked()
+{
+    std::lock_guard<std::mutex> lock(loop_queue_mutex_);
+    return loopSearchBlockedLocked();
+}
+
+bool PoseGraphManager::loopSearchBlockedLocked() const
+{
+    return loop_correction_in_progress_ ||
+           (has_accepted_loop_ &&
+            std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                          last_accepted_loop_time_)
+                    .count() < loop_candidate_cooldown_);
+}
+
+bool PoseGraphManager::hasAcceptedLoop()
+{
+    std::lock_guard<std::mutex> lock(loop_queue_mutex_);
+    return has_accepted_loop_;
+}
+
+bool PoseGraphManager::enqueueLoopCandidates(const LoopIdxPairs &loop_idx_pairs,
+                                             LoopCandidateSource source)
+{
+    std::lock_guard<std::mutex> lock(loop_queue_mutex_);
+    if (loopSearchBlockedLocked())
+    {
+        return false;
     }
 
-    std::lock_guard<std::mutex> lock(loop_queue_mutex_);
     for (const auto &loop_candidate : loop_idx_pairs)
     {
-        loop_idx_pair_queue_.push(loop_candidate);
+        loop_idx_pair_queue_.push({loop_candidate, source});
     }
+    return true;
+}
+
+void PoseGraphManager::beginLoopCorrection()
+{
+    std::vector<QueuedLoopCandidate> discarded_candidates;
+    {
+        std::lock_guard<std::mutex> lock(loop_queue_mutex_);
+        // Pending candidates were generated against the pre-correction trajectory.
+        while (!loop_idx_pair_queue_.empty())
+        {
+            discarded_candidates.push_back(loop_idx_pair_queue_.front());
+            loop_idx_pair_queue_.pop();
+        }
+        loop_correction_in_progress_ = true;
+    }
+
+    std::lock_guard<std::mutex> lock(keyframes_mutex_);
+    for (const auto &candidate : discarded_candidates)
+    {
+        const size_t query_idx = candidate.indices_.first;
+        if (query_idx >= keyframes_.size())
+        {
+            continue;
+        }
+
+        if (candidate.source_ == LoopCandidateSource::kLoopDetector)
+        {
+            keyframes_[query_idx].loop_detector_processed_ = false;
+        }
+        else
+        {
+            keyframes_[query_idx].nnsearch_processed_ = false;
+        }
+    }
+}
+
+void PoseGraphManager::startLoopSearchCooldown()
+{
+    std::lock_guard<std::mutex> lock(loop_queue_mutex_);
+    last_accepted_loop_time_       = std::chrono::steady_clock::now();
+    has_accepted_loop_             = true;
+    loop_correction_in_progress_   = false;
 }
 
 void PoseGraphManager::performRegistration()
 {
+    std::lock_guard<std::mutex> registration_lock(registration_mutex_);
     kiss_matcher::TicToc reg_timer;
-    LoopIdxPair loop_idx_pair;
+    QueuedLoopCandidate queued_candidate;
     {
         std::lock_guard<std::mutex> lock(loop_queue_mutex_);
         if (loop_idx_pair_queue_.empty())
         {
             return;
         }
-        loop_idx_pair = loop_idx_pair_queue_.front();
+        queued_candidate = loop_idx_pair_queue_.front();
         loop_idx_pair_queue_.pop();
     }
-    const auto [query_idx, match_idx] = loop_idx_pair;
+    const auto [query_idx, match_idx] = queued_candidate.indices_;
 
     std::vector<PoseGraphNode> keyframes_snapshot;
     {
@@ -508,6 +595,7 @@ void PoseGraphManager::performRegistration()
     if (reg_output.is_valid_)
     {
         RCLCPP_INFO(this->get_logger(), "LC accepted. Overlapness: %.3f", reg_output.overlapness_);
+        beginLoopCorrection();
         gtsam::Pose3 pose_from =
             eigenToGtsam(reg_output.pose_ * keyframes_snapshot[query_idx].pose_corrected_);
         gtsam::Pose3 pose_to = eigenToGtsam(keyframes_snapshot[match_idx].pose_corrected_);
@@ -524,6 +612,7 @@ void PoseGraphManager::performRegistration()
             loop_closure_added_.store(true);
         }
         applyPendingGraphUpdate();
+        startLoopSearchCooldown();
 
         {
             std::lock_guard<std::mutex> lock(vis_mutex_);
