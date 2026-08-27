@@ -27,6 +27,7 @@
       num_submap_keyframes: 1        # ⭐ > 0. Number of keyframes per submap. It should be an odd number
 
     loop:
+      max_pending_candidates: 32     # Bound queued candidates while registration is running
       verbose: true                  # Enable verbose output
       # If true, Z-axis differences are considered in loop detection.
       # If false, loop detection assumes the robot moves mainly on a single horizontal plane.

@@ -5,15 +5,15 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <ctime>
 #include <atomic>
-#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <memory>
 #include <mutex>
-#include <queue>
+#include <optional>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -56,6 +56,7 @@
 
 #include "tictoc.hpp"
 #include "slam/loop_closure.h"
+#include "slam/loop_candidate_queue.hpp"
 #include "slam/loop_detector.h"
 #include "slam/pose_graph_node.hpp"
 #include "slam/utils.hpp"
@@ -76,16 +77,12 @@ public:
     ~PoseGraphManager();
 
 private:
-    enum class LoopCandidateSource
+    enum class LoopCandidateEnqueueResult
     {
-        kLoopDetector,
-        kNNSearch,
-    };
-
-    struct QueuedLoopCandidate
-    {
-        LoopIdxPair indices_;
-        LoopCandidateSource source_;
+        kEnqueued,
+        kSearchBlocked,
+        kQueueFull,
+        kBatchTooLarge,
     };
 
     void appendKeyframePose(const kiss_matcher::PoseGraphNode &node);
@@ -105,10 +102,13 @@ private:
 
     void performRegistration();
     void applyPendingGraphUpdate();
-    bool loopSearchBlocked();
+    std::optional<uint64_t> loopSearchGeneration();
     bool loopSearchBlockedLocked() const;
     bool hasAcceptedLoop();
-    bool enqueueLoopCandidates(const LoopIdxPairs &loop_idx_pairs, LoopCandidateSource source);
+    LoopCandidateEnqueueResult enqueueLoopCandidates(
+        const LoopIdxPairs &loop_idx_pairs,
+        kiss_matcher::LoopCandidateSource source,
+        uint64_t loop_correction_generation);
     void beginLoopCorrection();
     void startLoopSearchCooldown();
 
@@ -163,11 +163,13 @@ private:
     double loop_detection_radius_; // Only for visualization
     int sub_key_num_;
 
-    size_t latest_keyframe_idx_   = 0;
-    size_t succeeded_query_idx_   = 0;
+    size_t latest_keyframe_idx_ = 0;
+    size_t succeeded_query_idx_ = 0;
     std::vector<std::pair<size_t, size_t> > vis_loop_edges_;
+    std::optional<size_t> pending_loop_detector_query_idx_;
+    std::optional<size_t> pending_nnsearch_query_idx_;
     // pose_graph_tools_msgs::msg::PoseGraph loop_msgs_;
-    std::queue<QueuedLoopCandidate> loop_idx_pair_queue_;
+    kiss_matcher::LoopCandidateQueue loop_candidate_queue_;
 
     kiss_matcher::TicToc timer_;
 
@@ -185,6 +187,7 @@ private:
     std::chrono::steady_clock::time_point last_accepted_loop_time_;
     bool has_accepted_loop_           = false;
     bool loop_correction_in_progress_ = false;
+    uint64_t loop_correction_generation_ = 0;
 
     std::shared_ptr<kiss_matcher::LoopClosure> loop_closure_;
 
@@ -210,6 +213,8 @@ private:
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr debug_cloud_pub_;
 
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr sub_save_flag_;
+    rclcpp::CallbackGroup::SharedPtr loop_search_callback_group_;
+    rclcpp::CallbackGroup::SharedPtr registration_callback_group_;
 
     // rclcpp::Publisher<pose_graph_tools_msgs::msg::PoseGraph>::SharedPtr loop_closures_pub_;
 

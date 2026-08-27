@@ -9,6 +9,7 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
     double loop_nnsearch_hz;
     double map_update_hz;
     double vis_hz;
+    int max_pending_loop_candidates;
 
     LoopClosureConfig lc_config;
     LoopDetectorConfig ld_config;
@@ -23,6 +24,7 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
     loop_detector_hz          = declare_parameter<double>("loop_detector_hz", 1.0);
     loop_nnsearch_hz          = declare_parameter<double>("loop_nnsearch_hz", 1.0);
     loop_candidate_cooldown_ = declare_parameter<double>("loop_pub_delayed_time", 60.0);
+    max_pending_loop_candidates = declare_parameter<int>("loop.max_pending_candidates", 32);
     map_update_hz             = declare_parameter<double>("map_update_hz", 0.2);
     vis_hz                    = declare_parameter<double>("vis_hz", 0.5);
 
@@ -30,6 +32,11 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
     {
         throw std::invalid_argument("input.max_sync_interval must be finite and non-negative");
     }
+    if (max_pending_loop_candidates <= 0)
+    {
+        throw std::invalid_argument("loop.max_pending_candidates must be positive");
+    }
+    loop_candidate_queue_.setCapacity(static_cast<size_t>(max_pending_loop_candidates));
 
     store_voxelized_scan_           = declare_parameter<bool>("store_voxelized_scan", false);
     lc_config.voxel_res_            = declare_parameter<double>("voxel_resolution", 0.3);
@@ -129,26 +136,33 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
     map_timer_ = this->create_wall_timer(std::chrono::duration<double>(1.0 / map_update_hz),
                                          std::bind(&PoseGraphManager::buildMap, this));
 
+    loop_search_callback_group_ =
+        this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     loop_detector_timer_ = this->create_wall_timer(
         std::chrono::duration<double>(1.0 / loop_detector_hz),
-        std::bind(&PoseGraphManager::detectLoopClosureByLoopDetector, this));
+        std::bind(&PoseGraphManager::detectLoopClosureByLoopDetector, this),
+        loop_search_callback_group_);
 
     loop_nnsearch_timer_ =
         this->create_wall_timer(std::chrono::duration<double>(1.0 / loop_nnsearch_hz),
-                                std::bind(&PoseGraphManager::detectLoopClosureByNNSearch, this));
+                                std::bind(&PoseGraphManager::detectLoopClosureByNNSearch, this),
+                                loop_search_callback_group_);
 
     graph_vis_timer_ =
         this->create_wall_timer(std::chrono::duration<double>(1.0 / vis_hz),
                                 std::bind(&PoseGraphManager::visualizePoseGraph, this));
 
-    lc_reg_timer_ =
-        this->create_wall_timer(std::chrono::duration<double>(1.0 / 100.0),
-                                std::bind(&PoseGraphManager::performRegistration, this));
+    registration_callback_group_ =
+        this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    lc_reg_timer_ = this->create_wall_timer(std::chrono::duration<double>(1.0 / 100.0),
+                                            std::bind(&PoseGraphManager::performRegistration, this),
+                                            registration_callback_group_);
 
     // 20 Hz is enough as long as it's faster than the full registration process.
     lc_vis_timer_ =
         this->create_wall_timer(std::chrono::duration<double>(1.0 / 20.0),
-                                std::bind(&PoseGraphManager::visualizeLoopClosureClouds, this));
+                                std::bind(&PoseGraphManager::visualizeLoopClosureClouds, this),
+                                registration_callback_group_);
 
     if (!lc_config.is_multilayer_env_)
     {
@@ -435,77 +449,169 @@ void PoseGraphManager::buildMap()
 
 void PoseGraphManager::detectLoopClosureByLoopDetector()
 {
-    if (loopSearchBlocked())
+    const auto loop_correction_generation = loopSearchGeneration();
+    if (!loop_correction_generation)
     {
         return;
     }
 
     LoopIdxPairs loop_idx_pairs;
+    size_t query_idx = 0;
     {
         std::lock_guard<std::mutex> lock(keyframes_mutex_);
-        if (!is_initialized_.load() || keyframes_.empty() ||
-            keyframes_.back().loop_detector_processed_)
+        if (!is_initialized_.load() || keyframes_.empty())
         {
             return;
         }
-        auto &query = keyframes_.back();
+        if (!pending_loop_detector_query_idx_ && pending_nnsearch_query_idx_)
+        {
+            return;
+        }
+
+        query_idx = pending_loop_detector_query_idx_.value_or(keyframes_.back().idx_);
+        if (query_idx >= keyframes_.size())
+        {
+            pending_loop_detector_query_idx_.reset();
+            return;
+        }
+
+        auto &query = keyframes_[query_idx];
+        if (!pending_loop_detector_query_idx_.has_value() && query.loop_detector_processed_)
+        {
+            return;
+        }
         query.loop_detector_processed_ = true;
-        const size_t query_idx = query.idx_;
 
         loop_idx_pairs = loop_detector_->fetchLoopCandidates(query, keyframes_);
+    }
 
-        if (enqueueLoopCandidates(loop_idx_pairs, LoopCandidateSource::kLoopDetector))
-        {
-            return;
-        }
+    const auto enqueue_result =
+        enqueueLoopCandidates(loop_idx_pairs,
+                              kiss_matcher::LoopCandidateSource::kLoopDetector,
+                              *loop_correction_generation);
+    if (enqueue_result == LoopCandidateEnqueueResult::kEnqueued)
+    {
+        std::lock_guard<std::mutex> lock(keyframes_mutex_);
+        pending_loop_detector_query_idx_.reset();
+        return;
+    }
+    if (enqueue_result == LoopCandidateEnqueueResult::kQueueFull)
+    {
+        std::lock_guard<std::mutex> lock(keyframes_mutex_);
+        pending_loop_detector_query_idx_ = query_idx;
+        return;
+    }
+    if (enqueue_result == LoopCandidateEnqueueResult::kBatchTooLarge)
+    {
+        std::lock_guard<std::mutex> lock(keyframes_mutex_);
+        pending_loop_detector_query_idx_.reset();
+        return;
+    }
 
+    if (enqueue_result == LoopCandidateEnqueueResult::kSearchBlocked)
+    {
+        std::lock_guard<std::mutex> lock(keyframes_mutex_);
         if (query_idx < keyframes_.size())
         {
             keyframes_[query_idx].loop_detector_processed_ = false;
         }
+        pending_loop_detector_query_idx_.reset();
     }
 }
 
 void PoseGraphManager::detectLoopClosureByNNSearch()
 {
-    if (loopSearchBlocked())
+    const auto loop_correction_generation = loopSearchGeneration();
+    if (!loop_correction_generation)
     {
         return;
     }
 
     const bool has_accepted_loop = hasAcceptedLoop();
     LoopIdxPairs loop_idx_pairs;
+    size_t query_idx = 0;
     {
         std::lock_guard<std::mutex> lock(keyframes_mutex_);
-        if (!is_initialized_.load() || keyframes_.empty() || keyframes_.back().nnsearch_processed_)
+        if (!is_initialized_.load() || keyframes_.empty())
         {
             return;
         }
-        auto &query = keyframes_.back();
-        query.nnsearch_processed_ = true;
-        const size_t query_idx = query.idx_;
+        if (!pending_nnsearch_query_idx_ && pending_loop_detector_query_idx_)
+        {
+            return;
+        }
 
+        query_idx = pending_nnsearch_query_idx_.value_or(keyframes_.back().idx_);
+        if (query_idx >= keyframes_.size())
+        {
+            pending_nnsearch_query_idx_.reset();
+            return;
+        }
+
+        auto &query = keyframes_[query_idx];
+        if (!pending_nnsearch_query_idx_.has_value() && query.nnsearch_processed_)
+        {
+            return;
+        }
+        query.nnsearch_processed_ = true;
+    }
+
+    {
         std::lock_guard<std::mutex> lc_lock(lc_mutex_);
+        std::lock_guard<std::mutex> keyframes_lock(keyframes_mutex_);
+        if (query_idx >= keyframes_.size())
+        {
+            pending_nnsearch_query_idx_.reset();
+            return;
+        }
+        const auto &query = keyframes_[query_idx];
         loop_idx_pairs = has_accepted_loop
                              ? loop_closure_->fetchClosestLoopCandidate(query, keyframes_)
                              : loop_closure_->fetchLoopCandidates(query, keyframes_);
+    }
 
-        if (enqueueLoopCandidates(loop_idx_pairs, LoopCandidateSource::kNNSearch))
-        {
-            return;
-        }
+    const auto enqueue_result =
+        enqueueLoopCandidates(loop_idx_pairs,
+                              kiss_matcher::LoopCandidateSource::kNNSearch,
+                              *loop_correction_generation);
+    if (enqueue_result == LoopCandidateEnqueueResult::kEnqueued)
+    {
+        std::lock_guard<std::mutex> lock(keyframes_mutex_);
+        pending_nnsearch_query_idx_.reset();
+        return;
+    }
+    if (enqueue_result == LoopCandidateEnqueueResult::kQueueFull)
+    {
+        std::lock_guard<std::mutex> lock(keyframes_mutex_);
+        pending_nnsearch_query_idx_ = query_idx;
+        return;
+    }
+    if (enqueue_result == LoopCandidateEnqueueResult::kBatchTooLarge)
+    {
+        std::lock_guard<std::mutex> lock(keyframes_mutex_);
+        pending_nnsearch_query_idx_.reset();
+        return;
+    }
 
+    if (enqueue_result == LoopCandidateEnqueueResult::kSearchBlocked)
+    {
+        std::lock_guard<std::mutex> lock(keyframes_mutex_);
         if (query_idx < keyframes_.size())
         {
             keyframes_[query_idx].nnsearch_processed_ = false;
         }
+        pending_nnsearch_query_idx_.reset();
     }
 }
 
-bool PoseGraphManager::loopSearchBlocked()
+std::optional<uint64_t> PoseGraphManager::loopSearchGeneration()
 {
     std::lock_guard<std::mutex> lock(loop_queue_mutex_);
-    return loopSearchBlockedLocked();
+    if (loopSearchBlockedLocked())
+    {
+        return std::nullopt;
+    }
+    return loop_correction_generation_;
 }
 
 bool PoseGraphManager::loopSearchBlockedLocked() const
@@ -523,37 +629,75 @@ bool PoseGraphManager::hasAcceptedLoop()
     return has_accepted_loop_;
 }
 
-bool PoseGraphManager::enqueueLoopCandidates(const LoopIdxPairs &loop_idx_pairs,
-                                             LoopCandidateSource source)
+PoseGraphManager::LoopCandidateEnqueueResult PoseGraphManager::enqueueLoopCandidates(
+    const LoopIdxPairs &loop_idx_pairs,
+    const kiss_matcher::LoopCandidateSource source,
+    const uint64_t loop_correction_generation)
 {
     std::lock_guard<std::mutex> lock(loop_queue_mutex_);
-    if (loopSearchBlockedLocked())
+    if (loopSearchBlockedLocked() || loop_correction_generation != loop_correction_generation_)
     {
-        return false;
+        return LoopCandidateEnqueueResult::kSearchBlocked;
     }
 
-    for (const auto &loop_candidate : loop_idx_pairs)
+    if (loop_idx_pairs.size() > loop_candidate_queue_.capacity())
     {
-        loop_idx_pair_queue_.push({loop_candidate, source});
+        RCLCPP_WARN_THROTTLE(
+            get_logger(),
+            *get_clock(),
+            5000,
+            "Dropping loop candidate batch of %zu: queue capacity is %zu.",
+            loop_idx_pairs.size(),
+            loop_candidate_queue_.capacity());
+        return LoopCandidateEnqueueResult::kBatchTooLarge;
     }
-    return true;
+
+    if (!loop_candidate_queue_.enqueue(loop_idx_pairs, source))
+    {
+        RCLCPP_WARN_THROTTLE(get_logger(),
+                             *get_clock(),
+                             5000,
+                             "Loop candidate queue is full (%zu); retrying the current query later.",
+                             loop_candidate_queue_.size());
+        return LoopCandidateEnqueueResult::kQueueFull;
+    }
+    return LoopCandidateEnqueueResult::kEnqueued;
 }
 
 void PoseGraphManager::beginLoopCorrection()
 {
-    std::vector<QueuedLoopCandidate> discarded_candidates;
+    std::vector<kiss_matcher::QueuedLoopCandidate> discarded_candidates;
     {
         std::lock_guard<std::mutex> lock(loop_queue_mutex_);
         // Pending candidates were generated against the pre-correction trajectory.
-        while (!loop_idx_pair_queue_.empty())
-        {
-            discarded_candidates.push_back(loop_idx_pair_queue_.front());
-            loop_idx_pair_queue_.pop();
-        }
+        discarded_candidates = loop_candidate_queue_.takeAll();
         loop_correction_in_progress_ = true;
+        ++loop_correction_generation_;
     }
 
     std::lock_guard<std::mutex> lock(keyframes_mutex_);
+    const auto reset_pending_query = [this](const std::optional<size_t> &pending_query_idx,
+                                            const bool is_loop_detector)
+    {
+        if (!pending_query_idx || *pending_query_idx >= keyframes_.size())
+        {
+            return;
+        }
+
+        if (is_loop_detector)
+        {
+            keyframes_[*pending_query_idx].loop_detector_processed_ = false;
+        }
+        else
+        {
+            keyframes_[*pending_query_idx].nnsearch_processed_ = false;
+        }
+    };
+    reset_pending_query(pending_loop_detector_query_idx_, true);
+    reset_pending_query(pending_nnsearch_query_idx_, false);
+    pending_loop_detector_query_idx_.reset();
+    pending_nnsearch_query_idx_.reset();
+
     for (const auto &candidate : discarded_candidates)
     {
         const size_t query_idx = candidate.indices_.first;
@@ -562,7 +706,7 @@ void PoseGraphManager::beginLoopCorrection()
             continue;
         }
 
-        if (candidate.source_ == LoopCandidateSource::kLoopDetector)
+        if (candidate.source_ == kiss_matcher::LoopCandidateSource::kLoopDetector)
         {
             keyframes_[query_idx].loop_detector_processed_ = false;
         }
@@ -585,15 +729,13 @@ void PoseGraphManager::performRegistration()
 {
     std::lock_guard<std::mutex> registration_lock(registration_mutex_);
     kiss_matcher::TicToc reg_timer;
-    QueuedLoopCandidate queued_candidate;
+    kiss_matcher::QueuedLoopCandidate queued_candidate;
     {
         std::lock_guard<std::mutex> lock(loop_queue_mutex_);
-        if (loop_idx_pair_queue_.empty())
+        if (!loop_candidate_queue_.tryPop(queued_candidate))
         {
             return;
         }
-        queued_candidate = loop_idx_pair_queue_.front();
-        loop_idx_pair_queue_.pop();
     }
     const auto [query_idx, match_idx] = queued_candidate.indices_;
 
@@ -616,8 +758,8 @@ void PoseGraphManager::performRegistration()
     {
         std::lock_guard<std::mutex> lock(lc_mutex_);
         reg_output = loop_closure_->performLoopClosure(keyframes_snapshot, query_idx, match_idx);
+        succeeded_query_idx_ = query_idx;
     }
-    succeeded_query_idx_ = query_idx;
     need_lc_cloud_vis_update_.store(true);
 
     if (reg_output.is_valid_)
@@ -767,7 +909,7 @@ void PoseGraphManager::visualizePoseGraph()
         return;
     }
 
-    if (need_graph_vis_update_.load())
+    if (need_graph_vis_update_.exchange(false))
     {
         gtsam::Values corrected_esti_copied;
         pcl::PointCloud<pcl::PointXYZ> corrected_odoms;
@@ -794,7 +936,6 @@ void PoseGraphManager::visualizePoseGraph()
             corrected_odoms_      = corrected_odoms;
             corrected_path_.poses = corrected_path.poses;
         }
-        need_graph_vis_update_.store(false);
     }
 
     {
@@ -811,19 +952,7 @@ void PoseGraphManager::visualizeLoopClosureClouds()
         return;
     }
 
-    rclcpp::Time query_timestamp;
-    {
-        std::lock_guard<std::mutex> lock(keyframes_mutex_);
-        if (succeeded_query_idx_ >= keyframes_.size())
-        {
-            RCLCPP_WARN(this->get_logger(),
-                        "Skipping LC cloud visualization. Invalid query index: %zu",
-                        succeeded_query_idx_);
-            return;
-        }
-        query_timestamp = toRclcppTime(keyframes_[succeeded_query_idx_].timestamp_);
-    }
-
+    size_t succeeded_query_idx = 0;
     pcl::PointCloud<PointType> source_cloud;
     pcl::PointCloud<PointType> target_cloud;
     pcl::PointCloud<PointType> final_aligned_cloud;
@@ -831,11 +960,25 @@ void PoseGraphManager::visualizeLoopClosureClouds()
     pcl::PointCloud<PointType> debug_cloud;
     {
         std::lock_guard<std::mutex> lock(lc_mutex_);
+        succeeded_query_idx = succeeded_query_idx_;
         source_cloud         = loop_closure_->getSourceCloud();
         target_cloud         = loop_closure_->getTargetCloud();
         final_aligned_cloud  = loop_closure_->getFinalAlignedCloud();
         coarse_aligned_cloud = loop_closure_->getCoarseAlignedCloud();
         debug_cloud          = loop_closure_->getDebugCloud();
+    }
+
+    rclcpp::Time query_timestamp;
+    {
+        std::lock_guard<std::mutex> lock(keyframes_mutex_);
+        if (succeeded_query_idx >= keyframes_.size())
+        {
+            RCLCPP_WARN(this->get_logger(),
+                        "Skipping LC cloud visualization. Invalid query index: %zu",
+                        succeeded_query_idx);
+            return;
+        }
+        query_timestamp = toRclcppTime(keyframes_[succeeded_query_idx].timestamp_);
     }
 
     debug_src_pub_->publish(toROSMsg(source_cloud, map_frame_, query_timestamp));

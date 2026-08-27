@@ -221,6 +221,9 @@ if(BUILD_TESTING)
   target_link_libraries(pose_graph_input_validation_test
     ${PCL_LIBRARIES}
     gtsam)
+
+  ament_add_gtest(loop_candidate_queue_test
+    test/loop_candidate_queue_test.cpp)
 endif()
 
 ament_package()
