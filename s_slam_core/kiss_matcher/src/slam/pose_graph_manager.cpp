@@ -1,4 +1,5 @@
 #include "slam/pose_graph_manager.h"
+#include "slam/input_config.hpp"
 
 using namespace kiss_matcher;
 
@@ -20,6 +21,21 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
     odom_frame_             = declare_parameter<std::string>("odom_frame", "odom");
     publish_map_to_odom_tf_ = declare_parameter<bool>("publish_map_to_odom_tf", false);
     max_sync_interval_      = declare_parameter<double>("input.max_sync_interval", 0.05);
+    const auto odom_reliability = parseInputReliability(
+        declare_parameter<std::string>("input.odom_qos_reliability", "reliable"),
+        "input.odom_qos_reliability");
+    const auto odom_qos = makeInputQos(
+        declare_parameter<int>("input.odom_qos_depth", 10),
+        odom_reliability,
+        "input.odom_qos_depth");
+    const auto cloud_reliability = parseInputReliability(
+        declare_parameter<std::string>("input.cloud_qos_reliability", "reliable"),
+        "input.cloud_qos_reliability");
+    const auto cloud_qos = makeInputQos(
+        declare_parameter<int>("input.cloud_qos_depth", 10),
+        cloud_reliability,
+        "input.cloud_qos_depth");
+    const int sync_queue_size = declare_parameter<int>("input.sync_queue_size", 10);
     declare_parameter<double>("loop_pub_hz", 0.1);
     loop_detector_hz          = declare_parameter<double>("loop_detector_hz", 1.0);
     loop_nnsearch_hz          = declare_parameter<double>("loop_nnsearch_hz", 1.0);
@@ -32,6 +48,8 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
     {
         throw std::invalid_argument("input.max_sync_interval must be finite and non-negative");
     }
+    const uint32_t input_sync_queue_size =
+        inputQueueSize(sync_queue_size, "input.sync_queue_size");
     if (max_pending_loop_candidates <= 0)
     {
         throw std::invalid_argument("loop.max_pending_candidates must be positive");
@@ -113,12 +131,22 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
         this->create_publisher<sensor_msgs::msg::PointCloud2>("lc/fine_alignment", qos);
     debug_cloud_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("lc/debug_cloud", qos);
 
-    sub_odom_ =
-        std::make_shared<message_filters::Subscriber<nav_msgs::msg::Odometry> >(this, "odom");
-    sub_scan_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::PointCloud2> >(
-        this, "cloud");
+    RCLCPP_INFO(get_logger(),
+                "Input: odom QoS=%s depth=%zu, cloud QoS=%s depth=%zu, sync queue=%d, "
+                "max interval=%.3f s",
+                inputReliabilityName(odom_reliability),
+                odom_qos.get_rmw_qos_profile().depth,
+                inputReliabilityName(cloud_reliability),
+                cloud_qos.get_rmw_qos_profile().depth,
+                sync_queue_size,
+                max_sync_interval_);
 
-    NodeSyncPolicy sync_policy(10);
+    sub_odom_ = std::make_shared<message_filters::Subscriber<nav_msgs::msg::Odometry> >(
+        this, "odom", odom_qos.get_rmw_qos_profile());
+    sub_scan_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::PointCloud2> >(
+        this, "cloud", cloud_qos.get_rmw_qos_profile());
+
+    NodeSyncPolicy sync_policy(input_sync_queue_size);
     sync_policy.setMaxIntervalDuration(rclcpp::Duration::from_seconds(max_sync_interval_));
     sub_node_ = std::make_shared<message_filters::Synchronizer<NodeSyncPolicy> >(
         static_cast<const NodeSyncPolicy &>(sync_policy), *sub_odom_, *sub_scan_);

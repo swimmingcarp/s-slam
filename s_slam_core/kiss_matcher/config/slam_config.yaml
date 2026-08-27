@@ -8,6 +8,11 @@
     loop_pub_hz: 0.1                 # Frequency to publish loop closures (Hz)
     input:
       max_sync_interval: 0.05        # Max odom/cloud header timestamp difference [sec]
+      odom_qos_depth: 10             # Odom subscription queue depth
+      odom_qos_reliability: reliable # Match the frontend odometry publisher QoS
+      cloud_qos_depth: 10            # Cloud subscription queue depth
+      cloud_qos_reliability: reliable  # Match the frontend cloud publisher QoS
+      sync_queue_size: 10            # Approximate-time synchronizer queue capacity
     loop_detector_hz: 2.0            # Frequency to update loop by external loop detector (Hz)
     loop_nnsearch_hz: 2.0            # Frequency to update loop by nearest neighbor search (Hz)
     loop_pub_delayed_time: 30.0      # Cooldown after an accepted loop before searching again (sec)

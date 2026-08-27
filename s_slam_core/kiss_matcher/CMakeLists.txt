@@ -224,6 +224,10 @@ if(BUILD_TESTING)
 
   ament_add_gtest(loop_candidate_queue_test
     test/loop_candidate_queue_test.cpp)
+
+  ament_add_gtest(pose_graph_subscription_config_test
+    test/pose_graph_subscription_config_test.cpp)
+  ament_target_dependencies(pose_graph_subscription_config_test rclcpp)
 endif()
 
 ament_package()
