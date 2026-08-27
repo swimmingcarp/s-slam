@@ -110,7 +110,8 @@ inline Eigen::Matrix4d gtsamToEigen(const gtsam::Pose3 &pose)
 }
 
 inline geometry_msgs::msg::PoseStamped eigenToPoseStamped(const Eigen::Matrix4d &pose,
-                                                          const std::string &frame_id = "map")
+                                                          const std::string &frame_id,
+                                                          const rclcpp::Time &timestamp)
 {
     tf2::Matrix3x3 mat_tf;
     matrixEigenToTF2(pose.block<3, 3>(0, 0), mat_tf);
@@ -123,6 +124,7 @@ inline geometry_msgs::msg::PoseStamped eigenToPoseStamped(const Eigen::Matrix4d 
 
     geometry_msgs::msg::PoseStamped msg;
     msg.header.frame_id    = frame_id;
+    msg.header.stamp       = timestamp;
     msg.pose.position.x    = pose(0, 3);
     msg.pose.position.y    = pose(1, 3);
     msg.pose.position.z    = pose(2, 3);
@@ -158,7 +160,8 @@ inline geometry_msgs::msg::Pose egienToGeoPose(const Eigen::Matrix4d &pose)
 }
 
 inline geometry_msgs::msg::PoseStamped gtsamToPoseStamped(const gtsam::Pose3 &pose,
-                                                          const std::string &frame_id = "map")
+                                                          const std::string &frame_id,
+                                                          const rclcpp::Time &timestamp)
 {
     double roll  = pose.rotation().roll();
     double pitch = pose.rotation().pitch();
@@ -169,6 +172,7 @@ inline geometry_msgs::msg::PoseStamped gtsamToPoseStamped(const gtsam::Pose3 &po
 
     geometry_msgs::msg::PoseStamped msg;
     msg.header.frame_id    = frame_id;
+    msg.header.stamp       = timestamp;
     msg.pose.position.x    = pose.translation().x();
     msg.pose.position.y    = pose.translation().y();
     msg.pose.position.z    = pose.translation().z();
@@ -178,13 +182,6 @@ inline geometry_msgs::msg::PoseStamped gtsamToPoseStamped(const gtsam::Pose3 &po
     msg.pose.orientation.z = quat.z();
 
     return msg;
-}
-
-inline rclcpp::Time toRclcppTime(const double timestamp)
-{
-    int32_t sec      = static_cast<int32_t>(timestamp);
-    uint32_t nanosec = static_cast<uint32_t>((timestamp - sec) * 1e9);
-    return rclcpp::Time(sec, nanosec, RCL_ROS_TIME);
 }
 
 template <typename T>

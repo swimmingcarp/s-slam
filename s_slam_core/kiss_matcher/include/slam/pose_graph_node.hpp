@@ -9,6 +9,7 @@
 #include <string>
 #include <utility>
 
+#include <builtin_interfaces/msg/time.hpp>
 #include <pcl/common/point_tests.h>
 
 #include "slam/utils.hpp"
@@ -21,7 +22,7 @@ struct PoseGraphNode
     pcl::PointCloud<PointType> voxelized_scan_; // Used for map visualization
     Eigen::Matrix4d pose_           = Eigen::Matrix4d::Identity();
     Eigen::Matrix4d pose_corrected_ = Eigen::Matrix4d::Identity();
-    double timestamp_;
+    builtin_interfaces::msg::Time timestamp_;
     size_t idx_;
     bool nnsearch_processed_      = false;
     bool loop_detector_processed_ = false;
@@ -158,8 +159,7 @@ struct PoseGraphNode
             scan_ = transformPcd(scan, pose_.inverse());
         }
 
-        // ROS2 stamp.sec / stamp.nanosec
-        timestamp_ = odom.header.stamp.sec + 1e-9 * odom.header.stamp.nanosec;
+        timestamp_ = odom.header.stamp;
         idx_       = idx;
     }
 };

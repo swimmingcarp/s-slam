@@ -66,9 +66,10 @@ LoopCandidates LoopClosure::getLoopCandidatesFromQuery(const PoseGraphNode &quer
     {
         double dist =
             calculateDistance(keyframes[idx].pose_corrected_, query_frame.pose_corrected_);
-        double time_diff = query_frame.timestamp_ - keyframes[idx].timestamp_;
+        const rclcpp::Duration time_diff =
+            rclcpp::Time(query_frame.timestamp_) - rclcpp::Time(keyframes[idx].timestamp_);
 
-        if (dist < loop_det_radi && time_diff > loop_det_tdiff_thr)
+        if (dist < loop_det_radi && time_diff.seconds() > loop_det_tdiff_thr)
         {
             LoopCandidate c;
             c.idx_      = keyframes[idx].idx_;

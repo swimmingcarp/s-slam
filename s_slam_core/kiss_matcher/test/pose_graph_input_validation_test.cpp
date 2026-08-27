@@ -104,4 +104,26 @@ TEST(PoseGraphInputValidation, NormalizesAcceptedQuaternion)
     EXPECT_NEAR(node.pose_(1, 1), 1.0, 1e-12);
     EXPECT_NEAR(node.pose_(2, 2), 1.0, 1e-12);
 }
+
+TEST(PoseGraphInputValidation, PreservesPoseStampedTimestamp)
+{
+    auto odom = validOdometry();
+    odom.header.stamp.sec = 123;
+    odom.header.stamp.nanosec = 456789012U;
+    const PoseGraphNode node(odom, validCloud(), 0, 0.3);
+    const rclcpp::Time timestamp(node.timestamp_);
+
+    EXPECT_EQ(node.timestamp_.sec, 123);
+    EXPECT_EQ(node.timestamp_.nanosec, 456789012U);
+
+    const auto eigen_pose = kiss_matcher::eigenToPoseStamped(node.pose_, "map", timestamp);
+    EXPECT_EQ(eigen_pose.header.stamp.sec, 123);
+    EXPECT_EQ(eigen_pose.header.stamp.nanosec, 456789012U);
+
+    const gtsam::Pose3 gtsam_pose(gtsam::Rot3::Identity(), gtsam::Point3(1.0, 2.0, 3.0));
+    const auto gtsam_pose_stamped =
+        kiss_matcher::gtsamToPoseStamped(gtsam_pose, "map", timestamp);
+    EXPECT_EQ(gtsam_pose_stamped.header.stamp.sec, 123);
+    EXPECT_EQ(gtsam_pose_stamped.header.stamp.nanosec, 456789012U);
+}
 }  // namespace kiss_matcher
