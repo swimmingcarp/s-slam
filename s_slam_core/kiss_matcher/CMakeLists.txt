@@ -213,6 +213,14 @@ if(BUILD_TESTING)
     ${PCL_LIBRARIES}
     small_gicp
     gtsam)
+
+  ament_add_gtest(pose_graph_input_validation_test
+    test/pose_graph_input_validation_test.cpp)
+  ament_target_dependencies(pose_graph_input_validation_test
+    rclcpp tf2_ros sensor_msgs nav_msgs visualization_msgs message_filters pcl_conversions PCL)
+  target_link_libraries(pose_graph_input_validation_test
+    ${PCL_LIBRARIES}
+    gtsam)
 endif()
 
 ament_package()

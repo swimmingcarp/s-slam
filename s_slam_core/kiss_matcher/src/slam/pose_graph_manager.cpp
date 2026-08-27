@@ -18,12 +18,18 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
     base_frame_             = declare_parameter<std::string>("base_frame", "base");
     odom_frame_             = declare_parameter<std::string>("odom_frame", "odom");
     publish_map_to_odom_tf_ = declare_parameter<bool>("publish_map_to_odom_tf", false);
+    max_sync_interval_      = declare_parameter<double>("input.max_sync_interval", 0.05);
     declare_parameter<double>("loop_pub_hz", 0.1);
     loop_detector_hz          = declare_parameter<double>("loop_detector_hz", 1.0);
     loop_nnsearch_hz          = declare_parameter<double>("loop_nnsearch_hz", 1.0);
     loop_candidate_cooldown_ = declare_parameter<double>("loop_pub_delayed_time", 60.0);
     map_update_hz             = declare_parameter<double>("map_update_hz", 0.2);
     vis_hz                    = declare_parameter<double>("vis_hz", 0.5);
+
+    if (!std::isfinite(max_sync_interval_) || max_sync_interval_ < 0.0)
+    {
+        throw std::invalid_argument("input.max_sync_interval must be finite and non-negative");
+    }
 
     store_voxelized_scan_           = declare_parameter<bool>("store_voxelized_scan", false);
     lc_config.voxel_res_            = declare_parameter<double>("voxel_resolution", 0.3);
@@ -105,8 +111,10 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
     sub_scan_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::PointCloud2> >(
         this, "cloud");
 
+    NodeSyncPolicy sync_policy(10);
+    sync_policy.setMaxIntervalDuration(rclcpp::Duration::from_seconds(max_sync_interval_));
     sub_node_ = std::make_shared<message_filters::Synchronizer<NodeSyncPolicy> >(
-        NodeSyncPolicy(10), *sub_odom_, *sub_scan_);
+        static_cast<const NodeSyncPolicy &>(sync_policy), *sub_odom_, *sub_scan_);
     sub_node_->registerCallback(std::bind(
                                     &PoseGraphManager::callbackNode, this, std::placeholders::_1, std::placeholders::_2));
 
@@ -199,11 +207,31 @@ void PoseGraphManager::appendKeyframePose(const PoseGraphNode &node)
 void PoseGraphManager::callbackNode(const nav_msgs::msg::Odometry::ConstSharedPtr &odom_msg,
                                     const sensor_msgs::msg::PointCloud2::ConstSharedPtr &scan_msg)
 {
+    if (!PoseGraphNode::hasValidMessage(*odom_msg, *scan_msg, max_sync_interval_))
+    {
+        RCLCPP_WARN_THROTTLE(get_logger(),
+                             *get_clock(),
+                             5000,
+                             "Dropping invalid synchronized odometry and cloud message.");
+        return;
+    }
+
+    pcl::PointCloud<PointType> scan;
+    pcl::fromROSMsg(*scan_msg, scan);
+    if (!PoseGraphNode::hasValidInput(*odom_msg, *scan_msg, scan, max_sync_interval_))
+    {
+        RCLCPP_WARN_THROTTLE(get_logger(),
+                             *get_clock(),
+                             5000,
+                             "Dropping synchronized odometry and cloud with invalid point data.");
+        return;
+    }
+
     // NOTE(hlim): For clarification, 'current' refers to the real-time incoming messages,
     // while 'latest' indicates the last keyframe information already appended to keyframes_.
     Eigen::Matrix4d current_odom = current_frame_.pose_;
-    current_frame_               = PoseGraphNode(
-        *odom_msg, *scan_msg, latest_keyframe_idx_, scan_voxel_res_, store_voxelized_scan_);
+    current_frame_ = PoseGraphNode(
+        *odom_msg, std::move(scan), latest_keyframe_idx_, scan_voxel_res_, store_voxelized_scan_);
 
     kiss_matcher::TicToc total_timer;
     kiss_matcher::TicToc local_timer;

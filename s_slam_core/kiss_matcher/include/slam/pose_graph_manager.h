@@ -158,6 +158,7 @@ private:
     double scan_voxel_res_;
     double map_voxel_res_;
     double save_voxel_res_;
+    double max_sync_interval_;
     double loop_candidate_cooldown_;
     double loop_detection_radius_; // Only for visualization
     int sub_key_num_;
