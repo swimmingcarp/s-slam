@@ -25,6 +25,13 @@ claiming a fix.
 
 - Name identifiers for their actual role and value. Be precise, but do not
   repeat context already made clear by the class, function, or call site.
+- Prefer short, literal names that state the measured or limited quantity. An
+  abstract term such as `residual`, `effective`, or `correction` must identify
+  its object and condition; configuration names should be understandable
+  without reading the implementation.
+- Model committed boolean state with a positive predicate such as
+  `is_initialized_`; do not reassign a boolean to a value already guaranteed
+  by the enclosing control flow.
 - Prefer concise, conventional names over long literal descriptions. Avoid
   redundant qualifiers such as `InWorldFrame` when the surrounding API already
   establishes the frame.
@@ -38,6 +45,11 @@ claiming a fix.
   contract. For internal identifiers, do not add redundant unit suffixes when
   the local type and context already make the unit clear; never rename an
   external parameter, topic, or config key as part of an internal cleanup.
+- A function's return value must represent one clear result that its caller
+  must act on, such as success/failure or a computed value. Do not return a
+  boolean for indirect lifecycle state such as "has initialization happened";
+  keep that state on the owning object, expose a clearly named query only when
+  callers need it, and use `void` when the caller has no result to handle.
 
 ## Optimization Principle
 

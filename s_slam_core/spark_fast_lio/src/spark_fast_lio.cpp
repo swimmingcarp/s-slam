@@ -95,11 +95,8 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
       last_lidar_timestamp_(0, 0, RCL_ROS_TIME),
       last_imu_timestamp_(0, 0, RCL_ROS_TIME)
 {
-    xaxis_point_body_ << LIDAR_SP_LEN, 0.0, 0.0;
-    xaxis_point_world_ << LIDAR_SP_LEN, 0.0, 0.0;
     base_gravity_                 = Zero3d;
     stationary_mean_acceleration_ = Zero3d;
-    position_last_                = Zero3d;
     gravity_alignment_rotation_   = Eye3d;
 
     lidar_translation_in_base_ = Zero3d;
@@ -122,9 +119,6 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
 
     max_iterations_ = declare_parameter<int>("max_iteration", 4);
 
-    map_file_path_ = declare_parameter<std::string>("map_file_path", "");
-    save_dir_      = declare_parameter<std::string>("common.save_dir", "");
-    sequence_name_ = declare_parameter<std::string>("common.sequence_name", "");
     map_frame_     = declare_parameter<std::string>("common.map_frame", "odom");
     lidar_frame_   = declare_parameter<std::string>("common.lidar_frame", "lidar");
     base_frame_    = declare_parameter<std::string>("common.base_frame", "");
@@ -170,29 +164,26 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     accelerometer_covariance_    = declare_parameter<double>("mapping.acc_cov", 0.1);
     gyroscope_bias_covariance_   = declare_parameter<double>("mapping.b_gyr_cov", 0.0001);
     accelerometer_bias_covariance_ = declare_parameter<double>("mapping.b_acc_cov", 0.0001);
-    motion_quality_gate_enabled_ =
-        declare_parameter<bool>("mapping.motion_quality_gate_enabled", false);
-    motion_gate_max_pre_grav_residual_ =
-        declare_parameter<double>("mapping.motion_gate_max_pre_grav_residual", 3.0);
-    motion_gate_suspect_frame_step_ =
-        declare_parameter<double>("mapping.motion_gate_suspect_frame_step", 0.5);
-    motion_gate_max_update_step_ =
-        declare_parameter<double>("mapping.motion_gate_max_update_step", 0.15);
-    motion_gate_max_update_step_ratio_ =
-        declare_parameter<double>("mapping.motion_gate_max_update_step_ratio", 0.2);
-    motion_gate_min_effective_ratio_ =
-        declare_parameter<double>("mapping.motion_gate_min_effective_ratio", 0.25);
-    motion_gate_min_effective_features_ =
-        declare_parameter<int>("mapping.motion_gate_min_effective_features", 100);
-    motion_gate_reject_weak_lidar_ =
-        declare_parameter<bool>("mapping.motion_gate_reject_weak_lidar", true);
-    motion_gate_max_pre_grav_residual_ = std::max(0.1, motion_gate_max_pre_grav_residual_);
-    motion_gate_suspect_frame_step_ = std::max(0.1, motion_gate_suspect_frame_step_);
-    motion_gate_max_update_step_ = std::max(0.01, motion_gate_max_update_step_);
-    motion_gate_max_update_step_ratio_ =
-        std::clamp(motion_gate_max_update_step_ratio_, 0.0, 1.0);
-    motion_gate_min_effective_ratio_ = std::clamp(motion_gate_min_effective_ratio_, 0.0, 1.0);
-    motion_gate_min_effective_features_ = std::max(1, motion_gate_min_effective_features_);
+    quality_gate_enabled_ = declare_parameter<bool>("mapping.quality_gate_enabled", false);
+    max_linear_acceleration_ =
+        declare_parameter<double>("mapping.max_linear_acceleration", 3.0);
+    max_jump_between_two_frames_ =
+        declare_parameter<double>("mapping.max_jump_between_two_frames", 0.5);
+    max_lidar_position_adjustment_ =
+        declare_parameter<double>("mapping.max_lidar_position_adjustment", 0.15);
+    min_recovery_lidar_adjustment_ratio_ =
+        declare_parameter<double>("mapping.min_recovery_lidar_adjustment_ratio", 0.2);
+    min_matched_feature_ratio_ =
+        declare_parameter<double>("mapping.min_matched_feature_ratio", 0.25);
+    min_matched_features_ = declare_parameter<int>("mapping.min_matched_features", 100);
+    reject_weak_lidar_ = declare_parameter<bool>("mapping.reject_weak_lidar", true);
+    max_linear_acceleration_ = std::max(0.1, max_linear_acceleration_);
+    max_jump_between_two_frames_ = std::max(0.1, max_jump_between_two_frames_);
+    max_lidar_position_adjustment_ = std::max(0.01, max_lidar_position_adjustment_);
+    min_recovery_lidar_adjustment_ratio_ =
+        std::clamp(min_recovery_lidar_adjustment_ratio_, 0.0, 1.0);
+    min_matched_feature_ratio_ = std::clamp(min_matched_feature_ratio_, 0.0, 1.0);
+    min_matched_features_ = std::max(1, min_matched_features_);
 
     enable_gravity_alignment_ =
         declare_parameter<bool>("gravity_alignment.enable_gravity_alignment", true);
@@ -210,7 +201,6 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
         pcl::console::setVerbosityLevel(pcl::console::L_ERROR);
     }
 
-    runtime_pos_log_       = declare_parameter<bool>("runtime_pos_log_enabled", false);
     extrinsic_est_enabled_ = declare_parameter<bool>("mapping.extrinsic_est_enabled", false);
     const bool replay_mode = declare_parameter<bool>("replay_mode", false);
     extrinsics_timeout_s_  = declare_parameter<double>("extrinsics_timeout_s", 10.0);
@@ -466,14 +456,13 @@ void SPARKFastLIO2::resetEstimatorState(const std::string &reason, const ResetMo
     V3D warm_ba           = Zero3d;
     V3D warm_vel_body     = Zero3d;
     V3D warm_mean_acc     = Zero3d;
-    // Gate on the IMU processor's own initialized flag, NOT filter_initialized_:
+    // Gate on the IMU processor's own initialized flag, NOT the LiDAR warmup state:
     // the latter needs kInitializationTimeSec of post-reset data to flip true again, so a
     // burst of resets (e.g. LiDAR and IMU glitches back to back) inside that
     // window would be misjudged as a cold start and deadlock in flight.
     // Prefer the high-rate IMU propagation state when it is available. kf_
     // advances only with LiDAR processing, while kf_for_preintegration_ stays
-    // current during rejected or missing LiDAR frames. last_good_state_ may be
-    // arbitrarily old and must not be used for a warm recovery prior.
+    // current during rejected or missing LiDAR frames.
     if (mode == ResetMode::kWarmRecovery && imu_processor_ && imu_processor_->isInitialized())
     {
         const V3D mean_acceleration = imu_processor_->getSnapshot().mean_acceleration;
@@ -508,14 +497,14 @@ void SPARKFastLIO2::resetEstimatorState(const std::string &reason, const ResetMo
     imu_buffer_.clear();
     imu_integration_queue_.clear();
 
-    lidar_pushed_ = false;
+    has_pending_lidar_frame_ = false;
     lidar_end_time_ = 0.0;
     mean_scan_duration_ = 0.0;
     scan_duration_sample_count_ = 0;
     imu_gap_lidar_skip_count_ = 0;
     first_lidar_time_ = 0.0;
-    is_first_lidar_scan_ = true;
-    filter_initialized_ = false;
+    has_lidar_start_time_   = false;
+    is_lio_warmup_complete_ = false;
     has_last_lidar_timestamp_ = false;
     has_last_imu_timestamp_ = false;
     last_consumed_imu_time_.reset();
@@ -532,8 +521,6 @@ void SPARKFastLIO2::resetEstimatorState(const std::string &reason, const ResetMo
     PointVector empty_map;
     ikd_tree_.Build(empty_map);
     ikd_tree_.set_downsample_param(filter_size_map_min_);
-    removed_map_point_count_ = 0;
-    inserted_point_count_ = 0;
     local_map_initialized_ = false;
 
     state_ikfom initial_state;
@@ -550,31 +537,26 @@ void SPARKFastLIO2::resetEstimatorState(const std::string &reason, const ResetMo
     }
 
     latest_state_ = initial_state;
-    last_good_state_ = initial_state;
-    have_last_good_state_ = false;
-    last_good_imu_processor_snapshot_.reset();
-    have_last_lio_debug_state_ = false;
-    last_lio_debug_pos_ = Zero3d;
-    last_lio_debug_time_ = 0.0;
+    has_accepted_lio_update_   = false;
+    last_accepted_lio_position_ = Zero3d;
+    last_accepted_lio_time_ = 0.0;
 
     path_msg_.poses.clear();
     path_publish_counter_ = 0;
-    motion_gate_consecutive_reject_count_ = 0;
+    consecutive_gate_reject_count_ = 0;
     total_residual_ = 0.0;
     mean_residual_ = 0.05;
     effective_feature_count_ = 0;
     downsampled_point_count_ = 0;
-    scan_count_ = 0;
     lio_state_log_counter_ = 0;
 
     is_gravity_aligned_ = false;
     gravity_alignment_rotation_ = Eye3d;
     num_consecutive_moving_frames_ = 0;
-    time_offset_initialized_ = false;
+    has_lidar_imu_time_offset_ = false;
     lidar_imu_time_offset_ = 0;
     global_gravity_directions_.clear();
     stationary_mean_acceleration_ = Zero3d;
-    position_last_ = Zero3d;
 }
 
 // Outputs the rotation that aligns gravity_from to gravity_to.

@@ -37,15 +37,15 @@ enum class TimestampUnit : int
     kMicroseconds = 2,
     kNanoseconds  = 3,
 };
-enum Feature
+enum class FeatureType
 {
-    Nor,
-    Poss_Plane,
-    Real_Plane,
-    Edge_Jump,
-    Edge_Plane,
-    Wire,
-    ZeroPoint
+    kNormal,
+    kPossiblePlane,
+    kPlane,
+    kJumpEdge,
+    kPlaneEdge,
+    kWire,
+    kZeroPoint,
 };
 
 enum class PlaneClassification
@@ -55,40 +55,30 @@ enum class PlaneClassification
     kContainsBlindPoint,
 };
 
-enum Surround
+enum class NeighborDirection : std::size_t
 {
-    Prev,
-    Next
+    kPrevious = 0,
+    kNext     = 1,
 };
 
-enum E_jump
+enum class NeighborState
 {
-    Nr_nor,
-    Nr_zero,
-    Nr_180,
-    Nr_inf,
-    Nr_blind
+    kNormal,
+    kZeroDistance,
+    kOppositeDirection,
+    kInfiniteRange,
+    kBlindRange,
 };
 
 struct PointFeatureInfo
 {
-    double range;
-    double dista;
-    double angle[2];
-    double intersect;
-    E_jump edj[2];
-    Feature ftype;
-    PointFeatureInfo()
-    {
-        range     = 0;
-        dista     = 0;
-        angle[Prev] = 0;
-        angle[Next] = 0;
-        edj[Prev] = Nr_nor;
-        edj[Next] = Nr_nor;
-        ftype     = Nor;
-        intersect = 2;
-    }
+    double range = 0.0;
+    double neighbor_distance = 0.0;
+    std::array<double, 2> neighbor_angle{};
+    double neighbor_intersection_cosine = 2.0;
+    std::array<NeighborState, 2> neighbor_state{
+        NeighborState::kNormal, NeighborState::kNormal};
+    FeatureType feature_type = FeatureType::kNormal;
 };
 
 class LidarProcessor
@@ -181,14 +171,13 @@ private:
                                      std::vector<PointFeatureInfo> &point_feature_infos);
     PlaneClassification classifyPlaneSegment(
         const PointCloudXYZI &scan_line,
-        std::vector<PointFeatureInfo> &point_feature_infos,
+        const std::vector<PointFeatureInfo> &point_feature_infos,
         std::size_t point_index,
         std::size_t &next_point_index,
         Eigen::Vector3d &direction);
-    bool isEdgeJump(const PointCloudXYZI &scan_line,
-                    std::vector<PointFeatureInfo> &point_feature_infos,
+    bool isEdgeJump(const std::vector<PointFeatureInfo> &point_feature_infos,
                     std::size_t point_index,
-                    Surround neighbor_direction);
+                    NeighborDirection neighbor_direction);
 
     const LidarType lidar_type_;
     const int scan_line_count_;

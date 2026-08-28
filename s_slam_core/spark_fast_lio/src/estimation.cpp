@@ -13,19 +13,10 @@ namespace spark_fast_lio
 {
 namespace
 {
-bool hasFiniteImuMeasurement(const sensor_msgs::msg::Imu &measurement)
-{
-    const auto &acceleration     = measurement.linear_acceleration;
-    const auto &angular_velocity = measurement.angular_velocity;
-    return std::isfinite(acceleration.x) && std::isfinite(acceleration.y) &&
-           std::isfinite(acceleration.z) && std::isfinite(angular_velocity.x) &&
-           std::isfinite(angular_velocity.y) && std::isfinite(angular_velocity.z);
-}
-
 bool hasFiniteImuMeasurements(const MeasureGroup &measures)
 {
     return std::all_of(measures.imu.begin(), measures.imu.end(), [](const auto &measurement)
-                       { return measurement && hasFiniteImuMeasurement(*measurement); });
+                       { return measurement && ImuProcessor::hasFiniteMeasurement(*measurement); });
 }
 
 bool hasFiniteState(const state_ikfom &state)
@@ -53,11 +44,12 @@ struct SPARKFastLIO2::PropagationCheckpoint
     bool propagated_state_is_finite = false;
 };
 
-bool SPARKFastLIO2::isMotionStopped(const V3D &acc_ref,
-                                    const V3D &acc_curr,
-                                    const double acc_diff_thr)
+bool SPARKFastLIO2::isMotionStopped(const V3D &reference_acceleration,
+                                    const V3D &current_acceleration,
+                                    const double max_acceleration_difference)
 {
-    return (acc_ref - acc_curr).norm() <= acc_diff_thr;
+    return (reference_acceleration - current_acceleration).norm() <=
+           max_acceleration_difference;
 }
 
 SPARKFastLIO2::PropagationCheckpoint SPARKFastLIO2::propagateLidarFrame(
@@ -150,7 +142,7 @@ void SPARKFastLIO2::updateGravityAlignmentBeforeLio(MeasureGroup &measures)
         return;
     }
 
-    if (!filter_initialized_)
+    if (!is_lio_warmup_complete_)
     {
         // Assume that it is stationary at the beginning.
         stationary_mean_acceleration_ = measures.getMeanAcc();
@@ -201,7 +193,8 @@ bool SPARKFastLIO2::prepareLioUpdate(MeasureGroup &measures,
                                      state_ikfom &propagated_state)
 {
     latest_state_   = kf_.get_x();
-    filter_initialized_ = (measures.lidar_beg_time - first_lidar_time_) >= kInitializationTimeSec;
+    is_lio_warmup_complete_ =
+        (measures.lidar_beg_time - first_lidar_time_) >= kInitializationTimeSec;
 
     if (matching_points->empty())
     {
@@ -222,7 +215,7 @@ bool SPARKFastLIO2::prepareLioUpdate(MeasureGroup &measures,
                              latest_state_.vel[0],
                              latest_state_.vel[1],
                              latest_state_.vel[2]);
-        if (motion_quality_gate_enabled_ && have_last_good_state_)
+        if (quality_gate_enabled_ && has_accepted_lio_update_)
         {
             publishPropagatedFrame();
         }
@@ -267,7 +260,7 @@ bool SPARKFastLIO2::prepareLioUpdate(MeasureGroup &measures,
                              latest_state_.vel[0],
                              latest_state_.vel[1],
                              latest_state_.vel[2]);
-        if (motion_quality_gate_enabled_ && have_last_good_state_)
+        if (quality_gate_enabled_ && has_accepted_lio_update_)
         {
             publishPropagatedFrame();
         }
@@ -318,13 +311,11 @@ void SPARKFastLIO2::updateGravityAlignmentAfterLio()
     is_gravity_aligned_ = true;
 }
 
-void SPARKFastLIO2::runLioUpdate()
+void SPARKFastLIO2::updateFilterWithLidar()
 {
-    double update_start = omp_get_wtime();
-    double solve_H_time = 0;
-    kf_.update_iterated_dyn_share_modified(kLaserPointCovariance, solve_H_time);
+    double solver_time = 0;
+    kf_.update_iterated_dyn_share_modified(kLaserPointCovariance, solver_time);
     updateGravityAlignmentAfterLio();
-    (void) update_start;
 }
 
 SPARKFastLIO2::MotionQualityReport SPARKFastLIO2::evaluateMotionQuality(
@@ -346,13 +337,13 @@ SPARKFastLIO2::MotionQualityReport SPARKFastLIO2::evaluateMotionQuality(
     const SO3 rotation_update = propagated_state.rot.conjugate() * latest_state_.rot;
     quality.rotation_correction_deg =
         Eigen::AngleAxisd(rotation_update.toRotationMatrix()).angle() * 180.0 / M_PI;
-    quality.pre_gravity_residual =
+    quality.predicted_linear_acceleration =
         propagated_state.rot * quality.mean_acceleration +
         V3D(propagated_state.grav[0], propagated_state.grav[1], propagated_state.grav[2]);
-    quality.post_gravity_residual =
+    quality.corrected_linear_acceleration =
         latest_state_.rot * quality.mean_acceleration +
         V3D(latest_state_.grav[0], latest_state_.grav[1], latest_state_.grav[2]);
-    quality.correction_step = (latest_state_.pos - propagated_state.pos).norm();
+    quality.lidar_position_adjustment = (latest_state_.pos - propagated_state.pos).norm();
     quality.velocity_norm   = latest_state_.vel.norm();
 
     // Frame-count gating instead of clock-based throttling: clock-driven
@@ -362,10 +353,10 @@ SPARKFastLIO2::MotionQualityReport SPARKFastLIO2::evaluateMotionQuality(
     {
         RCLCPP_INFO(this->get_logger(),
                     "LIO state: pos=[%.3f, %.3f, %.3f] vel=[%.3f, %.3f, %.3f] "
-                    "ekf_update_step=%.3f m rot_update=%.3f deg res_mean=%.5f "
+                    "lidar_position_adjustment=%.3f m rot_update=%.3f deg res_mean=%.5f "
                     "bg=[%.5f, %.5f, %.5f] ba=[%.5f, %.5f, %.5f] "
                     "grav=[%.3f, %.3f, %.3f] mean_acc=[%.3f, %.3f, %.3f] "
-                    "mean_acc_norm=%.3f pre_grav_res=%.3f post_grav_res=%.3f "
+                    "mean_acc_norm=%.3f predicted_linear_acc=%.3f corrected_linear_acc=%.3f "
                     "feats_down=%d effect=%d tree=%d imu=%zu "
                     "scan_dt=%.3f ms",
                     latest_state_.pos[0],
@@ -374,7 +365,7 @@ SPARKFastLIO2::MotionQualityReport SPARKFastLIO2::evaluateMotionQuality(
                     latest_state_.vel[0],
                     latest_state_.vel[1],
                     latest_state_.vel[2],
-                    quality.correction_step,
+                    quality.lidar_position_adjustment,
                     quality.rotation_correction_deg,
                     mean_residual_,
                     latest_state_.bg[0],
@@ -390,8 +381,8 @@ SPARKFastLIO2::MotionQualityReport SPARKFastLIO2::evaluateMotionQuality(
                     quality.mean_acceleration[1],
                     quality.mean_acceleration[2],
                     quality.mean_acceleration.norm(),
-                    quality.pre_gravity_residual.norm(),
-                    quality.post_gravity_residual.norm(),
+                    quality.predicted_linear_acceleration.norm(),
+                    quality.corrected_linear_acceleration.norm(),
                     downsampled_point_count_,
                     effective_feature_count_,
                     ikd_tree_.size(),
@@ -399,49 +390,53 @@ SPARKFastLIO2::MotionQualityReport SPARKFastLIO2::evaluateMotionQuality(
                     (measures.lidar_end_time - measures.lidar_beg_time) * 1000.0);
     }
 
-    if (have_last_lio_debug_state_)
+    if (has_accepted_lio_update_)
     {
-        quality.delta_time = quality.lidar_time - last_lio_debug_time_;
-        quality.state_step  = (latest_state_.pos - last_lio_debug_pos_).norm();
-        quality.state_speed =
-            quality.delta_time > 1.0e-6 ? quality.state_step / quality.delta_time
+        quality.delta_time = quality.lidar_time - last_accepted_lio_time_;
+        quality.position_step = (latest_state_.pos - last_accepted_lio_position_).norm();
+        quality.position_speed =
+            quality.delta_time > 1.0e-6 ? quality.position_step / quality.delta_time
                 : 0.0;
-        quality.correction_step_ratio =
-            quality.state_step > 1.0e-6 ? quality.correction_step / quality.state_step : 1.0;
+        quality.lidar_adjustment_ratio =
+            quality.position_step > 1.0e-6
+                ? quality.lidar_position_adjustment / quality.position_step
+                : 1.0;
     }
-    quality.effective_feature_ratio =
+    quality.matched_feature_ratio =
         downsampled_point_count_ > 0
             ? static_cast<double>(effective_feature_count_) / static_cast<double>(downsampled_point_count_)
             : 0.0;
-    quality.finite_state = hasFiniteState(latest_state_);
-    quality.high_pre_gravity_residual =
-        quality.pre_gravity_residual.norm() > motion_gate_max_pre_grav_residual_;
-    quality.high_post_gravity_residual =
-        quality.post_gravity_residual.norm() > motion_gate_max_pre_grav_residual_;
-    quality.suspicious_large_correction =
-        have_last_lio_debug_state_ && quality.delta_time > 0.0 &&
-        quality.state_step > motion_gate_suspect_frame_step_ &&
-        quality.correction_step > motion_gate_max_update_step_;
-    quality.weak_lidar_update =
-        quality.correction_step_ratio < motion_gate_max_update_step_ratio_;
-    quality.weak_lidar_constraints =
-        effective_feature_count_ < motion_gate_min_effective_features_ ||
-        quality.effective_feature_ratio < motion_gate_min_effective_ratio_;
-    quality.unsupported_recovery_step =
-        have_last_lio_debug_state_ && quality.delta_time > 0.0 &&
-        motion_gate_consecutive_reject_count_ > 0 &&
-        quality.state_step > motion_gate_suspect_frame_step_ &&
-        quality.correction_step <= motion_gate_max_update_step_ &&
-        (quality.weak_lidar_update ||
-         (motion_gate_reject_weak_lidar_ && quality.weak_lidar_constraints) ||
-         quality.high_pre_gravity_residual ||
-         quality.high_post_gravity_residual);
-    quality.reject =
-        motion_quality_gate_enabled_ && filter_initialized_ &&
-        (!quality.finite_state ||
-         (motion_gate_reject_weak_lidar_ && quality.weak_lidar_constraints) ||
-         quality.high_pre_gravity_residual || quality.high_post_gravity_residual ||
-         quality.suspicious_large_correction || quality.unsupported_recovery_step);
+    quality.has_finite_state = hasFiniteState(latest_state_);
+    quality.has_high_predicted_linear_acceleration =
+        quality.predicted_linear_acceleration.norm() > max_linear_acceleration_;
+    quality.has_high_corrected_linear_acceleration =
+        quality.corrected_linear_acceleration.norm() > max_linear_acceleration_;
+    quality.has_large_frame_jump_and_lidar_adjustment =
+        has_accepted_lio_update_ && quality.delta_time > 0.0 &&
+        quality.position_step > max_jump_between_two_frames_ &&
+        quality.lidar_position_adjustment > max_lidar_position_adjustment_;
+    quality.has_small_lidar_adjustment =
+        quality.lidar_adjustment_ratio < min_recovery_lidar_adjustment_ratio_;
+    quality.has_insufficient_matches =
+        effective_feature_count_ < min_matched_features_ ||
+        quality.matched_feature_ratio < min_matched_feature_ratio_;
+    quality.has_unsupported_recovery_step =
+        has_accepted_lio_update_ && quality.delta_time > 0.0 &&
+        consecutive_gate_reject_count_ > 0 &&
+        quality.position_step > max_jump_between_two_frames_ &&
+        quality.lidar_position_adjustment <= max_lidar_position_adjustment_ &&
+        (quality.has_small_lidar_adjustment ||
+         (reject_weak_lidar_ && quality.has_insufficient_matches) ||
+         quality.has_high_predicted_linear_acceleration ||
+         quality.has_high_corrected_linear_acceleration);
+    quality.should_reject =
+        quality_gate_enabled_ && is_lio_warmup_complete_ &&
+        (!quality.has_finite_state ||
+         (reject_weak_lidar_ && quality.has_insufficient_matches) ||
+         quality.has_high_predicted_linear_acceleration ||
+         quality.has_high_corrected_linear_acceleration ||
+         quality.has_large_frame_jump_and_lidar_adjustment ||
+         quality.has_unsupported_recovery_step);
     return quality;
 }
 
@@ -449,7 +444,7 @@ void SPARKFastLIO2::rejectMotionFrame(const MeasureGroup &measures,
                                       const PropagationCheckpoint &checkpoint,
                                       const MotionQualityReport &quality)
 {
-    if (!quality.finite_state)
+    if (!quality.has_finite_state)
     {
         if (checkpoint.propagated_state_is_finite)
         {
@@ -475,39 +470,40 @@ void SPARKFastLIO2::rejectMotionFrame(const MeasureGroup &measures,
         return;
     }
 
-    ++motion_gate_reject_count_;
-    ++motion_gate_consecutive_reject_count_;
+    ++gate_reject_count_;
+    ++consecutive_gate_reject_count_;
     restorePropagatedFrame(checkpoint);
     RCLCPP_WARN(this->get_logger(),
                 "Motion quality gate rejected scan #%d: consecutive=%d dt=%.3f s step=%.3f m "
-                "speed=%.3f m/s ekf_update_step=%.3f m update_step_ratio=%.3f "
-                "state_speed=%.3f m/s pre_grav_res=%.3f post_grav_res=%.3f "
-                "feats_down=%d effect=%d effective_ratio=%.3f imu=%zu "
-                "scan_dt=%.3f ms finite_state=%d weak_lidar=%d high_pre_grav=%d "
-                "high_post_grav=%d weak_update=%d large_correction=%d "
+                "speed=%.3f m/s lidar_position_adjustment=%.3f m lidar_adjustment_ratio=%.3f "
+                "position_speed=%.3f m/s predicted_linear_acc=%.3f corrected_linear_acc=%.3f "
+                "feats_down=%d matched=%d matched_ratio=%.3f imu=%zu "
+                "scan_dt=%.3f ms finite_state=%d insufficient_matches=%d "
+                "high_predicted_linear_acc=%d high_corrected_linear_acc=%d "
+                "small_lidar_adjustment=%d large_frame_jump_and_lidar_adjustment=%d "
                 "unsupported_recovery=%d restored_propagation=1 published_propagation=1",
-                motion_gate_reject_count_,
-                motion_gate_consecutive_reject_count_,
+                gate_reject_count_,
+                consecutive_gate_reject_count_,
                 quality.delta_time,
-                quality.state_step,
-                quality.state_speed,
-                quality.correction_step,
-                quality.correction_step_ratio,
+                quality.position_step,
+                quality.position_speed,
+                quality.lidar_position_adjustment,
+                quality.lidar_adjustment_ratio,
                 quality.velocity_norm,
-                quality.pre_gravity_residual.norm(),
-                quality.post_gravity_residual.norm(),
+                quality.predicted_linear_acceleration.norm(),
+                quality.corrected_linear_acceleration.norm(),
                 downsampled_point_count_,
                 effective_feature_count_,
-                quality.effective_feature_ratio,
+                quality.matched_feature_ratio,
                 measures.imu.size(),
                 (measures.lidar_end_time - measures.lidar_beg_time) * 1000.0,
-                quality.finite_state ? 1 : 0,
-                quality.weak_lidar_constraints ? 1 : 0,
-                quality.high_pre_gravity_residual ? 1 : 0,
-                quality.high_post_gravity_residual ? 1 : 0,
-                quality.weak_lidar_update ? 1 : 0,
-                quality.suspicious_large_correction ? 1 : 0,
-                quality.unsupported_recovery_step ? 1 : 0);
+                quality.has_finite_state ? 1 : 0,
+                quality.has_insufficient_matches ? 1 : 0,
+                quality.has_high_predicted_linear_acceleration ? 1 : 0,
+                quality.has_high_corrected_linear_acceleration ? 1 : 0,
+                quality.has_small_lidar_adjustment ? 1 : 0,
+                quality.has_large_frame_jump_and_lidar_adjustment ? 1 : 0,
+                quality.has_unsupported_recovery_step ? 1 : 0);
     publishPropagatedFrame();
 }
 
@@ -515,8 +511,8 @@ void SPARKFastLIO2::logLargeStateJump(const MeasureGroup &measures,
                                       const state_ikfom &propagated_state,
                                       const MotionQualityReport &quality)
 {
-    if (!have_last_lio_debug_state_ || quality.delta_time <= 0.0 ||
-        quality.state_step <= 0.5)
+    if (!has_accepted_lio_update_ || quality.delta_time <= 0.0 ||
+        quality.position_step <= 0.5)
     {
         return;
     }
@@ -537,17 +533,17 @@ void SPARKFastLIO2::logLargeStateJump(const MeasureGroup &measures,
                          "Large LIO state jump: dt=%.3f s step=%.3f m speed=%.3f m/s "
                          "pre_pos=[%.3f, %.3f, %.3f] pre_vel=[%.3f, %.3f, %.3f] "
                          "post_pos=[%.3f, %.3f, %.3f] post_vel=[%.3f, %.3f, %.3f] "
-                         "ekf_update_step=%.3f m rot_update=%.3f deg res_mean=%.5f "
+                         "lidar_position_adjustment=%.3f m rot_update=%.3f deg res_mean=%.5f "
                          "bg=[%.5f, %.5f, %.5f] ba=[%.5f, %.5f, %.5f] "
                          "grav=[%.3f, %.3f, %.3f] "
-                         "pre_grav_res=%.3f post_grav_res=%.3f "
+                         "predicted_linear_acc=%.3f corrected_linear_acc=%.3f "
                          "feats_down=%d effect=%d tree=%d imu=%zu "
                          "scan_dt=%.3f ms imu_span=%.3f ms "
                          "imu_first_minus_lidar_begin=%.3f ms "
                          "lidar_end_minus_imu_last=%.3f ms",
                          quality.delta_time,
-                         quality.state_step,
-                         quality.state_speed,
+                         quality.position_step,
+                         quality.position_speed,
                          propagated_state.pos[0],
                          propagated_state.pos[1],
                          propagated_state.pos[2],
@@ -560,7 +556,7 @@ void SPARKFastLIO2::logLargeStateJump(const MeasureGroup &measures,
                          latest_state_.vel[0],
                          latest_state_.vel[1],
                          latest_state_.vel[2],
-                         quality.correction_step,
+                         quality.lidar_position_adjustment,
                          quality.rotation_correction_deg,
                          mean_residual_,
                          latest_state_.bg[0],
@@ -572,8 +568,8 @@ void SPARKFastLIO2::logLargeStateJump(const MeasureGroup &measures,
                          latest_state_.grav[0],
                          latest_state_.grav[1],
                          latest_state_.grav[2],
-                         quality.pre_gravity_residual.norm(),
-                         quality.post_gravity_residual.norm(),
+                         quality.predicted_linear_acceleration.norm(),
+                         quality.corrected_linear_acceleration.norm(),
                          downsampled_point_count_,
                          effective_feature_count_,
                          ikd_tree_.size(),
@@ -589,17 +585,13 @@ void SPARKFastLIO2::commitOdometryUpdate(const MeasureGroup &measures,
                                          const MotionQualityReport &quality)
 {
     updateLocalMapWindow();
-    motion_gate_consecutive_reject_count_ = 0;
+    consecutive_gate_reject_count_ = 0;
     kf_for_preintegration_                = kf_;
-    last_good_kf_                         = kf_;
-    last_good_imu_processor_snapshot_     = imu_processor_->getSnapshot();
-    last_good_state_                      = latest_state_;
-    have_last_good_state_                 = true;
+    has_accepted_lio_update_              = true;
     logLargeStateJump(measures, propagated_state, quality);
 
-    have_last_lio_debug_state_ = true;
-    last_lio_debug_pos_        = latest_state_.pos;
-    last_lio_debug_time_       = quality.lidar_time;
+    last_accepted_lio_position_ = latest_state_.pos;
+    last_accepted_lio_time_     = quality.lidar_time;
 
     if (enable_gravity_alignment_ && !is_gravity_aligned_ && !base_frame_.empty())
     {
@@ -623,10 +615,10 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &measures)
         return;
     }
 
-    if (is_first_lidar_scan_)
+    if (!has_lidar_start_time_)
     {
-        first_lidar_time_    = measures.lidar_beg_time;
-        is_first_lidar_scan_ = false;
+        first_lidar_time_      = measures.lidar_beg_time;
+        has_lidar_start_time_  = true;
         return;
     }
 
@@ -650,9 +642,9 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &measures)
         return;
     }
 
-    runLioUpdate();
+    updateFilterWithLidar();
     const auto motion_quality = evaluateMotionQuality(measures, propagated_state);
-    if (!motion_quality.finite_state || motion_quality.reject)
+    if (!motion_quality.has_finite_state || motion_quality.should_reject)
     {
         rejectMotionFrame(measures, propagation_checkpoint, motion_quality);
         return;

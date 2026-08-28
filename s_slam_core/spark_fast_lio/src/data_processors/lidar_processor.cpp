@@ -33,6 +33,11 @@ constexpr std::array<int, 2> kNeighborPointOffsets = {-1, 1};
 constexpr std::array<int, 2> kEdgeJumpFirstDistanceOffsets = {-1, 0};
 constexpr std::array<int, 2> kEdgeJumpSecondDistanceOffsets = {-2, 1};
 
+constexpr std::size_t neighborIndex(const NeighborDirection direction)
+{
+    return static_cast<std::size_t>(direction);
+}
+
 double cosineFromDegrees(const double degrees)
 {
     return std::cos(degrees / 180.0 * kPi);
@@ -213,7 +218,7 @@ void LidarProcessor::populatePointFeatureInfo(
         const double delta_z = point.z - next_point.z;
         const double squared_distance =
             delta_x * delta_x + delta_y * delta_y + delta_z * delta_z;
-        point_feature_infos[point_index].dista =
+        point_feature_infos[point_index].neighbor_distance =
             neighbor_distance == NeighborDistance::kEuclidean ? std::sqrt(squared_distance)
                                                               : squared_distance;
     }
@@ -266,8 +271,6 @@ void LidarProcessor::handleAviaPointCloud(const livox_ros_driver2::msg::CustomMs
     surface_cloud_.reserve(point_count);
     full_cloud_.resize(point_count);
 
-    std::size_t valid_num = 0;
-
     if (feature_extraction_enabled_)
     {
         prepareFeatureScanLines(point_count);
@@ -297,6 +300,7 @@ void LidarProcessor::handleAviaPointCloud(const livox_ros_driver2::msg::CustomMs
     }
     else
     {
+        std::size_t valid_num = 0;
         for (std::size_t point_index = 1; point_index < point_count; ++point_index)
         {
             if ((msg.points[point_index].line < scan_line_count_) &&
@@ -343,12 +347,12 @@ void LidarProcessor::handleOusterPointCloud(const sensor_msgs::msg::PointCloud2 
         return;
     }
 
-    const auto plsize = scan.points.size();
-    surface_cloud_.reserve(plsize);
+    const auto point_count = scan.points.size();
+    surface_cloud_.reserve(point_count);
     if (feature_extraction_enabled_)
     {
-        corner_cloud_.reserve(plsize);
-        prepareFeatureScanLines(plsize);
+        corner_cloud_.reserve(point_count);
+        prepareFeatureScanLines(point_count);
 
         for (const auto &src : scan.points)
         {
@@ -401,12 +405,12 @@ void LidarProcessor::handleKimeraOusterPointCloud(const sensor_msgs::msg::PointC
         return;
     }
 
-    const auto plsize = scan.points.size();
-    surface_cloud_.reserve(plsize);
+    const auto point_count = scan.points.size();
+    surface_cloud_.reserve(point_count);
     if (feature_extraction_enabled_)
     {
-        corner_cloud_.reserve(plsize);
-        prepareFeatureScanLines(plsize);
+        corner_cloud_.reserve(point_count);
+        prepareFeatureScanLines(point_count);
 
         for (const auto &src : scan.points)
         {
@@ -464,11 +468,11 @@ void LidarProcessor::handleVelodynePointCloud(const sensor_msgs::msg::PointCloud
     scan_start_time_ = scan.start_time;
     scan_end_time_   = scan.end_time;
 
-    const auto plsize = scan.points.size();
-    surface_cloud_.reserve(plsize);
+    const auto point_count = scan.points.size();
+    surface_cloud_.reserve(point_count);
     if (feature_extraction_enabled_)
     {
-        prepareFeatureScanLines(plsize);
+        prepareFeatureScanLines(point_count);
 
         for (const auto &src : scan.points)
         {
@@ -548,14 +552,14 @@ void LidarProcessor::handleRoboSensePointCloud(
 
     scan_start_time_ = scan.start_time;
     scan_end_time_   = scan.end_time;
-    const auto plsize = scan.points.size();
-    surface_cloud_.reserve(plsize);
+    const auto point_count = scan.points.size();
+    surface_cloud_.reserve(point_count);
 
     const auto inConfiguredScan = [this](const sensor_adapter::InternalPoint &point) {
         return point.ring < static_cast<std::uint16_t>(scan_line_count_);
     };
 
-    prepareFeatureScanLines(plsize);
+    prepareFeatureScanLines(point_count);
 
     for (const auto &src : scan.points)
     {
@@ -572,40 +576,39 @@ void LidarProcessor::handleRoboSensePointCloud(
 }
 
 void LidarProcessor::extractFeaturesFromScanLine(
-    pcl::PointCloud<PointType> &pl,
+    PointCloudXYZI &scan_line,
     std::vector<PointFeatureInfo> &point_feature_infos)
 {
-    auto plsize = pl.size();
-    std::size_t plsize2;
-    if (plsize == 0)
-    {
-        // ROS_ERROR("something wrong\n");
-        return;
-    }
-    std::size_t head = 0;
-
-    while (head < point_feature_infos.size() && point_feature_infos[head].range < blind_distance_)
-    {
-        ++head;
-    }
-    if (head >= point_feature_infos.size())
+    const std::size_t point_count = scan_line.size();
+    if (point_count == 0)
     {
         return;
     }
+    std::size_t first_visible_index = 0;
 
-    // Surf
-    plsize2 = plsize > static_cast<std::size_t>(kFeatureGroupSize)
-                  ? plsize - static_cast<std::size_t>(kFeatureGroupSize)
-                  : 0;
+    while (first_visible_index < point_feature_infos.size() &&
+           point_feature_infos[first_visible_index].range < blind_distance_)
+    {
+        ++first_visible_index;
+    }
+    if (first_visible_index >= point_feature_infos.size())
+    {
+        return;
+    }
 
-    Eigen::Vector3d curr_direct(Eigen::Vector3d::Zero());
-    Eigen::Vector3d last_direct(Eigen::Vector3d::Zero());
+    std::size_t feature_end_index =
+        point_count > static_cast<std::size_t>(kFeatureGroupSize)
+            ? point_count - static_cast<std::size_t>(kFeatureGroupSize)
+            : 0;
+
+    Eigen::Vector3d plane_direction(Eigen::Vector3d::Zero());
+    Eigen::Vector3d previous_plane_direction(Eigen::Vector3d::Zero());
 
     std::size_t i_next = 0;
     bool has_previous_plane = false;
     PlaneClassification plane_classification;
 
-    for (std::size_t i = head; i < plsize2; ++i)
+    for (std::size_t i = first_visible_index; i < feature_end_index; ++i)
     {
         if (point_feature_infos[i].range < blind_distance_)
         {
@@ -613,7 +616,7 @@ void LidarProcessor::extractFeaturesFromScanLine(
         }
 
         plane_classification =
-            classifyPlaneSegment(pl, point_feature_infos, i, i_next, curr_direct);
+            classifyPlaneSegment(scan_line, point_feature_infos, i, i_next, plane_direction);
 
         if (plane_classification == PlaneClassification::kPlane)
         {
@@ -621,24 +624,26 @@ void LidarProcessor::extractFeaturesFromScanLine(
             {
                 if (j != i && j != i_next)
                 {
-                    point_feature_infos[j].ftype = Real_Plane;
+                    point_feature_infos[j].feature_type = FeatureType::kPlane;
                 }
                 else
                 {
-                    point_feature_infos[j].ftype = Poss_Plane;
+                    point_feature_infos[j].feature_type = FeatureType::kPossiblePlane;
                 }
             }
 
-            if (has_previous_plane && last_direct.norm() > kPlaneDirectionMinimumNorm)
+            if (has_previous_plane &&
+                previous_plane_direction.norm() > kPlaneDirectionMinimumNorm)
             {
-                const double direction_dot_product = last_direct.transpose() * curr_direct;
+                const double direction_dot_product =
+                    previous_plane_direction.transpose() * plane_direction;
                 if (std::abs(direction_dot_product) < kEdgePlaneDirectionCosineLimit)
                 {
-                    point_feature_infos[i].ftype = Edge_Plane;
+                    point_feature_infos[i].feature_type = FeatureType::kPlaneEdge;
                 }
                 else
                 {
-                    point_feature_infos[i].ftype = Real_Plane;
+                    point_feature_infos[i].feature_type = FeatureType::kPlane;
                 }
             }
 
@@ -651,29 +656,33 @@ void LidarProcessor::extractFeaturesFromScanLine(
             has_previous_plane = false;
         }
 
-        last_direct = curr_direct;
+        previous_plane_direction = plane_direction;
     }
 
-    plsize2 = plsize > 3 ? plsize - 3 : 0;
-    for (std::size_t i = head + 3; i < plsize2; ++i)
+    feature_end_index = point_count > 3 ? point_count - 3 : 0;
+    for (std::size_t i = first_visible_index + 3; i < feature_end_index; ++i)
     {
-        if (point_feature_infos[i].range < blind_distance_ || point_feature_infos[i].ftype >= Real_Plane)
+        if (point_feature_infos[i].range < blind_distance_ ||
+            point_feature_infos[i].feature_type >= FeatureType::kPlane)
         {
             continue;
         }
 
-        if (point_feature_infos[i - 1].dista < 1e-16 || point_feature_infos[i].dista < 1e-16)
+        if (point_feature_infos[i - 1].neighbor_distance < 1e-16 ||
+            point_feature_infos[i].neighbor_distance < 1e-16)
         {
             continue;
         }
 
-        Eigen::Vector3d point_vector(pl[i].x, pl[i].y, pl[i].z);
+        Eigen::Vector3d point_vector(scan_line[i].x, scan_line[i].y, scan_line[i].z);
         const double point_norm = point_vector.norm();
         if (!std::isfinite(point_norm) || point_norm < kMinimumVectorNorm)
         {
-            point_feature_infos[i].ftype     = ZeroPoint;
-            point_feature_infos[i].edj[Prev] = Nr_zero;
-            point_feature_infos[i].edj[Next] = Nr_zero;
+            point_feature_infos[i].feature_type = FeatureType::kZeroPoint;
+            point_feature_infos[i].neighbor_state[neighborIndex(NeighborDirection::kPrevious)] =
+                NeighborState::kZeroDistance;
+            point_feature_infos[i].neighbor_state[neighborIndex(NeighborDirection::kNext)] =
+                NeighborState::kZeroDistance;
             continue;
         }
         std::array<Eigen::Vector3d, 2> neighbor_vectors{
@@ -690,144 +699,170 @@ void LidarProcessor::extractFeaturesFromScanLine(
             {
                 if (point_feature_infos[i].range > kInfinitePointRangeM)
                 {
-                    point_feature_infos[i].edj[neighbor_index] = Nr_inf;
+                    point_feature_infos[i].neighbor_state[neighbor_index] =
+                        NeighborState::kInfiniteRange;
                 }
                 else
                 {
-                    point_feature_infos[i].edj[neighbor_index] = Nr_blind;
+                    point_feature_infos[i].neighbor_state[neighbor_index] =
+                        NeighborState::kBlindRange;
                 }
                 continue;
             }
 
             neighbor_vectors[neighbor_index] =
-                Eigen::Vector3d(pl[i + neighbor_offset].x,
-                                pl[i + neighbor_offset].y,
-                                pl[i + neighbor_offset].z) -
+                Eigen::Vector3d(scan_line[i + neighbor_offset].x,
+                                scan_line[i + neighbor_offset].y,
+                                scan_line[i + neighbor_offset].z) -
                 point_vector;
             const double neighbor_norm = neighbor_vectors[neighbor_index].norm();
             if (!std::isfinite(neighbor_norm) || neighbor_norm < kMinimumVectorNorm)
             {
-                point_feature_infos[i].edj[neighbor_index] = Nr_zero;
+                point_feature_infos[i].neighbor_state[neighbor_index] =
+                    NeighborState::kZeroDistance;
                 continue;
             }
             has_neighbor[neighbor_index] = true;
 
-            point_feature_infos[i].angle[neighbor_index] =
+            point_feature_infos[i].neighbor_angle[neighbor_index] =
                 point_vector.dot(neighbor_vectors[neighbor_index]) /
                 point_norm / neighbor_norm;
-            if (point_feature_infos[i].angle[neighbor_index] < kJumpUpCosineThreshold)
+            if (point_feature_infos[i].neighbor_angle[neighbor_index] < kJumpUpCosineThreshold)
             {
-                point_feature_infos[i].edj[neighbor_index] = Nr_180;
+                point_feature_infos[i].neighbor_state[neighbor_index] =
+                    NeighborState::kOppositeDirection;
             }
-            else if (point_feature_infos[i].angle[neighbor_index] > kJumpDownCosineThreshold)
+            else if (point_feature_infos[i].neighbor_angle[neighbor_index] >
+                     kJumpDownCosineThreshold)
             {
-                point_feature_infos[i].edj[neighbor_index] = Nr_zero;
+                point_feature_infos[i].neighbor_state[neighbor_index] =
+                    NeighborState::kZeroDistance;
             }
         }
 
-        if (has_neighbor[Prev] && has_neighbor[Next])
+        const std::size_t previous_neighbor = neighborIndex(NeighborDirection::kPrevious);
+        const std::size_t next_neighbor = neighborIndex(NeighborDirection::kNext);
+        if (has_neighbor[previous_neighbor] && has_neighbor[next_neighbor])
         {
-            point_feature_infos[i].intersect =
-                neighbor_vectors[Prev].dot(neighbor_vectors[Next]) /
-                neighbor_vectors[Prev].norm() / neighbor_vectors[Next].norm();
+            point_feature_infos[i].neighbor_intersection_cosine =
+                neighbor_vectors[previous_neighbor].dot(neighbor_vectors[next_neighbor]) /
+                neighbor_vectors[previous_neighbor].norm() / neighbor_vectors[next_neighbor].norm();
         }
         else
         {
-            point_feature_infos[i].intersect = 0.0;
+            point_feature_infos[i].neighbor_intersection_cosine = 0.0;
         }
-        if (point_feature_infos[i].edj[Prev] == Nr_nor && point_feature_infos[i].edj[Next] == Nr_zero &&
-            point_feature_infos[i].dista > kEdgeJumpMinimumDistance &&
-            point_feature_infos[i].dista >
-                kEdgeJumpNeighborDistanceRatio * point_feature_infos[i - 1].dista)
+        if (point_feature_infos[i].neighbor_state[previous_neighbor] == NeighborState::kNormal &&
+            point_feature_infos[i].neighbor_state[next_neighbor] == NeighborState::kZeroDistance &&
+            point_feature_infos[i].neighbor_distance > kEdgeJumpMinimumDistance &&
+            point_feature_infos[i].neighbor_distance >
+                kEdgeJumpNeighborDistanceRatio * point_feature_infos[i - 1].neighbor_distance)
         {
-            if (point_feature_infos[i].intersect > kEdgeIntersectionCosineThreshold)
+            if (point_feature_infos[i].neighbor_intersection_cosine >
+                kEdgeIntersectionCosineThreshold)
             {
-                if (isEdgeJump(pl, point_feature_infos, i, Prev))
+                if (isEdgeJump(point_feature_infos, i, NeighborDirection::kPrevious))
                 {
-                    point_feature_infos[i].ftype = Edge_Jump;
+                    point_feature_infos[i].feature_type = FeatureType::kJumpEdge;
                 }
             }
         }
-        else if (point_feature_infos[i].edj[Prev] == Nr_zero && point_feature_infos[i].edj[Next] == Nr_nor &&
-                 point_feature_infos[i - 1].dista > kEdgeJumpMinimumDistance &&
-                 point_feature_infos[i - 1].dista >
-                     kEdgeJumpNeighborDistanceRatio * point_feature_infos[i].dista)
+        else if (point_feature_infos[i].neighbor_state[previous_neighbor] ==
+                     NeighborState::kZeroDistance &&
+                 point_feature_infos[i].neighbor_state[next_neighbor] == NeighborState::kNormal &&
+                 point_feature_infos[i - 1].neighbor_distance > kEdgeJumpMinimumDistance &&
+                 point_feature_infos[i - 1].neighbor_distance >
+                     kEdgeJumpNeighborDistanceRatio * point_feature_infos[i].neighbor_distance)
         {
-            if (point_feature_infos[i].intersect > kEdgeIntersectionCosineThreshold)
+            if (point_feature_infos[i].neighbor_intersection_cosine >
+                kEdgeIntersectionCosineThreshold)
             {
-                if (isEdgeJump(pl, point_feature_infos, i, Next))
+                if (isEdgeJump(point_feature_infos, i, NeighborDirection::kNext))
                 {
-                    point_feature_infos[i].ftype = Edge_Jump;
+                    point_feature_infos[i].feature_type = FeatureType::kJumpEdge;
                 }
             }
         }
-        else if (point_feature_infos[i].edj[Prev] == Nr_nor && point_feature_infos[i].edj[Next] == Nr_inf)
+        else if (point_feature_infos[i].neighbor_state[previous_neighbor] == NeighborState::kNormal &&
+                 point_feature_infos[i].neighbor_state[next_neighbor] == NeighborState::kInfiniteRange)
         {
-            if (isEdgeJump(pl, point_feature_infos, i, Prev))
+            if (isEdgeJump(point_feature_infos, i, NeighborDirection::kPrevious))
             {
-                point_feature_infos[i].ftype = Edge_Jump;
+                point_feature_infos[i].feature_type = FeatureType::kJumpEdge;
             }
         }
-        else if (point_feature_infos[i].edj[Prev] == Nr_inf && point_feature_infos[i].edj[Next] == Nr_nor)
+        else if (point_feature_infos[i].neighbor_state[previous_neighbor] ==
+                     NeighborState::kInfiniteRange &&
+                 point_feature_infos[i].neighbor_state[next_neighbor] == NeighborState::kNormal)
         {
-            if (isEdgeJump(pl, point_feature_infos, i, Next))
+            if (isEdgeJump(point_feature_infos, i, NeighborDirection::kNext))
             {
-                point_feature_infos[i].ftype = Edge_Jump;
+                point_feature_infos[i].feature_type = FeatureType::kJumpEdge;
             }
         }
-        else if (point_feature_infos[i].edj[Prev] > Nr_nor && point_feature_infos[i].edj[Next] > Nr_nor)
+        else if (point_feature_infos[i].neighbor_state[previous_neighbor] != NeighborState::kNormal &&
+                 point_feature_infos[i].neighbor_state[next_neighbor] != NeighborState::kNormal)
         {
-            if (point_feature_infos[i].ftype == Nor)
+            if (point_feature_infos[i].feature_type == FeatureType::kNormal)
             {
-                point_feature_infos[i].ftype = Wire;
+                point_feature_infos[i].feature_type = FeatureType::kWire;
             }
         }
     }
 
-    plsize2 = plsize - 1;
-    double ratio;
-    for (std::size_t i = head + 1; i < plsize2; ++i)
+    feature_end_index = point_count - 1;
+    double neighbor_distance_ratio;
+    for (std::size_t i = first_visible_index + 1; i < feature_end_index; ++i)
     {
-        if (point_feature_infos[i].range < blind_distance_ || point_feature_infos[i - 1].range < blind_distance_ || point_feature_infos[i + 1].range < blind_distance_)
+        if (point_feature_infos[i].range < blind_distance_ ||
+            point_feature_infos[i - 1].range < blind_distance_ ||
+            point_feature_infos[i + 1].range < blind_distance_)
         {
             continue;
         }
 
-        if (point_feature_infos[i - 1].dista < 1e-8 || point_feature_infos[i].dista < 1e-8)
+        if (point_feature_infos[i - 1].neighbor_distance < 1e-8 ||
+            point_feature_infos[i].neighbor_distance < 1e-8)
         {
             continue;
         }
 
-        if (point_feature_infos[i].ftype == Nor)
+        if (point_feature_infos[i].feature_type == FeatureType::kNormal)
         {
-            if (point_feature_infos[i - 1].dista > point_feature_infos[i].dista)
+            if (point_feature_infos[i - 1].neighbor_distance >
+                point_feature_infos[i].neighbor_distance)
             {
-                ratio = point_feature_infos[i - 1].dista / point_feature_infos[i].dista;
+                neighbor_distance_ratio = point_feature_infos[i - 1].neighbor_distance /
+                                          point_feature_infos[i].neighbor_distance;
             }
             else
             {
-                ratio = point_feature_infos[i].dista / point_feature_infos[i - 1].dista;
+                neighbor_distance_ratio = point_feature_infos[i].neighbor_distance /
+                                          point_feature_infos[i - 1].neighbor_distance;
             }
 
-            if (point_feature_infos[i].intersect < kSmallPlaneIntersectionCosineThreshold && ratio < kSmallPlaneDistanceRatio)
+            if (point_feature_infos[i].neighbor_intersection_cosine <
+                    kSmallPlaneIntersectionCosineThreshold &&
+                neighbor_distance_ratio < kSmallPlaneDistanceRatio)
             {
-                if (point_feature_infos[i - 1].ftype == Nor)
+                if (point_feature_infos[i - 1].feature_type == FeatureType::kNormal)
                 {
-                    point_feature_infos[i - 1].ftype = Real_Plane;
+                    point_feature_infos[i - 1].feature_type = FeatureType::kPlane;
                 }
-                if (point_feature_infos[i + 1].ftype == Nor)
+                if (point_feature_infos[i + 1].feature_type == FeatureType::kNormal)
                 {
-                    point_feature_infos[i + 1].ftype = Real_Plane;
+                    point_feature_infos[i + 1].feature_type = FeatureType::kPlane;
                 }
-                point_feature_infos[i].ftype = Real_Plane;
+                point_feature_infos[i].feature_type = FeatureType::kPlane;
             }
         }
     }
 
     std::optional<std::size_t> first_surface_index;
-    for (std::size_t j = head; j < plsize; ++j)
+    for (std::size_t j = first_visible_index; j < point_count; ++j)
     {
-        if (point_feature_infos[j].ftype == Poss_Plane || point_feature_infos[j].ftype == Real_Plane)
+        if (point_feature_infos[j].feature_type == FeatureType::kPossiblePlane ||
+            point_feature_infos[j].feature_type == FeatureType::kPlane)
         {
             if (!first_surface_index)
             {
@@ -837,46 +872,42 @@ void LidarProcessor::extractFeaturesFromScanLine(
             if (j == *first_surface_index +
                          static_cast<std::size_t>(point_filter_stride_ - 1))
             {
-                PointType ap{};
-                ap.x         = pl[j].x;
-                ap.y         = pl[j].y;
-                ap.z         = pl[j].z;
-                ap.intensity = pl[j].intensity;
-                ap.curvature = pl[j].curvature;
-                surface_cloud_.push_back(ap);
+                PointType surface_point{};
+                surface_point.x         = scan_line[j].x;
+                surface_point.y         = scan_line[j].y;
+                surface_point.z         = scan_line[j].z;
+                surface_point.intensity = scan_line[j].intensity;
+                surface_point.curvature = scan_line[j].curvature;
+                surface_cloud_.push_back(surface_point);
 
                 first_surface_index.reset();
             }
         }
         else
         {
-            if (point_feature_infos[j].ftype == Edge_Jump || point_feature_infos[j].ftype == Edge_Plane)
+            if (point_feature_infos[j].feature_type == FeatureType::kJumpEdge ||
+                point_feature_infos[j].feature_type == FeatureType::kPlaneEdge)
             {
-                corner_cloud_.push_back(pl[j]);
+                corner_cloud_.push_back(scan_line[j]);
             }
             if (first_surface_index)
             {
-                PointType ap{};
+                PointType average_surface_point{};
                 for (std::size_t k = *first_surface_index; k < j; ++k)
                 {
-                    ap.x += pl[k].x;
-                    ap.y += pl[k].y;
-                    ap.z += pl[k].z;
-                    ap.intensity += pl[k].intensity;
-                    ap.curvature += pl[k].curvature;
+                    average_surface_point.x += scan_line[k].x;
+                    average_surface_point.y += scan_line[k].y;
+                    average_surface_point.z += scan_line[k].z;
+                    average_surface_point.intensity += scan_line[k].intensity;
+                    average_surface_point.curvature += scan_line[k].curvature;
                 }
-                const auto point_count = j - *first_surface_index;
-                if (point_count == 0)
-                {
-                    first_surface_index.reset();
-                    continue;
-                }
-                ap.x /= point_count;
-                ap.y /= point_count;
-                ap.z /= point_count;
-                ap.intensity /= point_count;
-                ap.curvature /= point_count;
-                surface_cloud_.push_back(ap);
+                const auto surface_point_count = j - *first_surface_index;
+                average_surface_point.x /= surface_point_count;
+                average_surface_point.y /= surface_point_count;
+                average_surface_point.z /= surface_point_count;
+                average_surface_point.intensity /= surface_point_count;
+                average_surface_point.curvature /= surface_point_count;
+                surface_cloud_.push_back(average_surface_point);
             }
             first_surface_index.reset();
         }
@@ -884,147 +915,161 @@ void LidarProcessor::extractFeaturesFromScanLine(
 }
 
 PlaneClassification LidarProcessor::classifyPlaneSegment(
-    const PointCloudXYZI &pl,
-    std::vector<PointFeatureInfo> &point_feature_infos,
-    std::size_t i_cur,
-    std::size_t &i_next,
-    Eigen::Vector3d &curr_direct)
+    const PointCloudXYZI &scan_line,
+    const std::vector<PointFeatureInfo> &point_feature_infos,
+    const std::size_t point_index,
+    std::size_t &next_point_index,
+    Eigen::Vector3d &plane_direction)
 {
-    double group_dis = kPlaneDistanceScale * point_feature_infos[i_cur].range + kPlaneDistanceOffset;
-    group_dis        = group_dis * group_dis;
-    // i_next = i_cur;
+    double segment_distance_threshold =
+        kPlaneDistanceScale * point_feature_infos[point_index].range + kPlaneDistanceOffset;
+    segment_distance_threshold *= segment_distance_threshold;
 
-    double two_dis = 0.0;
-    std::vector<double> disarr;
-    disarr.reserve(20);
+    double segment_length_squared = 0.0;
+    std::vector<double> neighbor_distances;
+    neighbor_distances.reserve(20);
     double direction_x = 0.0;
     double direction_y = 0.0;
     double direction_z = 0.0;
 
-    for (i_next = i_cur; i_next < i_cur + kFeatureGroupSize; ++i_next)
+    for (next_point_index = point_index;
+         next_point_index < point_index + kFeatureGroupSize;
+         ++next_point_index)
     {
-        if (point_feature_infos[i_next].range < blind_distance_)
+        if (point_feature_infos[next_point_index].range < blind_distance_)
         {
-            curr_direct.setZero();
+            plane_direction.setZero();
             return PlaneClassification::kContainsBlindPoint;
         }
-        disarr.push_back(point_feature_infos[i_next].dista);
+        neighbor_distances.push_back(point_feature_infos[next_point_index].neighbor_distance);
     }
 
     for (;;)
     {
-        if ((i_cur >= pl.size()) || (i_next >= pl.size()))
+        if (point_index >= scan_line.size() || next_point_index >= scan_line.size())
         {
             break;
         }
 
-        if (point_feature_infos[i_next].range < blind_distance_)
+        if (point_feature_infos[next_point_index].range < blind_distance_)
         {
-            curr_direct.setZero();
+            plane_direction.setZero();
             return PlaneClassification::kContainsBlindPoint;
         }
-        direction_x = pl[i_next].x - pl[i_cur].x;
-        direction_y = pl[i_next].y - pl[i_cur].y;
-        direction_z = pl[i_next].z - pl[i_cur].z;
-        two_dis = direction_x * direction_x + direction_y * direction_y + direction_z * direction_z;
-        if (two_dis >= group_dis)
+        direction_x = scan_line[next_point_index].x - scan_line[point_index].x;
+        direction_y = scan_line[next_point_index].y - scan_line[point_index].y;
+        direction_z = scan_line[next_point_index].z - scan_line[point_index].z;
+        segment_length_squared =
+            direction_x * direction_x + direction_y * direction_y + direction_z * direction_z;
+        if (segment_length_squared >= segment_distance_threshold)
         {
             break;
         }
-        disarr.push_back(point_feature_infos[i_next].dista);
-        ++i_next;
+        neighbor_distances.push_back(point_feature_infos[next_point_index].neighbor_distance);
+        ++next_point_index;
     }
 
-    double leng_wid = 0;
-    double v1[3], v2[3];
-    for (std::size_t j = i_cur + 1; j < i_next; ++j)
+    double maximum_width_squared = 0.0;
+    for (std::size_t j = point_index + 1; j < next_point_index; ++j)
     {
-        if ((j >= pl.size()) || (i_cur >= pl.size()))
+        if (j >= scan_line.size() || point_index >= scan_line.size())
         {
             break;
         }
-        v1[0] = pl[j].x - pl[i_cur].x;
-        v1[1] = pl[j].y - pl[i_cur].y;
-        v1[2] = pl[j].z - pl[i_cur].z;
+        const double point_offset_x = scan_line[j].x - scan_line[point_index].x;
+        const double point_offset_y = scan_line[j].y - scan_line[point_index].y;
+        const double point_offset_z = scan_line[j].z - scan_line[point_index].z;
 
-        v2[0] = v1[1] * direction_z - direction_y * v1[2];
-        v2[1] = v1[2] * direction_x - v1[0] * direction_z;
-        v2[2] = v1[0] * direction_y - direction_x * v1[1];
+        const double cross_product_x =
+            point_offset_y * direction_z - direction_y * point_offset_z;
+        const double cross_product_y =
+            point_offset_z * direction_x - point_offset_x * direction_z;
+        const double cross_product_z =
+            point_offset_x * direction_y - direction_x * point_offset_y;
 
-        double lw = v2[0] * v2[0] + v2[1] * v2[1] + v2[2] * v2[2];
-        if (lw > leng_wid)
+        const double width_squared = cross_product_x * cross_product_x +
+                                     cross_product_y * cross_product_y +
+                                     cross_product_z * cross_product_z;
+        if (width_squared > maximum_width_squared)
         {
-            leng_wid = lw;
+            maximum_width_squared = width_squared;
         }
     }
 
-    if (!std::isfinite(leng_wid) || leng_wid < kMinimumVectorNorm ||
-        (two_dis * two_dis / leng_wid) < kPlaneToLineRatio)
+    if (!std::isfinite(maximum_width_squared) || maximum_width_squared < kMinimumVectorNorm ||
+        (segment_length_squared * segment_length_squared / maximum_width_squared) <
+            kPlaneToLineRatio)
     {
-        curr_direct.setZero();
+        plane_direction.setZero();
         return PlaneClassification::kNotPlane;
     }
 
-    const auto disarrsize = disarr.size();
-    std::sort(disarr.begin(), disarr.end(), std::greater<double>());
+    const auto neighbor_distance_count = neighbor_distances.size();
+    std::sort(neighbor_distances.begin(), neighbor_distances.end(), std::greater<double>());
 
-    if (disarr[disarr.size() - 2] < 1e-16)
+    if (neighbor_distances[neighbor_distances.size() - 2] < 1e-16)
     {
-        curr_direct.setZero();
+        plane_direction.setZero();
         return PlaneClassification::kNotPlane;
     }
 
     if (lidar_type_ == LidarType::kAvia)
     {
-        double dismax_mid = disarr[0] / disarr[disarrsize / 2];
-        double dismid_min = disarr[disarrsize / 2] / disarr[disarrsize - 2];
+        const double max_to_middle_distance_ratio =
+            neighbor_distances[0] / neighbor_distances[neighbor_distance_count / 2];
+        const double middle_to_min_distance_ratio =
+            neighbor_distances[neighbor_distance_count / 2] /
+            neighbor_distances[neighbor_distance_count - 2];
 
-        if (dismax_mid >= kAviaMaxToMidDistanceRatio || dismid_min >= kAviaMidToMinDistanceRatio)
+        if (max_to_middle_distance_ratio >= kAviaMaxToMidDistanceRatio ||
+            middle_to_min_distance_ratio >= kAviaMidToMinDistanceRatio)
         {
-            curr_direct.setZero();
+            plane_direction.setZero();
             return PlaneClassification::kNotPlane;
         }
     }
     else
     {
-        double dismax_min = disarr[0] / disarr[disarrsize - 2];
-        if (dismax_min >= kMaxToMinDistanceRatio)
+        const double max_to_min_distance_ratio =
+            neighbor_distances[0] / neighbor_distances[neighbor_distance_count - 2];
+        if (max_to_min_distance_ratio >= kMaxToMinDistanceRatio)
         {
-            curr_direct.setZero();
+            plane_direction.setZero();
             return PlaneClassification::kNotPlane;
         }
     }
 
-    curr_direct << direction_x, direction_y, direction_z;
-    curr_direct.normalize();
+    plane_direction << direction_x, direction_y, direction_z;
+    plane_direction.normalize();
     return PlaneClassification::kPlane;
 }
 
 bool LidarProcessor::isEdgeJump(
-    const PointCloudXYZI &pl,
-    std::vector<PointFeatureInfo> &point_feature_infos,
-    std::size_t i,
-    Surround neighbor_direction)
+    const std::vector<PointFeatureInfo> &point_feature_infos,
+    const std::size_t point_index,
+    const NeighborDirection neighbor_direction)
 {
-    if (neighbor_direction == Prev)
+    if (neighbor_direction == NeighborDirection::kPrevious)
     {
-        if (point_feature_infos[i - 1].range < blind_distance_ || point_feature_infos[i - 2].range < blind_distance_)
+        if (point_feature_infos[point_index - 1].range < blind_distance_ ||
+            point_feature_infos[point_index - 2].range < blind_distance_)
         {
             return false;
         }
     }
-    else if (neighbor_direction == Next)
+    else if (neighbor_direction == NeighborDirection::kNext)
     {
-        if (point_feature_infos[i + 1].range < blind_distance_ || point_feature_infos[i + 2].range < blind_distance_)
+        if (point_feature_infos[point_index + 1].range < blind_distance_ ||
+            point_feature_infos[point_index + 2].range < blind_distance_)
         {
             return false;
         }
     }
-    const auto direction_index = static_cast<std::size_t>(neighbor_direction);
+    const std::size_t direction_index = neighborIndex(neighbor_direction);
     double first_distance =
-        point_feature_infos[i + kEdgeJumpFirstDistanceOffsets[direction_index]].dista;
+        point_feature_infos[point_index + kEdgeJumpFirstDistanceOffsets[direction_index]].neighbor_distance;
     double second_distance =
-        point_feature_infos[i + kEdgeJumpSecondDistanceOffsets[direction_index]].dista;
+        point_feature_infos[point_index + kEdgeJumpSecondDistanceOffsets[direction_index]].neighbor_distance;
 
     if (first_distance < second_distance)
     {

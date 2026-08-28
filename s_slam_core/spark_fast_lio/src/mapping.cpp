@@ -24,20 +24,6 @@ void SPARKFastLIO2::pointBodyToWorld(PointType const *const input_point,
     output_point->z = point_in_world(2);
 }
 
-void SPARKFastLIO2::pclPointBodyToWorld(PointType const *const input_point,
-                                        PointType *const output_point,
-                                        const state_ikfom &state)
-{
-    *output_point = *input_point;
-    V3D point_in_body(input_point->x, input_point->y, input_point->z);
-    V3D point_in_world(
-        state.rot * (state.offset_R_L_I * point_in_body + state.offset_T_L_I) + state.pos);
-
-    output_point->x = point_in_world(0);
-    output_point->y = point_in_world(1);
-    output_point->z = point_in_world(2);
-}
-
 void SPARKFastLIO2::pclPointBodyLidarToIMU(PointType const *const input_point,
                                            PointType *const output_point)
 {
@@ -62,8 +48,10 @@ void SPARKFastLIO2::pclPointBodyLidarToBase(PointType const *const input_point,
     output_point->z = point_in_base(2);
 }
 
-void SPARKFastLIO2::collectRemovedPoints()
+void SPARKFastLIO2::discardRemovedPointHistory()
 {
+    // acquire_removed_points() transfers the tree's deleted-point history and
+    // clears it. The points are not needed after a local-map window move.
     PointVector points_history;
     ikd_tree_.acquire_removed_points(points_history);
 }
@@ -71,7 +59,6 @@ void SPARKFastLIO2::computeMeasurementModel(
     state_ikfom &state,
     esekfom::dyn_share_datastruct<double> &ekfom_data)
 {
-    double match_start = omp_get_wtime();
     selected_points_->clear();
     selected_normals_->clear();
     selected_points_->reserve(downsampled_point_count_);
@@ -190,9 +177,6 @@ void SPARKFastLIO2::computeMeasurementModel(
     }
 
     mean_residual_ = total_residual_ / effective_feature_count_;
-    match_time_ += omp_get_wtime() - match_start;
-    double solve_start = omp_get_wtime();
-
     /*** Computation of Measuremnt Jacobian matrix H and measurents vector ***/
     ekfom_data.h_x = Eigen::MatrixXd::Zero(effective_feature_count_, 12);  // 23
     ekfom_data.h.resize(effective_feature_count_);
@@ -233,16 +217,11 @@ void SPARKFastLIO2::computeMeasurementModel(
         /*** Measuremnt: distance to the closest surface/corner ***/
         ekfom_data.h(i) = -normal_point.intensity;
     }
-    solve_time_ += omp_get_wtime() - solve_start;
 }
 
 void SPARKFastLIO2::updateLocalMapWindow()
 {
     map_boxes_to_remove_.clear();
-    removed_map_point_count_ = 0;
-    map_removal_time_        = 0.0;
-    pointBodyToWorld(xaxis_point_body_, xaxis_point_world_, latest_state_);
-
     const V3D lidar_position = kf_.get_lidar_position();
     if (!local_map_initialized_)
     {
@@ -296,13 +275,11 @@ void SPARKFastLIO2::updateLocalMapWindow()
     }
     local_map_bounds_ = new_map_bounds;
 
-    collectRemovedPoints();
-    double delete_begin = omp_get_wtime();
+    discardRemovedPointHistory();
     if (map_boxes_to_remove_.size() > 0)
     {
-        removed_map_point_count_ = ikd_tree_.Delete_Point_Boxes(map_boxes_to_remove_);
+        ikd_tree_.Delete_Point_Boxes(map_boxes_to_remove_);
     }
-    map_removal_time_ = omp_get_wtime() - delete_begin;
 }
 
 void SPARKFastLIO2::insertScanIntoMap(const state_ikfom &state)
@@ -318,7 +295,7 @@ void SPARKFastLIO2::insertScanIntoMap(const state_ikfom &state)
         pointBodyToWorld(&(feats_down_body_->points[i]), &(feats_down_world_->points[i]), state);
 
         // decide if we need to add to map
-        if (!nearest_map_points_[i].empty() && filter_initialized_)
+        if (!nearest_map_points_[i].empty() && is_lio_warmup_complete_)
         {
             const PointVector &points_near = nearest_map_points_[i];
             bool should_insert             = true;
@@ -377,12 +354,7 @@ void SPARKFastLIO2::insertScanIntoMap(const state_ikfom &state)
               point_ordering::lessXYZICurvature);
 #endif
 
-    const double insertion_start_time = omp_get_wtime();
-    inserted_point_count_ = ikd_tree_.Add_Points(points_to_insert, true);
+    ikd_tree_.Add_Points(points_to_insert, true);
     ikd_tree_.Add_Points(points_to_insert_without_downsampling, false);
-
-    inserted_point_count_ =
-        points_to_insert.size() + points_to_insert_without_downsampling.size();
-    map_insertion_time_ = omp_get_wtime() - insertion_start_time;
 }
 }  // namespace spark_fast_lio

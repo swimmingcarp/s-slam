@@ -35,14 +35,22 @@
       fov_degree: 360.0           # Fairy: 360 deg horizontal FOV
       det_range: 150.0            # Fairy max range. Tune lower if Jetson load or map quality requires it.
       extrinsic_est_enabled: false      # Fairy's built-in IMU has a fixed factory extrinsic.
-      motion_quality_gate_enabled: true
-      motion_gate_max_pre_grav_residual: 8.0
-      motion_gate_suspect_frame_step: 0.5  # [m] candidate odom step.
-      motion_gate_max_update_step: 0.15    # [m] correction from IMU prediction to LiDAR update.
-      motion_gate_max_update_step_ratio: 0.20
-      motion_gate_min_effective_ratio: 0.10
-      motion_gate_min_effective_features: 20
-      motion_gate_reject_weak_lidar: true
+      quality_gate_enabled: true
+      # [m/s^2] Frame-mean IMU acceleration after gravity compensation; checked
+      # before and after the LiDAR update.
+      max_linear_acceleration: 8.0
+      # [m] Frame-to-frame LIO pose jump above which LiDAR consistency is checked.
+      max_jump_between_two_frames: 0.5
+      # [m] LiDAR position adjustment relative to the IMU-propagated pose.
+      max_lidar_position_adjustment: 0.15
+      # LiDAR position adjustment / pose step during recovery; lower values are weak updates.
+      min_recovery_lidar_adjustment_ratio: 0.20
+      # Selected planar matches / downsampled scan points.
+      min_matched_feature_ratio: 0.10
+      # Minimum selected planar matches.
+      min_matched_features: 20
+      # Reject when the matched-feature count or ratio is below its threshold.
+      reject_weak_lidar: true
 
       # ===== IMU <-> LiDAR extrinsic (LiDAR w.r.t. IMU) =====
       # The Fairy IMU is INTERNAL: this is a FIXED factory value, NOT flight/airframe dependent.
@@ -75,7 +83,6 @@
       interval: -1
 
     verbose: false
-    runtime_pos_log_enabled: false
     point_filter_num_for_preprocessing: 1
     # Stability-first default. Raise only if Jetson cannot keep up with the LiDAR frame rate.
     point_filter_num: 1

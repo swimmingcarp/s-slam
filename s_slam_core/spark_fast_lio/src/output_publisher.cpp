@@ -234,7 +234,7 @@ void SPARKFastLIO2::publishMapScan(
 
         for (int i = 0; i < size; ++i)
         {
-            pclPointBodyToWorld(&laserCloudFullRes->points[i], &laserCloudWorld->points[i], state);
+            pointBodyToWorld(&laserCloudFullRes->points[i], &laserCloudWorld->points[i], state);
         }
 
         sensor_msgs::msg::PointCloud2 cloud_msg;
@@ -254,7 +254,7 @@ void SPARKFastLIO2::publishMapScan(
 
         for (int i = 0; i < nsize; ++i)
         {
-            pclPointBodyToWorld(&full_points_->points[i], &laserCloudWorld2->points[i], state);
+            pointBodyToWorld(&full_points_->points[i], &laserCloudWorld2->points[i], state);
         }
         if (pcd_save_interval_ > 0)
         {

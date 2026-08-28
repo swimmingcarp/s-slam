@@ -105,12 +105,9 @@ private:
         output_point[1] = point_in_world(1);
         output_point[2] = point_in_world(2);
     }
-    void pclPointBodyToWorld(PointType const *const input_point,
-                             PointType *const output_point,
-                             const state_ikfom &state);
     void pclPointBodyLidarToIMU(PointType const *const input_point, PointType *const output_point);
     void pclPointBodyLidarToBase(PointType const *const input_point, PointType *const output_point);
-    void collectRemovedPoints();
+    void discardRemovedPointHistory();
     void computeMeasurementModel(state_ikfom &state,
                                  esekfom::dyn_share_datastruct<double> &ekfom_data);
     void updateLocalMapWindow();
@@ -187,31 +184,33 @@ private:
     }
 
     // State estimation and recovery.
-    bool isMotionStopped(const V3D &acc_ref, const V3D &acc_curr, const double acc_diff_thr);
+    bool isMotionStopped(const V3D &reference_acceleration,
+                         const V3D &current_acceleration,
+                         double max_acceleration_difference);
     void processLidarAndImu(MeasureGroup &measures);
     struct PropagationCheckpoint;
     struct MotionQualityReport
     {
         double lidar_time = 0.0;
         double delta_time = 0.0;
-        double state_step = 0.0;
-        double state_speed = 0.0;
-        double correction_step = 0.0;
-        double correction_step_ratio = 1.0;
+        double position_step = 0.0;
+        double position_speed = 0.0;
+        double lidar_position_adjustment = 0.0;
+        double lidar_adjustment_ratio = 1.0;
         double velocity_norm = 0.0;
         double rotation_correction_deg = 0.0;
-        double effective_feature_ratio = 0.0;
+        double matched_feature_ratio = 0.0;
         V3D mean_acceleration = Zero3d;
-        V3D pre_gravity_residual = Zero3d;
-        V3D post_gravity_residual = Zero3d;
-        bool finite_state = false;
-        bool high_pre_gravity_residual = false;
-        bool high_post_gravity_residual = false;
-        bool weak_lidar_update = false;
-        bool weak_lidar_constraints = false;
-        bool suspicious_large_correction = false;
-        bool unsupported_recovery_step = false;
-        bool reject = false;
+        V3D predicted_linear_acceleration = Zero3d;
+        V3D corrected_linear_acceleration = Zero3d;
+        bool has_finite_state = false;
+        bool has_high_predicted_linear_acceleration = false;
+        bool has_high_corrected_linear_acceleration = false;
+        bool has_small_lidar_adjustment = false;
+        bool has_insufficient_matches = false;
+        bool has_large_frame_jump_and_lidar_adjustment = false;
+        bool has_unsupported_recovery_step = false;
+        bool should_reject = false;
     };
 
     PropagationCheckpoint propagateLidarFrame(MeasureGroup &measures);
@@ -224,7 +223,7 @@ private:
                           state_ikfom &propagated_state);
     void updateGravityAlignmentBeforeLio(MeasureGroup &measures);
     bool initializeLocalMapIfNeeded();
-    void runLioUpdate();
+    void updateFilterWithLidar();
     void updateGravityAlignmentAfterLio();
     MotionQualityReport evaluateMotionQuality(MeasureGroup &measures,
                                               const state_ikfom &propagated_state);
@@ -265,18 +264,7 @@ private:
     rclcpp::TimerBase::SharedPtr main_loop_timer_;
     rclcpp::TimerBase::SharedPtr extrinsics_retry_timer_;
 
-    // Runtime diagnostics.
-    double map_insertion_time_ = 0.0;
-    double map_search_time_    = 0.0;
-    double map_removal_time_   = 0.0;
-
-    double match_time_         = 0.0;
-    double solve_time_         = 0.0;
-
-    bool runtime_pos_log_ = false;
-    int inserted_point_count_    = 0;
-    int removed_map_point_count_ = 0;
-    bool local_map_initialized_  = false;
+    bool local_map_initialized_ = false;
     // Data-driven (frame count) gate for the periodic LIO state log; clock
     // throttling would make the formatted-frame subset timing-dependent and
     // break bit-reproducible replay.
@@ -296,7 +284,7 @@ private:
     bool imu_predicted_odometry_enabled_   = true;
     bool process_on_callback_              = false;
     bool sensor_processing_active_         = false;
-    bool motion_quality_gate_enabled_      = false;
+    bool quality_gate_enabled_             = false;
     int imu_qos_depth_                     = 1000;
     int lidar_qos_depth_                   = 10;
     rclcpp::ReliabilityPolicy lidar_qos_reliability_ = rclcpp::ReliabilityPolicy::Reliable;
@@ -315,10 +303,7 @@ private:
     std::vector<float> point_residuals_;
     float detection_range_ = 300.0f;
 
-    // Persistent paths and frame names.
-    std::string map_file_path_;
-    std::string save_dir_;
-    std::string sequence_name_;
+    // Frame names.
     std::string map_frame_;
     std::string lidar_frame_;
     std::string base_frame_;
@@ -341,12 +326,12 @@ private:
     double accelerometer_covariance_  = 0.1;
     double gyroscope_bias_covariance_ = 0.0001;
     double accelerometer_bias_covariance_ = 0.0001;
-    double motion_gate_max_pre_grav_residual_ = 3.0;
-    double motion_gate_suspect_frame_step_    = 0.5;
-    double motion_gate_max_update_step_       = 0.15;
-    double motion_gate_max_update_step_ratio_ = 0.2;
-    double motion_gate_min_effective_ratio_   = 0.25;
-    bool motion_gate_reject_weak_lidar_       = true;
+    double max_linear_acceleration_             = 3.0;
+    double max_jump_between_two_frames_         = 0.5;
+    double max_lidar_position_adjustment_       = 0.15;
+    double min_recovery_lidar_adjustment_ratio_ = 0.2;
+    double min_matched_feature_ratio_           = 0.25;
+    bool reject_weak_lidar_                     = true;
 
     // Mapping parameters and per-frame counters.
     double filter_size_map_min_   = 0.0;
@@ -357,7 +342,6 @@ private:
     double max_imu_gap_           = 0.0;
 
     int effective_feature_count_ = 0;
-    int scan_count_              = 0;
     int path_publish_counter_    = 0;
     int imu_gap_lidar_skip_count_ = 0;
 
@@ -367,9 +351,9 @@ private:
     int pcd_index_                          = 0;
     int pcd_scan_wait_count_                = 0;
     int point_filter_num_                   = 4;  // empirically, 4 showed the best performance
-    int motion_gate_min_effective_features_ = 100;
-    int motion_gate_reject_count_              = 0;
-    int motion_gate_consecutive_reject_count_ = 0;
+    int min_matched_features_              = 100;
+    int gate_reject_count_                 = 0;
+    int consecutive_gate_reject_count_     = 0;
     double mean_scan_duration_ = 0.0;
     int scan_duration_sample_count_ = 0;
     std::size_t verbose_lidar_buffer_size_ = 0;
@@ -380,10 +364,10 @@ private:
     int moving_frame_threshold_               = 10;
     int gravity_measurement_threshold_        = 10;
     std::vector<std::uint8_t> surface_point_selected_;
-    bool lidar_pushed_        = false;
-    bool is_first_lidar_scan_ = true;
-    bool filter_initialized_       = false;
-    bool time_offset_initialized_ = false;
+    bool has_pending_lidar_frame_   = false;
+    bool has_lidar_start_time_      = false;
+    bool is_lio_warmup_complete_    = false;
+    bool has_lidar_imu_time_offset_ = false;
     int num_consecutive_moving_frames_ = 0;
 
     std::deque<V3D> global_gravity_directions_;
@@ -424,12 +408,9 @@ private:
     pcl::VoxelGrid<PointType> down_size_filter_;
     KD_TREE<PointType> ikd_tree_;
 
-    // Map transforms and gravity alignment.
-    V3F xaxis_point_body_;
-    V3F xaxis_point_world_;
+    // Gravity alignment.
     V3D base_gravity_;
     V3D stationary_mean_acceleration_;
-    V3D position_last_;
     M3D gravity_alignment_rotation_;
 
     // Base-frame extrinsics.
@@ -440,16 +421,12 @@ private:
     MeasureGroup measures_;
     esekfom::esekf<state_ikfom, 12, input_ikfom> kf_;
     std::optional<esekfom::esekf<state_ikfom, 12, input_ikfom>> kf_for_preintegration_;
-    esekfom::esekf<state_ikfom, 12, input_ikfom> last_good_kf_;
-    std::optional<ImuProcessor::Snapshot> last_good_imu_processor_snapshot_;
     // Always remains in the raw EKF/map frame. Publishing applies gravity
     // alignment to a copy so matching and map insertion stay in one frame.
     state_ikfom latest_state_;
-    state_ikfom last_good_state_;
-    bool have_last_good_state_ = false;
-    bool have_last_lio_debug_state_ = false;
-    V3D last_lio_debug_pos_         = Zero3d;
-    double last_lio_debug_time_     = 0.0;
+    bool has_accepted_lio_update_   = false;
+    V3D last_accepted_lio_position_ = Zero3d;
+    double last_accepted_lio_time_  = 0.0;
 
     nav_msgs::msg::Path path_msg_;
     nav_msgs::msg::Odometry odomAftMapped_;

@@ -167,7 +167,7 @@ protected:
 
     static bool hasInFlightLidar(const SPARKFastLIO2 &node)
     {
-        return node.lidar_pushed_;
+        return node.has_pending_lidar_frame_;
     }
 
     static int imuGapLidarSkipCount(const SPARKFastLIO2 &node)
@@ -335,7 +335,7 @@ protected:
                                        const state_ikfom &state)
     {
         PointType point_in_world{};
-        node.pclPointBodyToWorld(&point_in_lidar, &point_in_world, state);
+        node.pointBodyToWorld(&point_in_lidar, &point_in_world, state);
         return point_in_world;
     }
 
@@ -663,6 +663,35 @@ TEST_F(SPARKFastLIO2Test, RejectsZeroAccelerationDuringImuInitialization)
 
     EXPECT_FALSE(imuProcessorIsInitialized(*node));
     EXPECT_TRUE(filterStateIsFinite(*node));
+}
+
+TEST_F(SPARKFastLIO2Test, ImuInitializationDefersCompletingLidarFrame)
+{
+    auto node = std::make_shared<SPARKFastLIO2>();
+
+    MeasureGroup measures;
+    measures.lidar_beg_time = 0.0;
+    measures.lidar_end_time = 2.1;
+    measures.lidar          = std::make_shared<PointCloudXYZI>();
+    measures.lidar->resize(1);
+    const PointCloudXYZI::Ptr initialization_cloud   = measures.lidar;
+    const PointCloudXYZI::Ptr previous_working_cloud = fullPoints(*node);
+
+    for (int sample_index = 0; sample_index <= kMinImuInitSamples; ++sample_index)
+    {
+        auto imu = std::make_shared<sensor_msgs::msg::Imu>();
+        const int64_t nanoseconds = static_cast<int64_t>(sample_index) * 10000000LL;
+        imu->header.stamp.sec     = static_cast<int32_t>(nanoseconds / 1000000000LL);
+        imu->header.stamp.nanosec = static_cast<uint32_t>(nanoseconds % 1000000000LL);
+        imu->linear_acceleration.z = G_m_s2;
+        measures.imu.push_back(imu);
+    }
+
+    undistortQueuedCloud(*node, measures);
+
+    EXPECT_TRUE(imuProcessorIsInitialized(*node));
+    EXPECT_EQ(measures.lidar, initialization_cloud);
+    EXPECT_EQ(fullPoints(*node), previous_working_cloud);
 }
 
 TEST_F(SPARKFastLIO2Test, ImuUndistortionTakesQueuedCloudOwnership)

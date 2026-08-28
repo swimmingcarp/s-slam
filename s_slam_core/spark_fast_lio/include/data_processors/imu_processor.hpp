@@ -49,12 +49,14 @@ public:
         double init_begin_time = -1.0;
         double init_end_time = -1.0;
         int init_sample_count = 1;
-        bool is_first_frame = true;
-        bool needs_initialization = true;
+        bool is_initialization_started = false;
+        bool is_initialized = false;
     };
 
     ImuProcessor();
     ~ImuProcessor() = default;
+
+    static bool hasFiniteMeasurement(const sensor_msgs::msg::Imu &measurement);
 
     void reset();
     Snapshot getSnapshot() const;
@@ -97,14 +99,13 @@ public:
     // reset would otherwise be misjudged as a cold start.
     bool isInitialized() const
     {
-        return !needs_initialization_;
+        return is_initialized_;
     }
 
 private:
-    static bool hasValidAccelerationReference(const V3D &acceleration);
-    bool initializeImu(const MeasureGroup &measures,
-                       esekfom::esekf<state_ikfom, 12, input_ikfom> &filter,
-                       int &init_sample_count);
+    static bool hasUsableMeanAcceleration(const V3D &acceleration);
+    void initializeImu(const MeasureGroup &measures,
+                       esekfom::esekf<state_ikfom, 12, input_ikfom> &filter);
     void undistortPointCloud(const MeasureGroup &measures,
                              esekfom::esekf<state_ikfom, 12, input_ikfom> &filter,
                              PointCloudXYZI &point_cloud);
@@ -130,8 +131,8 @@ private:
     double init_begin_time_;
     double init_end_time_;
     int init_sample_count_       = 1;
-    bool is_first_frame_         = true;
-    bool needs_initialization_   = true;
+    bool is_initialization_started_ = false;
+    bool is_initialized_         = false;
     bool replay_mode_            = false;
     // Warm-start prior; deliberately NOT cleared by reset() so it survives the
     // internal reset() that initializeImu() performs on the first post-reset frame.

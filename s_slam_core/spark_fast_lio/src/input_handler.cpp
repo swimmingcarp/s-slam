@@ -7,18 +7,6 @@
 
 namespace spark_fast_lio
 {
-namespace
-{
-bool hasFiniteImuMeasurement(const sensor_msgs::msg::Imu &measurement)
-{
-    const auto &acceleration     = measurement.linear_acceleration;
-    const auto &angular_velocity = measurement.angular_velocity;
-    return std::isfinite(acceleration.x) && std::isfinite(acceleration.y) &&
-           std::isfinite(acceleration.z) && std::isfinite(angular_velocity.x) &&
-           std::isfinite(angular_velocity.y) && std::isfinite(angular_velocity.z);
-}
-}  // namespace
-
 void SPARKFastLIO2::standardLiDARCallback(const sensor_msgs::msg::PointCloud2 &msg)
 {
     rclcpp::Time msg_time = msg.header.stamp;
@@ -38,7 +26,6 @@ void SPARKFastLIO2::standardLiDARCallback(const sensor_msgs::msg::PointCloud2 &m
 
     {
         std::lock_guard<std::mutex> lk(buffer_mutex_);
-        ++scan_count_;
         if (has_last_lidar_timestamp_ && msg_time < last_lidar_timestamp_)
         {
             resetEstimatorState("LiDAR timestamp moved backwards", ResetMode::kWarmRecovery);
@@ -68,8 +55,6 @@ void SPARKFastLIO2::livoxLiDARCallback(const livox_ros_driver2::msg::CustomMsg::
 
     {
         std::lock_guard<std::mutex> lk(buffer_mutex_);
-        ++scan_count_;
-
         if (has_last_lidar_timestamp_ && msg_time < last_lidar_timestamp_)
         {
             resetEstimatorState("Livox timestamp moved backwards", ResetMode::kWarmRecovery);
@@ -86,9 +71,9 @@ void SPARKFastLIO2::livoxLiDARCallback(const livox_ros_driver2::msg::CustomMsg::
                                    << ", lidar header time: " << last_lidar_timestamp_.nanoseconds());
         }
 
-        if (time_sync_enabled_ && !time_offset_initialized_ && diff_s > 1.0 && !imu_buffer_.empty())
+        if (time_sync_enabled_ && !has_lidar_imu_time_offset_ && diff_s > 1.0 && !imu_buffer_.empty())
         {
-            time_offset_initialized_           = true;
+            has_lidar_imu_time_offset_         = true;
             lidar_imu_time_offset_ =
                 last_lidar_timestamp_.nanoseconds() + static_cast<int64_t>(1.0e8) -
                 last_imu_timestamp_.nanoseconds();
@@ -109,7 +94,7 @@ void SPARKFastLIO2::livoxLiDARCallback(const livox_ros_driver2::msg::CustomMsg::
 
 void SPARKFastLIO2::imuCallback(const sensor_msgs::msg::Imu::ConstSharedPtr msg)
 {
-    if (!hasFiniteImuMeasurement(*msg))
+    if (!ImuProcessor::hasFiniteMeasurement(*msg))
     {
         RCLCPP_WARN_THROTTLE(this->get_logger(),
                              *this->get_clock(),
@@ -238,12 +223,12 @@ bool SPARKFastLIO2::syncPackages(MeasureGroup &measurements, bool verbose)
         }
     }
 
-    if ((!lidar_pushed_ && lidar_buffer_.empty()) || imu_buffer_.empty())
+    if ((!has_pending_lidar_frame_ && lidar_buffer_.empty()) || imu_buffer_.empty())
     {
         return false;
     }
 
-    if (!lidar_pushed_)
+    if (!has_pending_lidar_frame_)
     {
         const BufferedLidarFrame &buffered_lidar = lidar_buffer_.front();
         measurements.lidar                       = buffered_lidar.cloud;
@@ -304,7 +289,7 @@ bool SPARKFastLIO2::syncPackages(MeasureGroup &measurements, bool verbose)
                 (scan_duration - mean_scan_duration_) / static_cast<double>(scan_duration_sample_count_);
         }
         measurements.lidar_end_time = lidar_end_time_;
-        lidar_pushed_              = true;
+        has_pending_lidar_frame_   = true;
     }
 
     if (last_imu_timestamp_.seconds() < lidar_end_time_)
@@ -353,7 +338,7 @@ bool SPARKFastLIO2::syncPackages(MeasureGroup &measurements, bool verbose)
                              measurements.lidar_beg_time,
                              lidar_end_time_,
                              next_imu_time);
-        lidar_pushed_ = false;
+        has_pending_lidar_frame_ = false;
         return false;
     }
 
@@ -385,11 +370,11 @@ bool SPARKFastLIO2::syncPackages(MeasureGroup &measurements, bool verbose)
                              largest_imu_gap,
                              max_imu_gap_);
         imu_processor_->skipLidarFrame(measurements);
-        lidar_pushed_ = false;
+        has_pending_lidar_frame_ = false;
         return false;
     }
 
-    lidar_pushed_ = false;
+    has_pending_lidar_frame_ = false;
 
     return true;
 }

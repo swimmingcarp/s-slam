@@ -17,43 +17,23 @@
 
 #include "common/so3_math.h"
 
-#define USE_IKFOM
-
-#define PI_M (3.14159265358)
 #define G_m_s2 (9.81)    // Gravaty const in GuangDong/China
-#define DIM_STATE (18)   // Dimension of states (Let Dim(SO(3)) = 3)
-#define DIM_PROC_N (12)  // Dimension of process noise (Let Dim(SO(3)) = 3)
-#define CUBE_LEN (6.0)
-#define LIDAR_SP_LEN (2)
-#define INIT_COV (1)
 #define NUM_MATCH_POINTS (5)
-#define MAX_MEAS_DIM (10000)
 
 #define VEC_FROM_ARRAY(v) v[0], v[1], v[2]
 #define MAT_FROM_ARRAY(v) v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8]
-#define CONSTRAIN(v, min, max) ((v > min) ? ((v < max) ? v : max) : min)
-#define ARRAY_FROM_EIGEN(mat) mat.data(), mat.data() + mat.rows() * mat.cols()
-#define STD_VEC_FROM_EIGEN(mat) \
-    std::vector<decltype(mat)::Scalar>(mat.data(), mat.data() + mat.rows() * mat.cols())
-#define DEBUG_FILE_DIR(name) (std::string(std::string(ROOT_DIR) + "Log/" + name))
 
 using PointType      = pcl::PointXYZINormal;
 using PointCloudXYZI = pcl::PointCloud<PointType>;
 using PointVector    = std::vector<PointType, Eigen::aligned_allocator<PointType>>;
 using V3D            = Eigen::Vector3d;
 using M3D            = Eigen::Matrix3d;
-using V3F            = Eigen::Vector3f;
-using M3F            = Eigen::Matrix3f;
 
 #define MD(a, b) Eigen::Matrix<double, (a), (b)>
-#define VD(a) Eigen::Matrix<double, (a), 1>
-#define MF(a, b) Eigen::Matrix<float, (a), (b)>
 #define VF(a) Eigen::Matrix<float, (a), 1>
 
 inline M3D Eye3d(M3D::Identity());
-inline M3F Eye3f(M3F::Identity());
 inline V3D Zero3d(0, 0, 0);
-inline V3F Zero3f(0, 0, 0);
 
 // Lidar data and imu dates for the curent process
 struct MeasureGroup
@@ -94,108 +74,6 @@ struct Pose6D
     double acc[3], gyr[3], vel[3], pos[3], rot[9];
 };
 
-struct StatesGroup
-{
-    StatesGroup()
-    {
-        this->rot_end               = M3D::Identity();
-        this->pos_end               = Zero3d;
-        this->vel_end               = Zero3d;
-        this->bias_g                = Zero3d;
-        this->bias_a                = Zero3d;
-        this->gravity               = Zero3d;
-        this->cov                   = MD(DIM_STATE, DIM_STATE)::Identity() * INIT_COV;
-        this->cov.block<9, 9>(9, 9) = MD(9, 9)::Identity() * 0.00001;
-    }
-
-    StatesGroup(const StatesGroup &b)
-    {
-        this->rot_end = b.rot_end;
-        this->pos_end = b.pos_end;
-        this->vel_end = b.vel_end;
-        this->bias_g  = b.bias_g;
-        this->bias_a  = b.bias_a;
-        this->gravity = b.gravity;
-        this->cov     = b.cov;
-    }
-
-    StatesGroup &operator=(const StatesGroup &b)
-    {
-        this->rot_end = b.rot_end;
-        this->pos_end = b.pos_end;
-        this->vel_end = b.vel_end;
-        this->bias_g  = b.bias_g;
-        this->bias_a  = b.bias_a;
-        this->gravity = b.gravity;
-        this->cov     = b.cov;
-        return *this;
-    }
-
-    StatesGroup operator+(const Eigen::Matrix<double, DIM_STATE, 1> &state_add)
-    {
-        StatesGroup a;
-        a.rot_end = this->rot_end * Exp(state_add(0, 0), state_add(1, 0), state_add(2, 0));
-        a.pos_end = this->pos_end + state_add.block<3, 1>(3, 0);
-        a.vel_end = this->vel_end + state_add.block<3, 1>(6, 0);
-        a.bias_g  = this->bias_g + state_add.block<3, 1>(9, 0);
-        a.bias_a  = this->bias_a + state_add.block<3, 1>(12, 0);
-        a.gravity = this->gravity + state_add.block<3, 1>(15, 0);
-        a.cov     = this->cov;
-        return a;
-    }
-
-    StatesGroup &operator+=(const Eigen::Matrix<double, DIM_STATE, 1> &state_add)
-    {
-        this->rot_end = this->rot_end * Exp(state_add(0, 0), state_add(1, 0), state_add(2, 0));
-        this->pos_end += state_add.block<3, 1>(3, 0);
-        this->vel_end += state_add.block<3, 1>(6, 0);
-        this->bias_g += state_add.block<3, 1>(9, 0);
-        this->bias_a += state_add.block<3, 1>(12, 0);
-        this->gravity += state_add.block<3, 1>(15, 0);
-        return *this;
-    }
-
-    Eigen::Matrix<double, DIM_STATE, 1> operator-(const StatesGroup &b)
-    {
-        Eigen::Matrix<double, DIM_STATE, 1> a;
-        M3D rotd(b.rot_end.transpose() * this->rot_end);
-        a.block<3, 1>(0, 0)  = Log(rotd);
-        a.block<3, 1>(3, 0)  = this->pos_end - b.pos_end;
-        a.block<3, 1>(6, 0)  = this->vel_end - b.vel_end;
-        a.block<3, 1>(9, 0)  = this->bias_g - b.bias_g;
-        a.block<3, 1>(12, 0) = this->bias_a - b.bias_a;
-        a.block<3, 1>(15, 0) = this->gravity - b.gravity;
-        return a;
-    }
-
-    void resetpose()
-    {
-        this->rot_end = M3D::Identity();
-        this->pos_end = Zero3d;
-        this->vel_end = Zero3d;
-    }
-
-    M3D rot_end;  // the estimated attitude (rotation matrix) at the end lidar point
-    V3D pos_end;  // the estimated position at the end lidar point (world frame)
-    V3D vel_end;  // the estimated velocity at the end lidar point (world frame)
-    V3D bias_g;   // gyroscope bias
-    V3D bias_a;   // accelerator bias
-    V3D gravity;  // the estimated gravity acceleration
-    Eigen::Matrix<double, DIM_STATE, DIM_STATE> cov;  // states covariance
-};
-
-template <typename T>
-T rad2deg(T radians)
-{
-    return radians * 180.0 / PI_M;
-}
-
-template <typename T>
-T deg2rad(T degrees)
-{
-    return degrees * PI_M / 180.0;
-}
-
 template <typename T>
 auto set_pose6d(const double t,
                 const Eigen::Matrix<T, 3, 1> &a,
@@ -218,56 +96,6 @@ auto set_pose6d(const double t,
         }
     }
     return rot_kp;
-}
-
-/* comment
-plane equation: Ax + By + Cz + D = 0
-convert to: A/D*x + B/D*y + C/D*z = -1
-solve: A0*x0 = b0
-where A0_i = [x_i, y_i, z_i], x0 = [A/D, B/D, C/D]^T, b0 = [-1, ..., -1]^T
-normvec:  normalized x0
-*/
-template <typename T>
-bool esti_normvector(Eigen::Matrix<T, 3, 1> &normvec,
-                     const PointVector &point,
-                     const T &threshold,
-                     const int &point_num)
-{
-    if (point_num <= 0 || point.size() < static_cast<std::size_t>(point_num))
-    {
-        return false;
-    }
-
-    Eigen::MatrixXf A(point_num, 3);
-    Eigen::MatrixXf b(point_num, 1);
-    b.setOnes();
-    b *= -1.0f;
-
-    for (int j = 0; j < point_num; ++j)
-    {
-        A(j, 0) = point[j].x;
-        A(j, 1) = point[j].y;
-        A(j, 2) = point[j].z;
-    }
-    normvec = A.colPivHouseholderQr().solve(b);
-
-    for (int j = 0; j < point_num; ++j)
-    {
-        if (fabs(normvec(0) * point[j].x + normvec(1) * point[j].y + normvec(2) * point[j].z +
-                 1.0f) > threshold)
-        {
-            return false;
-        }
-    }
-
-    const T norm = normvec.norm();
-    if (!normvec.allFinite() || !std::isfinite(norm) ||
-        norm <= std::numeric_limits<T>::epsilon())
-    {
-        return false;
-    }
-    normvec /= norm;
-    return true;
 }
 
 inline float calc_dist(PointType p1, PointType p2)

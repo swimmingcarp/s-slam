@@ -45,7 +45,7 @@
       fov_degree: 360.0
       det_range: 80.0
       extrinsic_est_enabled: false
-      motion_quality_gate_enabled: false
+      quality_gate_enabled: false
 
       # Oxford Spires configs/sensor.yaml: T_cam_lidar and T_cam_imu are both
       # transforms into the front camera frame. FAST-LIO uses LiDAR w.r.t. IMU:
