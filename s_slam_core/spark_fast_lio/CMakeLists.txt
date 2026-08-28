@@ -197,6 +197,21 @@ if(BUILD_TESTING)
       geometry_msgs
       tf2_ros)
   endif()
+
+  ament_add_gtest(velodyne_adapter_test test/velodyne_adapter_test.cpp)
+  if(TARGET velodyne_adapter_test)
+    target_include_directories(velodyne_adapter_test PRIVATE
+      include
+      ${THIRD_PARTY_DIR}/ikd-Tree
+      ${THIRD_PARTY_DIR}/IKFoM_toolkit)
+    target_link_libraries(velodyne_adapter_test spark_lio_component ${PCL_LIBRARIES})
+    ament_target_dependencies(velodyne_adapter_test
+      rclcpp
+      sensor_msgs
+      nav_msgs
+      geometry_msgs
+      tf2_ros)
+  endif()
 endif()
 
 # Generate package info

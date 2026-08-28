@@ -1,6 +1,8 @@
 #include "adapters/velodyne_adapter.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
 #include <vector>
 
 #include <pcl_conversions/pcl_conversions.h>
@@ -26,7 +28,35 @@ bool VelodyneAdapter::convert(const sensor_msgs::msg::PointCloud2 &msg,
         return false;
     }
 
-    has_offset_time = raw_points.points.back().time > 0;
+    float minimum_time = std::numeric_limits<float>::max();
+    float maximum_time = std::numeric_limits<float>::lowest();
+    for (const auto &point : raw_points.points)
+    {
+        if (std::isfinite(point.time))
+        {
+            minimum_time = std::min(minimum_time, point.time);
+            maximum_time = std::max(maximum_time, point.time);
+        }
+    }
+
+    has_offset_time = minimum_time <= maximum_time &&
+                      maximum_time - minimum_time > std::numeric_limits<float>::epsilon();
+    const float time_offset = has_offset_time && minimum_time < 0.0f ? -minimum_time : 0.0f;
+    if (has_offset_time)
+    {
+        constexpr double kMillisecondsToSeconds = 1.0e-3;
+        const double header_time = static_cast<double>(msg.header.stamp.sec) +
+                                   static_cast<double>(msg.header.stamp.nanosec) * 1.0e-9;
+        const double point_time_scale =
+            static_cast<double>(time_unit_scale) * kMillisecondsToSeconds;
+
+        // The standard Velodyne driver may use the final packet as the cloud header time.
+        // Negative point offsets then identify samples acquired before that header. Normalize
+        // the point offsets and the absolute scan window to the same scan-start convention.
+        scan.start_time = header_time + std::min(static_cast<double>(minimum_time), 0.0) *
+                                            point_time_scale;
+        scan.end_time   = header_time + static_cast<double>(maximum_time) * point_time_scale;
+    }
     const double omega_l = 0.361 * scan_rate;
     std::vector<bool> is_first(scan_lines, true);
     std::vector<double> yaw_fp(scan_lines, 0.0);
@@ -43,7 +73,7 @@ bool VelodyneAdapter::convert(const sensor_msgs::msg::PointCloud2 &msg,
         }
 
         InternalPoint dst;
-        fillPoint(src, time_unit_scale, dst.point);
+        fillPoint(src, time_unit_scale, time_offset, dst.point);
 
         if (!has_offset_time)
         {
@@ -83,9 +113,10 @@ bool VelodyneAdapter::convert(const sensor_msgs::msg::PointCloud2 &msg,
 
 void VelodyneAdapter::fillPoint(const velodyne_ros::Point &src,
                                 const float time_unit_scale,
+                                const float time_offset,
                                 InternalPointType &dst) const
 {
     assignXYZI(src, dst);
-    dst.curvature = src.time * time_unit_scale;
+    dst.curvature = (src.time + time_offset) * time_unit_scale;
 }
 }  // namespace sensor_adapter

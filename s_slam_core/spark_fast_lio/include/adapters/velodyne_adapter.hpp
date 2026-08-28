@@ -39,6 +39,9 @@ public:
                  InternalScan &scan) const;
 
 private:
-    void fillPoint(const velodyne_ros::Point &src, float time_unit_scale, InternalPointType &dst) const;
+    void fillPoint(const velodyne_ros::Point &src,
+                   float time_unit_scale,
+                   float time_offset,
+                   InternalPointType &dst) const;
 };
 }  // namespace sensor_adapter

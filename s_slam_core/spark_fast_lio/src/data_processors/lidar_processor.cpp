@@ -461,6 +461,8 @@ void LidarProcessor::handleVelodynePointCloud(const sensor_msgs::msg::PointCloud
     {
         return;
     }
+    scan_start_time_ = scan.start_time;
+    scan_end_time_   = scan.end_time;
 
     const auto plsize = scan.points.size();
     surface_cloud_.reserve(plsize);
