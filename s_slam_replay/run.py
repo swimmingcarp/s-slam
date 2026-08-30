@@ -801,6 +801,7 @@ def play_merged_bags(args: argparse.Namespace) -> int:
         args.lidar_topic: lidar_publisher,
         args.imu_topic: imu_publisher,
     }
+    published_message_counts = {topic: 0 for topic in publishers}
     resume_requested = False
 
     def request_resume(_request: Resume.Request, response: Resume.Response) -> Resume.Response:
@@ -863,13 +864,18 @@ def play_merged_bags(args: argparse.Namespace) -> int:
                     queued_messages
                 )
                 publishers[topic].publish(deserialize_message(serialized, message_types[topic]))
+                published_message_counts[topic] += 1
                 enqueue_next(reader_index)
 
             if not queued_messages:
                 publish_clock(simulated_timestamp_ns)
                 for publisher in publishers.values():
                     publisher.wait_for_all_acked(Duration(seconds=10.0))
-                node.get_logger().info("Deterministic merged playback complete")
+                node.get_logger().info(
+                    "Deterministic merged playback complete: "
+                    f"lidar={published_message_counts[args.lidar_topic]}, "
+                    f"imu={published_message_counts[args.imu_topic]}"
+                )
                 return 0
 
             next_message_time = (

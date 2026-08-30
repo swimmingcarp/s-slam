@@ -316,18 +316,23 @@ bool SPARKFastLIO2::syncPackages(MeasureGroup &measurements, bool verbose)
         {
             lidar_end_time_ = msg_end_time;
             const double scan_duration = lidar_end_time_ - measurements.lidar_beg_time;
-            const double expected_scan_time_ms =
+            const double configured_scan_period_ms =
                 1000.0 / static_cast<double>(lidar_processor_->scanRateHz());
             const double scan_duration_ms = scan_duration * 1000.0;
-            if (scan_duration_ms < 0.8 * expected_scan_time_ms ||
-                scan_duration_ms > 1.2 * expected_scan_time_ms)
+            // A scan's point timestamp span is its acquisition time, not its
+            // publication period. Sensors may complete an acquisition well
+            // before the next configured scan period, so only a span that
+            // crosses into the next scan is invalid here.
+            if (scan_duration_ms > 1.2 * configured_scan_period_ms)
             {
-                RCLCPP_WARN(
+                RCLCPP_WARN_THROTTLE(
                     this->get_logger(),
-                    "LiDAR scan duration (%.2f ms) should be close to %.2f ms. Please check "
-                    "the point timestamp field from your sensor.",
+                    *this->get_clock(),
+                    1000,
+                    "LiDAR point timestamp span (%.2f ms) exceeds the configured scan period "
+                    "(%.2f ms). Please check the point timestamp field from your sensor.",
                     scan_duration_ms,
-                    expected_scan_time_ms);
+                    configured_scan_period_ms);
             }
             ++scan_duration_sample_count_;
             mean_scan_duration_ +=
