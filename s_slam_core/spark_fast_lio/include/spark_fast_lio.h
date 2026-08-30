@@ -221,7 +221,7 @@ private:
         bool has_high_corrected_linear_acceleration = false;
         bool has_small_lidar_adjustment = false;
         bool has_insufficient_matches = false;
-        bool has_large_frame_jump_and_lidar_adjustment = false;
+        bool has_excessive_frame_speed_and_lidar_adjustment = false;
         bool has_unsupported_recovery_step = false;
         bool should_reject = false;
     };
@@ -238,6 +238,7 @@ private:
     bool initializeLocalMapIfNeeded();
     void updateFilterWithLidar();
     void updateGravityAlignmentAfterLio();
+    bool frameSpeedExceedsLimit(const MotionQualityReport &quality) const;
     MotionQualityReport evaluateMotionQuality(MeasureGroup &measures,
                                               const state_ikfom &propagated_state);
     void rejectMotionFrame(const MeasureGroup &measures,
@@ -246,9 +247,9 @@ private:
     void commitOdometryUpdate(const MeasureGroup &measures,
                               const state_ikfom &propagated_state,
                               const MotionQualityReport &quality);
-    void logLargeStateJump(const MeasureGroup &measures,
-                           const state_ikfom &propagated_state,
-                           const MotionQualityReport &quality);
+    void logExcessiveFrameSpeed(const MeasureGroup &measures,
+                                const state_ikfom &propagated_state,
+                                const MotionQualityReport &quality);
 
     // ROS interfaces and lifecycle.
     std::mutex buffer_mutex_;
@@ -341,7 +342,7 @@ private:
     double gyroscope_bias_covariance_ = 0.0001;
     double accelerometer_bias_covariance_ = 0.0001;
     double max_linear_acceleration_             = 3.0;
-    double max_jump_between_two_frames_         = 0.5;
+    double max_linear_speed_                    = 12.4;
     double max_lidar_position_adjustment_       = 0.15;
     double min_recovery_lidar_adjustment_ratio_ = 0.2;
     double min_matched_feature_ratio_           = 0.25;

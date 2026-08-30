@@ -428,9 +428,10 @@ SPARKFastLIO2::MotionQualityReport SPARKFastLIO2::evaluateMotionQuality(
         quality.predicted_linear_acceleration.norm() > max_linear_acceleration_;
     quality.has_high_corrected_linear_acceleration =
         quality.corrected_linear_acceleration.norm() > max_linear_acceleration_;
-    quality.has_large_frame_jump_and_lidar_adjustment =
-        has_accepted_lio_update_ && quality.delta_time > 0.0 &&
-        quality.position_step > max_jump_between_two_frames_ &&
+    const bool frame_speed_exceeds_limit =
+        has_accepted_lio_update_ && frameSpeedExceedsLimit(quality);
+    quality.has_excessive_frame_speed_and_lidar_adjustment =
+        frame_speed_exceeds_limit &&
         quality.lidar_position_adjustment > max_lidar_position_adjustment_;
     quality.has_small_lidar_adjustment =
         quality.lidar_adjustment_ratio < min_recovery_lidar_adjustment_ratio_;
@@ -438,9 +439,8 @@ SPARKFastLIO2::MotionQualityReport SPARKFastLIO2::evaluateMotionQuality(
         effective_feature_count_ < min_matched_features_ ||
         quality.matched_feature_ratio < min_matched_feature_ratio_;
     quality.has_unsupported_recovery_step =
-        has_accepted_lio_update_ && quality.delta_time > 0.0 &&
+        frame_speed_exceeds_limit &&
         consecutive_gate_reject_count_ > 0 &&
-        quality.position_step > max_jump_between_two_frames_ &&
         quality.lidar_position_adjustment <= max_lidar_position_adjustment_ &&
         (quality.has_small_lidar_adjustment ||
          (reject_weak_lidar_ && quality.has_insufficient_matches) ||
@@ -452,9 +452,14 @@ SPARKFastLIO2::MotionQualityReport SPARKFastLIO2::evaluateMotionQuality(
          (reject_weak_lidar_ && quality.has_insufficient_matches) ||
          quality.has_high_predicted_linear_acceleration ||
          quality.has_high_corrected_linear_acceleration ||
-         quality.has_large_frame_jump_and_lidar_adjustment ||
+         quality.has_excessive_frame_speed_and_lidar_adjustment ||
          quality.has_unsupported_recovery_step);
     return quality;
+}
+
+bool SPARKFastLIO2::frameSpeedExceedsLimit(const MotionQualityReport &quality) const
+{
+    return quality.delta_time > 0.0 && quality.position_speed > max_linear_speed_;
 }
 
 void SPARKFastLIO2::rejectMotionFrame(const MeasureGroup &measures,
@@ -497,7 +502,7 @@ void SPARKFastLIO2::rejectMotionFrame(const MeasureGroup &measures,
                 "feats_down=%d matched=%d matched_ratio=%.3f imu=%zu "
                 "scan_dt=%.3f ms finite_state=%d insufficient_matches=%d "
                 "high_predicted_linear_acc=%d high_corrected_linear_acc=%d "
-                "small_lidar_adjustment=%d large_frame_jump_and_lidar_adjustment=%d "
+                "small_lidar_adjustment=%d excessive_frame_speed_and_lidar_adjustment=%d "
                 "unsupported_recovery=%d restored_propagation=1 published_propagation=1",
                 gate_reject_count_,
                 consecutive_gate_reject_count_,
@@ -519,17 +524,17 @@ void SPARKFastLIO2::rejectMotionFrame(const MeasureGroup &measures,
                 quality.has_high_predicted_linear_acceleration ? 1 : 0,
                 quality.has_high_corrected_linear_acceleration ? 1 : 0,
                 quality.has_small_lidar_adjustment ? 1 : 0,
-                quality.has_large_frame_jump_and_lidar_adjustment ? 1 : 0,
+                quality.has_excessive_frame_speed_and_lidar_adjustment ? 1 : 0,
                 quality.has_unsupported_recovery_step ? 1 : 0);
     publishPropagatedFrame();
 }
 
-void SPARKFastLIO2::logLargeStateJump(const MeasureGroup &measures,
-                                      const state_ikfom &propagated_state,
-                                      const MotionQualityReport &quality)
+void SPARKFastLIO2::logExcessiveFrameSpeed(const MeasureGroup &measures,
+                                           const state_ikfom &propagated_state,
+                                           const MotionQualityReport &quality)
 {
-    if (!has_accepted_lio_update_ || quality.delta_time <= 0.0 ||
-        quality.position_step <= 0.5)
+    if (!quality_gate_enabled_ || !has_accepted_lio_update_ ||
+        !frameSpeedExceedsLimit(quality))
     {
         return;
     }
@@ -547,7 +552,8 @@ void SPARKFastLIO2::logLargeStateJump(const MeasureGroup &measures,
     RCLCPP_WARN_THROTTLE(this->get_logger(),
                          *this->get_clock(),
                          1000,
-                         "Large LIO state jump: dt=%.3f s step=%.3f m speed=%.3f m/s "
+                         "LIO frame speed exceeds configured limit: dt=%.3f s step=%.3f m "
+                         "speed=%.3f m/s limit=%.3f m/s "
                          "pre_pos=[%.3f, %.3f, %.3f] pre_vel=[%.3f, %.3f, %.3f] "
                          "post_pos=[%.3f, %.3f, %.3f] post_vel=[%.3f, %.3f, %.3f] "
                          "lidar_position_adjustment=%.3f m rot_update=%.3f deg res_mean=%.5f "
@@ -561,6 +567,7 @@ void SPARKFastLIO2::logLargeStateJump(const MeasureGroup &measures,
                          quality.delta_time,
                          quality.position_step,
                          quality.position_speed,
+                         max_linear_speed_,
                          propagated_state.pos[0],
                          propagated_state.pos[1],
                          propagated_state.pos[2],
@@ -609,7 +616,7 @@ void SPARKFastLIO2::commitOdometryUpdate(const MeasureGroup &measures,
         resetImuPrediction(*measures.imu.back(), measures.lidar_end_time);
     }
     has_accepted_lio_update_              = true;
-    logLargeStateJump(measures, propagated_state, quality);
+    logExcessiveFrameSpeed(measures, propagated_state, quality);
 
     last_accepted_lio_position_ = latest_state_.pos;
     last_accepted_lio_time_     = quality.lidar_time;

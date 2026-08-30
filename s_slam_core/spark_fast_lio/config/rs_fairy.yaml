@@ -39,8 +39,10 @@
       # [m/s^2] Frame-mean IMU acceleration after gravity compensation; checked
       # before and after the LiDAR update.
       max_linear_acceleration: 8.0
-      # [m] Frame-to-frame LIO pose jump above which LiDAR consistency is checked.
-      max_jump_between_two_frames: 0.5
+      # [m/s] Maximum physical 3D vehicle speed. PX4 defaults allow 12 m/s
+      # horizontally and 3 m/s upward, whose combined magnitude is 12.4 m/s.
+      # Set this from the flight controller's actual velocity limits.
+      max_linear_speed: 12.4
       # [m] LiDAR position adjustment relative to the IMU-propagated pose.
       max_lidar_position_adjustment: 0.15
       # LiDAR position adjustment / pose step during recovery; lower values are weak updates.

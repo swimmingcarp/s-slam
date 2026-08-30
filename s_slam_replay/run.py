@@ -56,6 +56,7 @@ DEFAULT_REPLAY_CLOCK_HZ = 1000.0
 RESOURCE_SAMPLE_INTERVAL_S = 0.5
 DEFAULT_RTE_DELTA_S = 5.0
 DEFAULT_PROGRESS_INTERVAL_S = 10.0
+DEFAULT_MAX_LINEAR_SPEED = 12.4
 DEFAULT_REPLAY_FRAMES = {
     "map_frame": "odom",
     "base_frame": "base_link",
@@ -521,7 +522,9 @@ def parse_frontend_log(log_path: Path) -> dict[str, int]:
     text = log_path.read_text(encoding="utf-8", errors="ignore") if log_path.exists() else ""
     return {
         "motion_gate_rejections": count_pattern(text, r"Motion quality gate rejected"),
-        "large_lio_jumps": count_pattern(text, r"Large LIO state jump"),
+        "excessive_lio_frame_speeds": count_pattern(
+            text, r"LIO frame speed exceeds configured limit"
+        ),
         "no_effective_points": count_pattern(text, r"No Effective Points"),
         "no_point_skips": count_pattern(text, r"No point, skip this scan"),
         "imu_init_rejections": count_pattern(text, r"IMU initialization rejected"),
@@ -623,6 +626,31 @@ def resolve_replay_frames(args: argparse.Namespace, config_path: Path | None) ->
             raise RuntimeError(f"{config_path}: {config_key} must be a non-empty string")
         frames[name] = config_value
     return frames
+
+
+def resolve_max_linear_speed(config_path: Path | None) -> float | None:
+    if config_path is None:
+        # spark_fast_lio_replay.launch.yaml loads rs_fairy.yaml by default.
+        return DEFAULT_MAX_LINEAR_SPEED
+
+    parameters = ros_parameters_from_config(config_path)
+    if not nested_config_value(parameters, "mapping.quality_gate_enabled"):
+        return None
+
+    value = nested_config_value(parameters, "mapping.max_linear_speed")
+    if value is None:
+        return DEFAULT_MAX_LINEAR_SPEED
+    try:
+        max_linear_speed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"{config_path}: mapping.max_linear_speed must be a positive finite number"
+        ) from exc
+    if not math.isfinite(max_linear_speed) or max_linear_speed <= 0.0:
+        raise RuntimeError(
+            f"{config_path}: mapping.max_linear_speed must be a positive finite number"
+        )
+    return max_linear_speed
 
 
 def normalize_xyz_q_xyzw_transform(value: Any, *, source: str) -> tuple[float, float, float, float, float, float, float]:
@@ -904,24 +932,25 @@ def analyze_odom_via_sourced_python(
     prefix: str,
     odom_dir: Path,
     topic: str,
-    large_step_threshold: float,
+    max_linear_speed: float | None,
     frozen_eps: float,
 ) -> dict[str, Any]:
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "__analyze_odom",
+        "--bag",
+        str(odom_dir),
+        "--topic",
+        topic,
+        "--frozen-eps",
+        str(frozen_eps),
+    ]
+    if max_linear_speed is not None:
+        command.extend(["--max-linear-speed", str(max_linear_speed)])
     output = run_sourced_capture(
         prefix,
-        [
-            sys.executable,
-            str(Path(__file__).resolve()),
-            "__analyze_odom",
-            "--bag",
-            str(odom_dir),
-            "--topic",
-            topic,
-            "--large-step-threshold",
-            str(large_step_threshold),
-            "--frozen-eps",
-            str(frozen_eps),
-        ],
+        command,
         timeout=120.0,
     )
     for line in reversed(output.splitlines()):
@@ -1106,10 +1135,16 @@ def replay_status_and_reasons(
         fail_reasons.append(f"raw odometry coverage below 0.70: {coverage_ratio}")
     if syncable_ratio is not None and syncable_ratio < 0.7:
         fail_reasons.append(f"syncable LiDAR count coverage below 0.70: {syncable_ratio}")
-    if log_metrics.get("large_lio_jumps", 0) > 0:
-        fail_reasons.append(f"frontend reported large LIO jumps: {log_metrics['large_lio_jumps']}")
-    if metrics.get("odom_large_steps", 0) > 0:
-        fail_reasons.append(f"odometry steps exceeded threshold: {metrics['odom_large_steps']}")
+    if log_metrics.get("excessive_lio_frame_speeds", 0) > 0:
+        fail_reasons.append(
+            "frontend reported frame speeds above its configured limit: "
+            f"{log_metrics['excessive_lio_frame_speeds']}"
+        )
+    if metrics.get("odom_excessive_speed_count", 0) > 0:
+        fail_reasons.append(
+            "odometry frame speeds exceeded the configured limit: "
+            f"{metrics['odom_excessive_speed_count']}"
+        )
     if any(code != 0 for code in play_exit_codes):
         fail_reasons.append(f"bag play exited non-zero: {play_exit_codes}")
     if metrics.get("endpoint_monitor_violations", 0) > 0:
@@ -2297,7 +2332,9 @@ def write_html_report(
                     ("odom_final_pos_norm_m", metrics.get("odom_final_pos_norm_m")),
                     ("odom_path_length_m", metrics.get("odom_path_length_m")),
                     ("odom_max_step_m", metrics.get("odom_max_step_m")),
-                    ("odom_large_steps", metrics.get("odom_large_steps")),
+                    ("odom_max_speed_m_s", metrics.get("odom_max_speed_m_s")),
+                    ("odom_max_linear_speed_m_s", metrics.get("odom_max_linear_speed_m_s")),
+                    ("odom_excessive_speed_count", metrics.get("odom_excessive_speed_count")),
                     ("odom_frozen_ratio", metrics.get("odom_frozen_ratio")),
                     ("odom_sequence_hash", metrics.get("odom_sequence_hash")),
                 ]
@@ -2436,6 +2473,7 @@ def write_report(
     metric_order = (
         "odom_count",
         "odom_duration_s",
+        "odom_storage_duration_s",
         "odom_header_duration_s",
         "odom_rate_hz",
         "odom_max_pos_norm_m",
@@ -2444,9 +2482,10 @@ def write_report(
         "odom_endpoint_path_ratio",
         "odom_max_step_m",
         "odom_max_speed_m_s",
+        "odom_max_linear_speed_m_s",
+        "odom_excessive_speed_count",
         "odom_frozen_steps",
         "odom_frozen_ratio",
-        "odom_large_steps",
         "odom_nonfinite_samples",
         "odom_sequence_hash",
         "endpoint_monitor_violations",
@@ -2460,7 +2499,7 @@ def write_report(
             "",
             "## Frontend Log Signals",
             "",
-            "These counts are diagnostic log signals. Use `large_lio_jumps`, "
+            "These counts are diagnostic log signals. Use `excessive_lio_frame_speeds`, "
             "`motion_gate_rejections`, reset/loopback counts, and odometry metrics for "
             "regression decisions; shutdown-bound warning counts can vary without "
             "changing the odometry sequence.",
@@ -2620,6 +2659,7 @@ def run_replay(args: argparse.Namespace) -> int:
     workspace_setup = expand_path(args.workspace_setup)
     config_path = resolve_config_path(args.config)
     replay_frames = resolve_replay_frames(args, config_path)
+    max_linear_speed = resolve_max_linear_speed(config_path)
     for name, value in replay_frames.items():
         setattr(args, name, value)
     estimate_frame_to_gt_transform, estimate_frame_to_gt_transform_source = (
@@ -2846,7 +2886,7 @@ def run_replay(args: argparse.Namespace) -> int:
         prefix,
         odom_dir,
         args.odom_topic,
-        args.large_step_threshold,
+        max_linear_speed,
         args.frozen_eps,
     )
     console("Analyzing input bag coverage")
@@ -2989,8 +3029,8 @@ def run_replay(args: argparse.Namespace) -> int:
         f"coverage={metrics.get('odom_coverage_ratio', 0.0):.3f}, "
         f"syncable_coverage={metrics.get('odom_syncable_lidar_count_ratio', 0.0):.3f}, "
         f"imu_init_rejections={log_metrics['imu_init_rejections']}, "
-        f"large_lio_jumps={log_metrics['large_lio_jumps']}, "
-        f"odom_large_steps={metrics['odom_large_steps']}, "
+        f"excessive_lio_frame_speeds={log_metrics['excessive_lio_frame_speeds']}, "
+        f"odom_excessive_speeds={metrics.get('odom_excessive_speed_count', 0)}, "
         f"endpoint_violations={metrics.get('endpoint_monitor_violations', 0)}"
     )
     if metrics.get("benchmark_status") == "evaluated":
@@ -3288,7 +3328,11 @@ def analyze_odom_bag(args: argparse.Namespace) -> int:
     last_header_t = samples[-1][1]
     duration = max(0.0, last_t - first_t)
     header_duration = max(0.0, last_header_t - first_header_t)
-    rate = (len(samples) - 1) / duration if duration > 0.0 and len(samples) > 1 else 0.0
+    rate = (
+        (len(samples) - 1) / header_duration
+        if header_duration > 0.0 and len(samples) > 1
+        else 0.0
+    )
 
     first = samples[0][2]
     rel_positions = [
@@ -3308,28 +3352,30 @@ def analyze_odom_bag(args: argparse.Namespace) -> int:
     max_speed = 0.0
     path_length = 0.0
     frozen_steps = 0
-    large_steps = 0
+    excessive_speed_count = 0
     nonfinite_samples = 0
     step_count = max(len(samples) - 1, 0)
     for _storage_t, _header_t, pos in samples:
         if not all(math.isfinite(value) for value in pos):
             nonfinite_samples += 1
 
-    for (t0, _ht0, p0), (t1, _ht1, p1) in zip(samples, samples[1:]):
+    for (_t0, ht0, p0), (_t1, ht1, p1) in zip(samples, samples[1:]):
         step = norm3((p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]))
-        dt = t1 - t0
+        delta_time = ht1 - ht0
         path_length += step
         max_step = max(max_step, step)
-        if dt > 0.0:
-            max_speed = max(max_speed, step / dt)
+        if delta_time > 0.0:
+            speed = step / delta_time
+            max_speed = max(max_speed, speed)
+            if args.max_linear_speed is not None and speed > args.max_linear_speed:
+                excessive_speed_count += 1
         if step <= args.frozen_eps:
             frozen_steps += 1
-        if step > args.large_step_threshold:
-            large_steps += 1
 
     metrics = {
         "odom_count": len(samples),
-        "odom_duration_s": round(duration, 6),
+        "odom_duration_s": round(header_duration, 6),
+        "odom_storage_duration_s": round(duration, 6),
         "odom_header_duration_s": round(header_duration, 6),
         "odom_storage_first_s": round(first_t, 6),
         "odom_storage_last_s": round(last_t, 6),
@@ -3347,11 +3393,12 @@ def analyze_odom_bag(args: argparse.Namespace) -> int:
         "odom_max_speed_m_s": round(max_speed, 6),
         "odom_frozen_steps": frozen_steps,
         "odom_frozen_ratio": round(frozen_steps / step_count, 6) if step_count > 0 else 0.0,
-        "odom_large_steps": large_steps,
-        "odom_large_step_threshold_m": args.large_step_threshold,
         "odom_nonfinite_samples": nonfinite_samples,
         "odom_sequence_hash": sequence_hash.hexdigest(),
     }
+    if args.max_linear_speed is not None:
+        metrics["odom_max_linear_speed_m_s"] = round(args.max_linear_speed, 6)
+        metrics["odom_excessive_speed_count"] = excessive_speed_count
     print(json.dumps(metrics, sort_keys=True))
     return 0
 
@@ -3810,7 +3857,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         parser.add_argument("__command")
         parser.add_argument("--bag", required=True)
         parser.add_argument("--topic", default="/odometry")
-        parser.add_argument("--large-step-threshold", type=float, default=0.5)
+        parser.add_argument("--max-linear-speed", type=float)
         parser.add_argument("--frozen-eps", type=float, default=1.0e-4)
         return parser.parse_args(argv)
 
@@ -3874,7 +3921,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--startup-wait", type=float, default=2.0)
     parser.add_argument("--record-start-wait", type=float, default=2.0)
     parser.add_argument("--settle-time", type=float, default=2.0)
-    parser.add_argument("--large-step-threshold", type=float, default=0.5)
     parser.add_argument("--frozen-eps", type=float, default=1.0e-4)
     parser.add_argument(
         "--gt-tum",

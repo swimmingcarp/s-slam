@@ -170,8 +170,7 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     quality_gate_enabled_ = declare_parameter<bool>("mapping.quality_gate_enabled", false);
     max_linear_acceleration_ =
         declare_parameter<double>("mapping.max_linear_acceleration", 3.0);
-    max_jump_between_two_frames_ =
-        declare_parameter<double>("mapping.max_jump_between_two_frames", 0.5);
+    max_linear_speed_ = declare_parameter<double>("mapping.max_linear_speed", 12.4);
     max_lidar_position_adjustment_ =
         declare_parameter<double>("mapping.max_lidar_position_adjustment", 0.15);
     min_recovery_lidar_adjustment_ratio_ =
@@ -181,7 +180,7 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     min_matched_features_ = declare_parameter<int>("mapping.min_matched_features", 100);
     reject_weak_lidar_ = declare_parameter<bool>("mapping.reject_weak_lidar", true);
     max_linear_acceleration_ = std::max(0.1, max_linear_acceleration_);
-    max_jump_between_two_frames_ = std::max(0.1, max_jump_between_two_frames_);
+    max_linear_speed_ = std::max(0.1, max_linear_speed_);
     max_lidar_position_adjustment_ = std::max(0.01, max_lidar_position_adjustment_);
     min_recovery_lidar_adjustment_ratio_ =
         std::clamp(min_recovery_lidar_adjustment_ratio_, 0.0, 1.0);

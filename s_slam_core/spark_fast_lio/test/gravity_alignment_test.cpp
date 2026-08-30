@@ -185,6 +185,17 @@ protected:
         return node.is_gravity_aligned_;
     }
 
+    static bool frameSpeedExceedsLimit(const SPARKFastLIO2 &node,
+                                       const double position_step,
+                                       const double delta_time)
+    {
+        SPARKFastLIO2::MotionQualityReport quality;
+        quality.position_step  = position_step;
+        quality.delta_time     = delta_time;
+        quality.position_speed = position_step / delta_time;
+        return node.frameSpeedExceedsLimit(quality);
+    }
+
     static void completeGravityAlignment(SPARKFastLIO2 &node)
     {
         node.enable_gravity_alignment_      = true;
@@ -923,6 +934,18 @@ TEST_F(SPARKFastLIO2Test, PreAlignmentAcceptedFrameKeepsMapCurrent)
 
     EXPECT_GT(localMapPointCount(*node), initial_map_point_count);
     EXPECT_TRUE(hasNoPublishedOdometryOrPath(*node));
+}
+
+TEST_F(SPARKFastLIO2Test, FrameSpeedLimitUsesElapsedSensorTime)
+{
+    rclcpp::NodeOptions options;
+    options.append_parameter_override("mapping.max_linear_speed", 12.4);
+    const auto node = std::make_shared<SPARKFastLIO2>(options);
+
+    EXPECT_FALSE(frameSpeedExceedsLimit(*node, 1.2, 0.1));
+    EXPECT_FALSE(frameSpeedExceedsLimit(*node, 4.8, 0.4));
+    EXPECT_TRUE(frameSpeedExceedsLimit(*node, 1.3, 0.1));
+    EXPECT_TRUE(frameSpeedExceedsLimit(*node, 5.2, 0.4));
 }
 
 TEST_F(SPARKFastLIO2Test, WaitsForBaseExtrinsicsBeforeActivatingSensorProcessing)
