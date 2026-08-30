@@ -36,6 +36,7 @@ struct SPARKFastLIO2::PropagationCheckpoint
     std::deque<V3D> gravity_directions;
     V3D static_acceleration_mean = Zero3d;
     int moving_frame_count = 0;
+    std::uint8_t odometry_reset_counter = 0;
     esekfom::esekf<state_ikfom, 12, input_ikfom> filter_before_propagation;
     ImuProcessor::Snapshot imu_snapshot_before_propagation;
     bool state_before_propagation_is_finite = false;
@@ -61,6 +62,7 @@ SPARKFastLIO2::PropagationCheckpoint SPARKFastLIO2::propagateLidarFrame(
     checkpoint.gravity_directions       = global_gravity_directions_;
     checkpoint.static_acceleration_mean = stationary_mean_acceleration_;
     checkpoint.moving_frame_count       = num_consecutive_moving_frames_;
+    checkpoint.odometry_reset_counter   = odom_reset_counter_;
     checkpoint.filter_before_propagation          = kf_;
     checkpoint.imu_snapshot_before_propagation    = imu_processor_->getSnapshot();
     checkpoint.state_before_propagation_is_finite = hasFiniteState(kf_.get_x());
@@ -83,6 +85,7 @@ void SPARKFastLIO2::restorePropagatedFrame(const PropagationCheckpoint &checkpoi
     global_gravity_directions_     = checkpoint.gravity_directions;
     stationary_mean_acceleration_  = checkpoint.static_acceleration_mean;
     num_consecutive_moving_frames_ = checkpoint.moving_frame_count;
+    odom_reset_counter_            = checkpoint.odometry_reset_counter;
 
     kf_ = checkpoint.propagated_filter;
     imu_processor_->restoreSnapshot(checkpoint.propagated_imu_snapshot);
@@ -93,6 +96,11 @@ void SPARKFastLIO2::restorePropagatedFrame(const PropagationCheckpoint &checkpoi
         latest_state_.rot = gravity_alignment_rotation_ * latest_state_.rot;
     }
     kf_for_preintegration_ = kf_;
+    if (process_on_callback_ && checkpoint.propagated_imu_snapshot.last_imu)
+    {
+        resetImuPrediction(*checkpoint.propagated_imu_snapshot.last_imu,
+                           checkpoint.propagated_imu_snapshot.last_lidar_end_time);
+    }
 }
 
 void SPARKFastLIO2::restorePrePropagationFrame(const PropagationCheckpoint &checkpoint)
@@ -102,6 +110,7 @@ void SPARKFastLIO2::restorePrePropagationFrame(const PropagationCheckpoint &chec
     global_gravity_directions_     = checkpoint.gravity_directions;
     stationary_mean_acceleration_  = checkpoint.static_acceleration_mean;
     num_consecutive_moving_frames_ = checkpoint.moving_frame_count;
+    odom_reset_counter_            = checkpoint.odometry_reset_counter;
 
     kf_ = checkpoint.filter_before_propagation;
     imu_processor_->restoreSnapshot(checkpoint.imu_snapshot_before_propagation);
@@ -112,6 +121,11 @@ void SPARKFastLIO2::restorePrePropagationFrame(const PropagationCheckpoint &chec
         latest_state_.rot = gravity_alignment_rotation_ * latest_state_.rot;
     }
     kf_for_preintegration_ = kf_;
+    if (process_on_callback_ && checkpoint.imu_snapshot_before_propagation.last_imu)
+    {
+        resetImuPrediction(*checkpoint.imu_snapshot_before_propagation.last_imu,
+                           checkpoint.imu_snapshot_before_propagation.last_lidar_end_time);
+    }
 }
 
 void SPARKFastLIO2::publishPropagatedFrame()
@@ -308,6 +322,9 @@ void SPARKFastLIO2::updateGravityAlignmentAfterLio()
     std::stringstream ss;
     ss << "Gravity alignment complete! `R_gravity_aligned`: " << gravity_alignment_rotation_;
     RCLCPP_INFO(this->get_logger(), "%s", ss.str().c_str());
+    // Published odometry rotates into a new public map frame below. PX4 must
+    // treat the first aligned measurement as a reset, not a physical jump.
+    ++odom_reset_counter_;
     is_gravity_aligned_ = true;
 }
 
@@ -587,6 +604,10 @@ void SPARKFastLIO2::commitOdometryUpdate(const MeasureGroup &measures,
     updateLocalMapWindow();
     consecutive_gate_reject_count_ = 0;
     kf_for_preintegration_                = kf_;
+    if (process_on_callback_ && !measures.imu.empty())
+    {
+        resetImuPrediction(*measures.imu.back(), measures.lidar_end_time);
+    }
     has_accepted_lio_update_              = true;
     logLargeStateJump(measures, propagated_state, quality);
 

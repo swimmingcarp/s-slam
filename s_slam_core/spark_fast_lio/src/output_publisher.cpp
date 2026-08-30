@@ -16,12 +16,15 @@ constexpr int kPositionStateIndex             = 0;
 constexpr int kOrientationStateIndex          = 3;
 constexpr int kExtrinsicRotationStateIndex    = 6;
 constexpr int kExtrinsicTranslationStateIndex = 9;
+constexpr int kVelocityStateIndex             = 12;
+constexpr int kGyroscopeBiasStateIndex        = 15;
 }
 
 SPARKFastLIO2::PoseCovariance SPARKFastLIO2::poseCovariance(
     const state_ikfom &state,
     const StateCovariance &state_covariance,
-    const M3D &world_rotation) const
+    const M3D &world_rotation,
+    const std::string &body_frame) const
 {
     Eigen::Matrix<double, 6, state_ikfom::DOF> pose_jacobian =
         Eigen::Matrix<double, 6, state_ikfom::DOF>::Zero();
@@ -33,7 +36,7 @@ SPARKFastLIO2::PoseCovariance SPARKFastLIO2::poseCovariance(
     pose_jacobian.template block<3, 3>(0, kPositionStateIndex) = world_rotation;
     pose_jacobian.template block<3, 3>(3, kOrientationStateIndex) = imu_rotation_in_world;
 
-    if (viz_frame_ == "lidar")
+    if (body_frame == "lidar")
     {
         pose_jacobian.template block<3, 3>(0, kOrientationStateIndex) =
             -imu_rotation_in_world * skew_sym_mat(state.offset_T_L_I);
@@ -42,7 +45,7 @@ SPARKFastLIO2::PoseCovariance SPARKFastLIO2::poseCovariance(
         pose_jacobian.template block<3, 3>(3, kExtrinsicRotationStateIndex) =
             imu_rotation_in_world * lidar_rotation_in_imu;
     }
-    else if (viz_frame_ == "base")
+    else if (body_frame == "base")
     {
         const M3D base_rotation_in_lidar = lidar_rotation_in_base_.transpose();
         const M3D base_rotation_in_imu   = lidar_rotation_in_imu * base_rotation_in_lidar;
@@ -61,7 +64,7 @@ SPARKFastLIO2::PoseCovariance SPARKFastLIO2::poseCovariance(
         pose_jacobian.template block<3, 3>(3, kExtrinsicRotationStateIndex) =
             imu_rotation_in_world * lidar_rotation_in_imu;
     }
-    else if (viz_frame_ != "imu")
+    else if (body_frame != "imu")
     {
         throw std::invalid_argument("Invalid visualization frame has been given");
     }
@@ -69,6 +72,97 @@ SPARKFastLIO2::PoseCovariance SPARKFastLIO2::poseCovariance(
     const PoseCovariance covariance =
         pose_jacobian * state_covariance * pose_jacobian.transpose();
     return 0.5 * (covariance + covariance.transpose());
+}
+
+M3D SPARKFastLIO2::baseLinearVelocityCovariance(const state_ikfom &state,
+                                                 const StateCovariance &state_covariance,
+                                                 const V3D &angular_velocity,
+                                                 const M3D &world_rotation) const
+{
+    const M3D lidar_rotation_in_imu = state.offset_R_L_I.toRotationMatrix();
+    const M3D base_rotation_in_lidar = lidar_rotation_in_base_.transpose();
+    const M3D base_rotation_in_imu = lidar_rotation_in_imu * base_rotation_in_lidar;
+    const V3D base_translation_in_imu =
+        state.offset_T_L_I - base_rotation_in_imu * lidar_translation_in_base_;
+    const V3D base_to_lidar_translation_in_lidar =
+        base_rotation_in_lidar * lidar_translation_in_base_;
+    const V3D angular_lever_arm_velocity = angular_velocity.cross(base_translation_in_imu);
+    const M3D imu_rotation_in_world = world_rotation * state.rot.toRotationMatrix();
+
+    Eigen::Matrix<double, 3, state_ikfom::DOF> velocity_jacobian =
+        Eigen::Matrix<double, 3, state_ikfom::DOF>::Zero();
+    velocity_jacobian.template block<3, 3>(0, kOrientationStateIndex) =
+        -imu_rotation_in_world * skew_sym_mat(angular_lever_arm_velocity);
+    velocity_jacobian.template block<3, 3>(0, kExtrinsicRotationStateIndex) =
+        imu_rotation_in_world * skew_sym_mat(angular_velocity) * lidar_rotation_in_imu *
+        skew_sym_mat(base_to_lidar_translation_in_lidar);
+    velocity_jacobian.template block<3, 3>(0, kExtrinsicTranslationStateIndex) =
+        imu_rotation_in_world * skew_sym_mat(angular_velocity);
+    velocity_jacobian.template block<3, 3>(0, kVelocityStateIndex) = world_rotation;
+    velocity_jacobian.template block<3, 3>(0, kGyroscopeBiasStateIndex) =
+        imu_rotation_in_world * skew_sym_mat(base_translation_in_imu);
+
+    const M3D covariance = velocity_jacobian * state_covariance * velocity_jacobian.transpose();
+    return 0.5 * (covariance + covariance.transpose());
+}
+
+void SPARKFastLIO2::publishPx4Odometry(const state_ikfom &state,
+                                       const StateCovariance &state_covariance,
+                                       const V3D &angular_velocity,
+                                       const M3D &world_rotation,
+                                       const rclcpp::Time &stamp)
+{
+    if (!pub_px4_odometry_)
+    {
+        return;
+    }
+
+    const M3D lidar_rotation_in_imu = state.offset_R_L_I.toRotationMatrix();
+    const M3D base_rotation_in_lidar = lidar_rotation_in_base_.transpose();
+    const M3D base_rotation_in_imu = lidar_rotation_in_imu * base_rotation_in_lidar;
+    const V3D base_translation_in_imu =
+        state.offset_T_L_I - base_rotation_in_imu * lidar_translation_in_base_;
+    const state_ikfom output_state =
+        world_rotation.isApprox(M3D::Identity()) ? state : gravityAlignedState(state, world_rotation);
+    const PoseStruct base_pose = transformPoseToBaseFrame(output_state);
+    const V3D base_linear_velocity = world_rotation *
+        (state.vel + state.rot * angular_velocity.cross(base_translation_in_imu));
+    const PoseCovariance pose_covariance =
+        poseCovariance(state, state_covariance, world_rotation, "base");
+    const M3D linear_velocity_covariance =
+        baseLinearVelocityCovariance(state, state_covariance, angular_velocity, world_rotation);
+
+    s_slam_interfaces::msg::Px4Odometry px4_odometry;
+    px4_odometry.header.frame_id = map_frame_;
+    px4_odometry.header.stamp = stamp;
+    px4_odometry.body_frame = base_frame_;
+    px4_odometry.pose.position.x = base_pose.position_.x();
+    px4_odometry.pose.position.y = base_pose.position_.y();
+    px4_odometry.pose.position.z = base_pose.position_.z();
+    px4_odometry.pose.orientation.x = base_pose.orientation_.x();
+    px4_odometry.pose.orientation.y = base_pose.orientation_.y();
+    px4_odometry.pose.orientation.z = base_pose.orientation_.z();
+    px4_odometry.pose.orientation.w = base_pose.orientation_.w();
+    px4_odometry.linear_velocity.x = base_linear_velocity.x();
+    px4_odometry.linear_velocity.y = base_linear_velocity.y();
+    px4_odometry.linear_velocity.z = base_linear_velocity.z();
+    for (int row = 0; row < 6; ++row)
+    {
+        for (int column = 0; column < 6; ++column)
+        {
+            px4_odometry.pose_covariance[row * 6 + column] = pose_covariance(row, column);
+        }
+    }
+    for (int row = 0; row < 3; ++row)
+    {
+        for (int column = 0; column < 3; ++column)
+        {
+            px4_odometry.linear_velocity_covariance[row * 3 + column] =
+                linear_velocity_covariance(row, column);
+        }
+    }
+    px4_odometry.reset_counter = odom_reset_counter_;
+    pub_px4_odometry_->publish(px4_odometry);
 }
 
 void SPARKFastLIO2::publishOdometry(
@@ -161,7 +255,8 @@ void SPARKFastLIO2::publishCurrentFrame(const state_ikfom &state,
 {
     const M3D world_rotation =
         is_gravity_aligned_ ? gravity_alignment_rotation_ : M3D::Identity();
-    const PoseCovariance pose_covariance = poseCovariance(state, kf_.get_P(), world_rotation);
+    const PoseCovariance pose_covariance =
+        poseCovariance(state, kf_.get_P(), world_rotation, viz_frame_);
 
     std::optional<state_ikfom> aligned_state;
     const state_ikfom *output_state = &state;

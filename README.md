@@ -311,6 +311,58 @@ Before flight or real device validation:
   flight logs.
 - Validate `/odometry`, `/path`, and `/cloud_registered` in RViz before flight.
 
+## PX4 DDS Odometry
+
+`s_slam_px4_bridge` forwards FAST-LIO's IMU-propagated state to PX4 as
+`px4_msgs/msg/VehicleOdometry` on `/fmu/in/vehicle_visual_odometry`. It uses
+PX4 uXRCE-DDS over Ethernet, not MAVLink.
+
+Before enabling the bridge:
+
+- Build this workspace with the `px4_msgs` branch that matches the PX4 firmware.
+- Configure a fixed IP address for the companion computer and PX4 on the same
+  Ethernet subnet. Configure PX4's uXRCE-DDS client for Ethernet, the
+  companion IP, UDP port `8888`, and the same DDS domain as `ROS_DOMAIN_ID`
+  (`0` by default). Configure it to start at PX4 boot.
+- Replace the bench identity `base_link -> rslidar` transform in
+  `mapping_rs_fairy.launch.yaml`, and calibrate the two frame rotations in
+  `s_slam_core/s_slam_px4_bridge/config/px4_odometry_bridge.yaml`.
+- The checked-in bridge configuration has `enabled: true`. Calibrate the
+  frames before connecting it to a flight controller.
+
+Start the three companion-side processes. They can already be running before
+the Ethernet cable is connected; PX4 connects when its uXRCE-DDS client starts
+or reconnects:
+
+```bash
+# Terminal 1: companion computer XRCE-DDS agent.
+source /opt/ros/humble/setup.bash
+MicroXRCEAgent udp4 -p 8888
+
+# Terminal 2: RoboSense driver must already publish its LiDAR and IMU topics.
+source /opt/ros/humble/setup.bash
+source /home/jaden/workspace/s-slam/install/setup.bash
+ros2 launch spark_fast_lio mapping_rs_fairy.launch.yaml
+
+# Terminal 3: FAST-LIO to PX4 bridge.
+source /opt/ros/humble/setup.bash
+source /home/jaden/workspace/s-slam/install/setup.bash
+ros2 launch s_slam_px4_bridge px4_odometry_bridge.launch.yaml
+```
+
+Verify the DDS link and bridge from the companion computer:
+
+```bash
+ros2 topic info -v /fmu/in/vehicle_visual_odometry
+ros2 topic echo --once /fmu/out/vehicle_odometry
+ros2 topic hz /fmu/in/vehicle_visual_odometry
+```
+
+The first command must show the PX4 uXRCE-DDS subscription. On the PX4 MAVLink
+console, `uxrce_dds_client status` must report a running client. This verifies
+the data path only; PX4 external-vision fusion and flight arming require their
+own PX4 estimator configuration and validation.
+
 ## Simulation Status
 
 `s_slam_simulation` is currently a scaffold. There is no runnable CARLA, Gazebo,

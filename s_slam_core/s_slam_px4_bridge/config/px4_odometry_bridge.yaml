@@ -1,0 +1,19 @@
+/**:
+  ros__parameters:
+    enabled: true
+    source_topic: px4_odometry
+    # These must name the FAST-LIO pose frames whose child origin is the PX4
+    # vehicle reference point. The bridge rejects any mismatched message.
+    source_world_frame: odom
+    source_child_frame: base_link
+    output_topic: /fmu/in/vehicle_visual_odometry
+    publish_rate_hz: 30.0
+
+    # Row-major proper rotations. They map a FAST-LIO map/base pose into PX4's
+    # local FRD pose frame. Identity is only correct after frame calibration.
+    px4_world_from_source_world: [1.0, 0.0, 0.0,
+                                  0.0, 1.0, 0.0,
+                                  0.0, 0.0, 1.0]
+    source_body_from_px4_body: [1.0, 0.0, 0.0,
+                                 0.0, 1.0, 0.0,
+                                 0.0, 0.0, 1.0]

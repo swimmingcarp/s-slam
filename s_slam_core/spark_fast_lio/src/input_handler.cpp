@@ -125,7 +125,14 @@ void SPARKFastLIO2::imuCallback(const sensor_msgs::msg::Imu::ConstSharedPtr msg)
         last_imu_timestamp_ = stamp;
         has_last_imu_timestamp_ = true;
 
-        if (imu_predicted_odometry_enabled_ && kf_for_preintegration_.has_value())
+        if (imu_predicted_odometry_enabled_ && process_on_callback_)
+        {
+            // In callback-driven replay, defer prediction until the matching
+            // LiDAR interval is complete so DDS callback order cannot choose
+            // whether this IMU sees the preceding LiDAR correction.
+            imu_prediction_buffer_.push_back(*imu_input);
+        }
+        else if (imu_predicted_odometry_enabled_ && kf_for_preintegration_.has_value())
         {
             integrateIMU(*kf_for_preintegration_, *imu_input);
         }
@@ -149,9 +156,13 @@ void SPARKFastLIO2::integrateIMU(esekfom::esekf<state_ikfom, 12, input_ikfom> &s
         return;
     }
 
-    // Assume that timestamps are sufficiently close and ascending order
-    const double delta_time = rclcpp::Time(imu_integration_queue_[1].header.stamp).seconds() -
-                              rclcpp::Time(imu_integration_queue_[0].header.stamp).seconds();
+    const double head_time =
+        rclcpp::Time(imu_integration_queue_[0].header.stamp).seconds();
+    const double tail_time =
+        rclcpp::Time(imu_integration_queue_[1].header.stamp).seconds();
+    const double integration_start_time =
+        imu_prediction_state_time_.has_value() ? *imu_prediction_state_time_ : head_time;
+    const double delta_time = tail_time - integration_start_time;
 
     if (delta_time <= 0)
     {
@@ -172,13 +183,26 @@ void SPARKFastLIO2::integrateIMU(esekfom::esekf<state_ikfom, 12, input_ikfom> &s
         return;
     }
 
-    auto integrated_state = imu_processor_->integrateImu(imu_integration_queue_, state);
-    const auto &stamp     = imu_integration_queue_[1].header.stamp;
+    const auto &head = imu_integration_queue_[0];
+    const auto &tail = imu_integration_queue_[1];
+    const V3D measured_angular_velocity(
+        0.5 * (head.angular_velocity.x + tail.angular_velocity.x),
+        0.5 * (head.angular_velocity.y + tail.angular_velocity.y),
+        0.5 * (head.angular_velocity.z + tail.angular_velocity.z));
+    const state_ikfom integrated_state = imu_processor_->integrateImu(
+        imu_integration_queue_, delta_time, state);
+    const StateCovariance state_covariance = state.get_P();
+    const V3D angular_velocity = measured_angular_velocity - integrated_state.bg;
+    const auto &stamp = tail.header.stamp;
     imu_integration_queue_.pop_front();
+    if (imu_prediction_state_time_.has_value())
+    {
+        imu_prediction_state_time_ = tail_time;
+    }
     const M3D world_rotation =
         is_gravity_aligned_ ? gravity_alignment_rotation_ : M3D::Identity();
     const PoseCovariance pose_covariance =
-        poseCovariance(integrated_state, state.get_P(), world_rotation);
+        poseCovariance(integrated_state, state_covariance, world_rotation, viz_frame_);
 
     if (is_gravity_aligned_)
     {
@@ -188,11 +212,54 @@ void SPARKFastLIO2::integrateIMU(esekfom::esekf<state_ikfom, 12, input_ikfom> &s
             stamp,
             pub_imu_predicted_odom_,
             false);
-        return;
     }
-
-    publishOdometry(integrated_state, pose_covariance, stamp, pub_imu_predicted_odom_, false);
+    else
+    {
+        publishOdometry(integrated_state, pose_covariance, stamp, pub_imu_predicted_odom_, false);
+    }
+    publishPx4Odometry(
+        integrated_state, state_covariance, angular_velocity, world_rotation, stamp);
 }
+
+void SPARKFastLIO2::publishImuPredictionsUpTo(const double end_time)
+{
+    std::lock_guard<std::mutex> lk(buffer_mutex_);
+    while (!imu_prediction_buffer_.empty())
+    {
+        const double imu_time =
+            rclcpp::Time(imu_prediction_buffer_.front().header.stamp).seconds();
+        if (imu_time > end_time)
+        {
+            break;
+        }
+        sensor_msgs::msg::Imu imu = std::move(imu_prediction_buffer_.front());
+        imu_prediction_buffer_.pop_front();
+
+        if (!kf_for_preintegration_.has_value() ||
+            (imu_prediction_state_time_.has_value() &&
+             imu_time <= *imu_prediction_state_time_))
+        {
+            continue;
+        }
+        integrateIMU(*kf_for_preintegration_, imu);
+    }
+}
+
+void SPARKFastLIO2::resetImuPrediction(const sensor_msgs::msg::Imu &reference_imu,
+                                       const double state_time)
+{
+    std::lock_guard<std::mutex> lk(buffer_mutex_);
+    imu_integration_queue_.clear();
+    imu_integration_queue_.push_back(reference_imu);
+    imu_prediction_state_time_ = state_time;
+
+    while (!imu_prediction_buffer_.empty() &&
+           rclcpp::Time(imu_prediction_buffer_.front().header.stamp).seconds() <= state_time)
+    {
+        imu_prediction_buffer_.pop_front();
+    }
+}
+
 void SPARKFastLIO2::main()
 {
     processPendingMeasurements();
@@ -202,6 +269,12 @@ void SPARKFastLIO2::processPendingMeasurements()
 {
     while (syncPackages(measures_, verbose_))
     {
+        if (imu_predicted_odometry_enabled_ && process_on_callback_)
+        {
+            // Publish this interval from the previous LiDAR-corrected state
+            // before the current LiDAR frame changes that state.
+            publishImuPredictionsUpTo(measures_.lidar_end_time);
+        }
         processLidarAndImu(measures_);
     }
 }

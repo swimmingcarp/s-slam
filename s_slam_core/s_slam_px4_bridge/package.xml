@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>s_slam_px4_bridge</name>
+  <version>0.1.0</version>
+  <description>Bridge FAST-LIO odometry to PX4 VehicleOdometry over uXRCE-DDS.</description>
+  <maintainer email="shapelim@mit.edu">Hyungtae Lim</maintainer>
+  <license>GPL-2.0-only</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <depend>eigen</depend>
+  <depend>px4_msgs</depend>
+  <depend>rclcpp</depend>
+  <depend>s_slam_interfaces</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

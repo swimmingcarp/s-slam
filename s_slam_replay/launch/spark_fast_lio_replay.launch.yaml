@@ -9,6 +9,7 @@ launch:
   - arg: {name: lidar_frame, default: rslidar}
   - arg: {name: imu_frame, default: rslidar_imu}
   - arg: {name: visualization_frame, default: base}
+  - arg: {name: imu_predicted_odometry_enabled, default: "false"}
 
   - node:
       pkg: spark_fast_lio
@@ -39,7 +40,7 @@ launch:
         - name: "common.process_on_callback"
           value: true
         - name: "publish.imu_predicted_odometry_enabled"
-          value: false
+          value: "$(var imu_predicted_odometry_enabled)"
         # Lossless replay transport: buffer entire bag backlogs so the processed
         # frame set never depends on system load (reproducible reports).
         - name: "common.lidar_qos_depth"

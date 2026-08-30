@@ -18,6 +18,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <s_slam_interfaces/msg/px4_odometry.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
@@ -84,6 +85,8 @@ private:
     void imuCallback(const sensor_msgs::msg::Imu::ConstSharedPtr msg);
     void integrateIMU(esekfom::esekf<state_ikfom, 12, input_ikfom> &state,
                       const sensor_msgs::msg::Imu &msg);
+    void publishImuPredictionsUpTo(double end_time);
+    void resetImuPrediction(const sensor_msgs::msg::Imu &reference_imu, double state_time);
     void main();
     void processPendingMeasurements();
     bool syncPackages(MeasureGroup &measurements, bool verbose);
@@ -119,7 +122,17 @@ private:
 
     PoseCovariance poseCovariance(const state_ikfom &state,
                                   const StateCovariance &state_covariance,
-                                  const M3D &world_rotation) const;
+                                  const M3D &world_rotation,
+                                  const std::string &body_frame) const;
+    M3D baseLinearVelocityCovariance(const state_ikfom &state,
+                                     const StateCovariance &state_covariance,
+                                     const V3D &angular_velocity,
+                                     const M3D &world_rotation) const;
+    void publishPx4Odometry(const state_ikfom &state,
+                            const StateCovariance &state_covariance,
+                            const V3D &angular_velocity,
+                            const M3D &world_rotation,
+                            const rclcpp::Time &stamp);
     void publishOdometry(
         const state_ikfom &state,
         const PoseCovariance &pose_covariance,
@@ -254,6 +267,7 @@ private:
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_cloud_base_;
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub_odom_;
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub_imu_predicted_odom_;
+    rclcpp::Publisher<s_slam_interfaces::msg::Px4Odometry>::SharedPtr pub_px4_odometry_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pub_path_;
 
     std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
@@ -344,6 +358,7 @@ private:
     int effective_feature_count_ = 0;
     int path_publish_counter_    = 0;
     int imu_gap_lidar_skip_count_ = 0;
+    std::uint8_t odom_reset_counter_ = 0;
 
     int downsampled_point_count_            = 0;
     int max_iterations_                     = 0;
@@ -394,7 +409,9 @@ private:
 
     boost::circular_buffer<BufferedLidarFrame> lidar_buffer_;
     boost::circular_buffer<std::shared_ptr<const sensor_msgs::msg::Imu>> imu_buffer_;
+    boost::circular_buffer<sensor_msgs::msg::Imu> imu_prediction_buffer_;
     std::deque<sensor_msgs::msg::Imu> imu_integration_queue_;
+    std::optional<double> imu_prediction_state_time_;
 
     PointCloudXYZI::Ptr full_points_;
     PointCloudXYZI::Ptr sampled_points_;

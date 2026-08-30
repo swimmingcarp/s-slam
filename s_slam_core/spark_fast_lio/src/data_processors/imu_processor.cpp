@@ -411,6 +411,7 @@ void ImuProcessor::initializeImu(
 
 state_ikfom ImuProcessor::integrateImu(
     const std::deque<sensor_msgs::msg::Imu> &imu_queue,
+    double delta_time,
     esekfom::esekf<state_ikfom, 12, input_ikfom> &filter)
 {
     if (imu_queue.size() < 2 || !hasUsableMeanAcceleration(mean_acceleration_))
@@ -434,16 +435,13 @@ state_ikfom ImuProcessor::integrateImu(
 
     acc_avr = acc_avr * G_m_s2 / mean_acceleration_.norm();  // - state_inout.ba;
 
-    double dt =
-        rclcpp::Time(tail.header.stamp).seconds() - rclcpp::Time(head.header.stamp).seconds();
-
     in.acc                         = acc_avr;
     in.gyro                        = angvel_avr;
     process_noise_covariance_.block<3, 3>(0, 0).diagonal() = gyroscope_covariance_;
     process_noise_covariance_.block<3, 3>(3, 3).diagonal() = accelerometer_covariance_;
     process_noise_covariance_.block<3, 3>(6, 6).diagonal() = gyroscope_bias_covariance_;
     process_noise_covariance_.block<3, 3>(9, 9).diagonal() = accelerometer_bias_covariance_;
-    filter.predict(dt, process_noise_covariance_, in);
+    filter.predict(delta_time, process_noise_covariance_, in);
 
     return filter.get_x();
 }

@@ -23,8 +23,10 @@ claiming a fix.
 
 ## Naming
 
-- Name identifiers for their actual role and value. Be precise, but do not
-  repeat context already made clear by the class, function, or call site.
+- Name every identifier for its role and semantic value at the current
+  abstraction level, not for its implementation history, producer pipeline, or
+  incidental local state. Be precise, but do not repeat context already made
+  clear by the class, function, or call site.
 - Prefer short, literal names that state the measured or limited quantity. An
   abstract term such as `residual`, `effective`, or `correction` must identify
   its object and condition; configuration names should be understandable
@@ -35,6 +37,12 @@ claiming a fix.
 - Prefer concise, conventional names over long literal descriptions. Avoid
   redundant qualifiers such as `InWorldFrame` when the surrounding API already
   establishes the frame.
+- Apply the same rule to variables, types, functions, files, topics, services,
+  actions, and configuration keys. A name should answer what the thing is or
+  does for its caller, not narrate how it was produced. For example,
+  `odometry_px4` states the contract while `odometry_imu_predicted_with_reset`
+  leaks implementation stages. Add a qualifier only when callers must
+  distinguish otherwise compatible things that coexist.
 - Do not invent or preserve opaque abbreviations such as `ds`, `flg`, `wrt`, or
   misspellings such as `i_nex`. Use clear names such as `i_next` and
   `plane_classification`.

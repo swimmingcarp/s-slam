@@ -77,6 +77,7 @@ public:
                  esekfom::esekf<state_ikfom, 12, input_ikfom> &filter,
                  PointCloudXYZI::Ptr &undistorted_cloud);
     state_ikfom integrateImu(const std::deque<sensor_msgs::msg::Imu> &imu_queue,
+                             double delta_time,
                              esekfom::esekf<state_ikfom, 12, input_ikfom> &filter);
 
     // Arm a warm re-initialization after a mid-run estimator reset: seeds

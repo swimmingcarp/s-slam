@@ -18,6 +18,8 @@ namespace
 {
 constexpr double kMaximumImuGapScanPeriods = 1.2;
 constexpr double kExtrinsicRotationTolerance = 1.0e-3;
+constexpr std::size_t kPredictedOdometryQueueDepth = 100;
+constexpr std::size_t kPx4OdometryQueueDepth = 10;
 
 bool hasFiniteState(const state_ikfom &state)
 {
@@ -151,6 +153,7 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     // falls behind. Full buffers discard stale entries instead of resetting LIO.
     lidar_buffer_.set_capacity(lidar_buffer_capacity_);
     imu_buffer_.set_capacity(imu_buffer_capacity_);
+    imu_prediction_buffer_.set_capacity(imu_buffer_capacity_);
 
     filter_size_map_min_ = declare_parameter<double>("filter_size_map", 0.5);
     if (!std::isfinite(filter_size_map_min_) || filter_size_map_min_ <= 0.0)
@@ -233,6 +236,15 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     }
 
     rclcpp::QoS qos((rclcpp::SystemDefaultsQoS().keep_last(1).durability_volatile()));
+    rclcpp::QoS predicted_odometry_qos{
+        rclcpp::KeepLast(kPredictedOdometryQueueDepth)};
+    predicted_odometry_qos.reliable();
+    predicted_odometry_qos.durability_volatile();
+    // The local bridge selects a 30 Hz sample from this IMU-rate state stream.
+    // Preserve a short burst so its timestamp selector does not miss candidates.
+    rclcpp::QoS px4_odometry_qos{rclcpp::KeepLast(kPx4OdometryQueueDepth)};
+    px4_odometry_qos.reliable();
+    px4_odometry_qos.durability_volatile();
     pub_cloud_full_ = create_publisher<sensor_msgs::msg::PointCloud2>("cloud_registered", qos);
     pub_cloud_lidar_ =
         create_publisher<sensor_msgs::msg::PointCloud2>("cloud_registered_lidar", qos);
@@ -241,7 +253,9 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
 
     pub_odom_ = create_publisher<nav_msgs::msg::Odometry>("odometry", qos);
     pub_imu_predicted_odom_ =
-        create_publisher<nav_msgs::msg::Odometry>("odometry_imu_predicted", qos);
+        create_publisher<nav_msgs::msg::Odometry>("odometry_imu_predicted", predicted_odometry_qos);
+    pub_px4_odometry_ =
+        create_publisher<s_slam_interfaces::msg::Px4Odometry>("px4_odometry", px4_odometry_qos);
     pub_path_                 = create_publisher<nav_msgs::msg::Path>("path", qos);
     path_msg_.header.frame_id = map_frame_;
 
@@ -443,6 +457,10 @@ void SPARKFastLIO2::resetEstimatorState(const std::string &reason, const ResetMo
                 mode == ResetMode::kWarmRecovery ? "warm recovery" : "cold",
                 reason.c_str());
 
+    // PX4 consumes the high-rate propagated odometry. Mark every front-end
+    // reset so its EKF does not interpret the new local state as a measurement jump.
+    ++odom_reset_counter_;
+
     // For kWarmRecovery, capture a re-init prior before wiping: a mid-run
     // reset can happen in flight, where the stationary initialization window
     // never comes. Gravity and velocity are converted to the IMU body frame so
@@ -495,7 +513,9 @@ void SPARKFastLIO2::resetEstimatorState(const std::string &reason, const ResetMo
 
     lidar_buffer_.clear();
     imu_buffer_.clear();
+    imu_prediction_buffer_.clear();
     imu_integration_queue_.clear();
+    imu_prediction_state_time_.reset();
 
     has_pending_lidar_frame_ = false;
     lidar_end_time_ = 0.0;

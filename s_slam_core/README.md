@@ -9,6 +9,8 @@ This directory is intentionally **not** a ROS package. It has no top-level
 s_slam_core/
 ├── spark_fast_lio/   # ROS package: spark_fast_lio
 ├── kiss_matcher/     # ROS package: kiss_matcher_ros
+├── s_slam_interfaces/ # ROS package: shared message definitions
+├── s_slam_px4_bridge/ # ROS package: FAST-LIO to PX4 DDS odometry bridge
 └── third_party/      # shared/vendored dependencies for the core packages
 ```
 

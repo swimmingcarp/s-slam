@@ -175,6 +175,35 @@ protected:
         return node.imu_gap_lidar_skip_count_;
     }
 
+    static std::uint8_t odometryResetCounter(const SPARKFastLIO2 &node)
+    {
+        return node.odom_reset_counter_;
+    }
+
+    static bool isGravityAligned(const SPARKFastLIO2 &node)
+    {
+        return node.is_gravity_aligned_;
+    }
+
+    static void completeGravityAlignment(SPARKFastLIO2 &node)
+    {
+        node.enable_gravity_alignment_      = true;
+        node.is_gravity_aligned_            = false;
+        node.base_frame_                    = "base_link";
+        node.base_gravity_                  = V3D(0.0, 0.0, -1.0);
+        node.lidar_rotation_in_base_        = Eye3d;
+        node.moving_frame_threshold_        = 0;
+        node.gravity_measurement_threshold_ = 1;
+        node.num_consecutive_moving_frames_ = 1;
+        node.global_gravity_directions_.assign(1, V3D(0.0, 0.0, -9.81));
+
+        state_ikfom state = node.kf_.get_x();
+        state.grav = S2(V3D(0.0, 0.0, -9.81));
+        node.kf_.change_x(state);
+        node.latest_state_ = state;
+        node.updateGravityAlignmentAfterLio();
+    }
+
     static ImuProcessor::Snapshot imuProcessorSnapshot(const SPARKFastLIO2 &node)
     {
         return node.imu_processor_->getSnapshot();
@@ -193,6 +222,16 @@ protected:
         node.integrateIMU(node.kf_, imu);
     }
 
+    static sensor_msgs::msg::Imu predictedImu(const double timestamp)
+    {
+        sensor_msgs::msg::Imu imu;
+        const int64_t nanoseconds = static_cast<int64_t>(timestamp * 1.0e9);
+        imu.header.stamp.sec     = static_cast<int32_t>(nanoseconds / 1000000000LL);
+        imu.header.stamp.nanosec = static_cast<uint32_t>(nanoseconds % 1000000000LL);
+        imu.linear_acceleration.z = G_m_s2;
+        return imu;
+    }
+
     static std::size_t predictedImuQueueSize(const SPARKFastLIO2 &node)
     {
         return node.imu_integration_queue_.size();
@@ -201,6 +240,40 @@ protected:
     static double predictedImuQueueFrontTime(const SPARKFastLIO2 &node)
     {
         return rclcpp::Time(node.imu_integration_queue_.front().header.stamp).seconds();
+    }
+
+    static void resetImuPrediction(SPARKFastLIO2 &node,
+                                   const sensor_msgs::msg::Imu &reference_imu,
+                                   const double state_time)
+    {
+        node.resetImuPrediction(reference_imu, state_time);
+    }
+
+    static void queuePredictedImu(SPARKFastLIO2 &node, const sensor_msgs::msg::Imu &imu)
+    {
+        node.imu_prediction_buffer_.push_back(imu);
+    }
+
+    static void publishImuPredictionsUpTo(SPARKFastLIO2 &node, const double end_time)
+    {
+        node.publishImuPredictionsUpTo(end_time);
+    }
+
+    static std::size_t pendingPredictionCount(const SPARKFastLIO2 &node)
+    {
+        return node.imu_prediction_buffer_.size();
+    }
+
+    static std::optional<double> imuPredictionStateTime(const SPARKFastLIO2 &node)
+    {
+        return node.imu_prediction_state_time_;
+    }
+
+    static void enableCallbackDrivenPrediction(SPARKFastLIO2 &node)
+    {
+        node.process_on_callback_            = true;
+        node.imu_predicted_odometry_enabled_ = true;
+        node.kf_for_preintegration_          = node.kf_;
     }
 
     static PoseStruct lidarPose(const SPARKFastLIO2 &node, const state_ikfom &state)
@@ -237,7 +310,7 @@ protected:
         const SPARKFastLIO2::StateCovariance &state_covariance,
         const M3D &world_rotation)
     {
-        return node.poseCovariance(state, state_covariance, world_rotation);
+        return node.poseCovariance(state, state_covariance, world_rotation, node.viz_frame_);
     }
 
     static void publishGravityAlignedFrame(SPARKFastLIO2 &node,
@@ -999,6 +1072,34 @@ TEST_F(SPARKFastLIO2Test, SkipsPredictedOdometryAcrossLongImuGap)
     EXPECT_DOUBLE_EQ(predictedImuQueueFrontTime(*node), 3.5);
 }
 
+TEST_F(SPARKFastLIO2Test, CallbackDrivenPredictionStopsAtLidarBoundary)
+{
+    auto node = std::make_shared<SPARKFastLIO2>();
+    initializeWithStationaryGravity(*node);
+    enableCallbackDrivenPrediction(*node);
+
+    resetImuPrediction(*node, predictedImu(2.1), 2.1);
+    queuePredictedImu(*node, predictedImu(2.105));
+    queuePredictedImu(*node, predictedImu(2.11));
+    queuePredictedImu(*node, predictedImu(2.115));
+
+    publishImuPredictionsUpTo(*node, 2.11);
+
+    ASSERT_EQ(pendingPredictionCount(*node), 1U);
+    ASSERT_EQ(predictedImuQueueSize(*node), 1U);
+    EXPECT_NEAR(predictedImuQueueFrontTime(*node), 2.11, 1.0e-8);
+    ASSERT_TRUE(imuPredictionStateTime(*node).has_value());
+    EXPECT_NEAR(*imuPredictionStateTime(*node), 2.11, 1.0e-8);
+
+    publishImuPredictionsUpTo(*node, 2.115);
+
+    EXPECT_EQ(pendingPredictionCount(*node), 0U);
+    ASSERT_EQ(predictedImuQueueSize(*node), 1U);
+    EXPECT_NEAR(predictedImuQueueFrontTime(*node), 2.115, 1.0e-8);
+    ASSERT_TRUE(imuPredictionStateTime(*node).has_value());
+    EXPECT_NEAR(*imuPredictionStateTime(*node), 2.115, 1.0e-8);
+}
+
 TEST_F(SPARKFastLIO2Test, TimestampLoopbackClearsCircularBuffers)
 {
     rclcpp::NodeOptions options;
@@ -1014,6 +1115,17 @@ TEST_F(SPARKFastLIO2Test, TimestampLoopbackClearsCircularBuffers)
     EXPECT_EQ(lidarBufferSize(*node), 0U);
     ASSERT_EQ(imuBufferSize(*node), 1U);
     EXPECT_DOUBLE_EQ(oldestImuTimestamp(*node), 0.5);
+    EXPECT_EQ(odometryResetCounter(*node), 1U);
+}
+
+TEST_F(SPARKFastLIO2Test, GravityAlignmentAdvancesOdometryResetCounter)
+{
+    auto node = std::make_shared<SPARKFastLIO2>();
+
+    completeGravityAlignment(*node);
+
+    EXPECT_TRUE(isGravityAligned(*node));
+    EXPECT_EQ(odometryResetCounter(*node), 1U);
 }
 
 }  // namespace
