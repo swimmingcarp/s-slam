@@ -22,7 +22,7 @@
       b_acc_cov: 0.003
       b_gyr_cov: 0.001
       fov_degree: 120.0
-      det_range: 500.0
+      det_range: 100.0  # Initial local-map scale; validate against live usable point range.
       # Set these LiDAR-w.r.t-IMU values from the vehicle calibration before use.
       extrinsic_est_enabled: false
       extrinsic_T: [0.0, 0.0, 0.0]

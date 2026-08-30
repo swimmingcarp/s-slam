@@ -61,6 +61,39 @@ protected:
         }
     }
 
+    static void setLocalMapParameters(SPARKFastLIO2 &node,
+                                      const double cube_side_length,
+                                      const double detection_range)
+    {
+        node.local_map_side_length_ = cube_side_length;
+        node.detection_range_       = detection_range;
+    }
+
+    static void setLidarPosition(SPARKFastLIO2 &node, const V3D &position)
+    {
+        state_ikfom state = node.kf_.get_x();
+        state.pos          = position;
+        state.offset_R_L_I = Eye3d;
+        state.offset_T_L_I = Zero3d;
+        node.kf_.change_x(state);
+        node.latest_state_ = state;
+    }
+
+    static void updateLocalMapWindow(SPARKFastLIO2 &node)
+    {
+        node.updateLocalMapWindow();
+    }
+
+    static BoxPointType localMapBounds(const SPARKFastLIO2 &node)
+    {
+        return node.local_map_bounds_;
+    }
+
+    static std::size_t localMapRemovalBoxCount(const SPARKFastLIO2 &node)
+    {
+        return node.map_boxes_to_remove_.size();
+    }
+
     static std::size_t localMapPointCount(SPARKFastLIO2 &node)
     {
         return node.ikd_tree_.size();
@@ -852,6 +885,76 @@ TEST_F(SPARKFastLIO2Test, RejectsNonPositiveMapFilterSize)
     options.append_parameter_override("filter_size_map", 0.0);
 
     EXPECT_THROW(std::make_shared<SPARKFastLIO2>(options), std::invalid_argument);
+}
+
+TEST_F(SPARKFastLIO2Test, RejectsInvalidLocalMapWindowConfig)
+{
+    rclcpp::NodeOptions nonpositive_cube;
+    nonpositive_cube.append_parameter_override("cube_side_length", 0.0);
+    EXPECT_THROW(std::make_shared<SPARKFastLIO2>(nonpositive_cube), std::invalid_argument);
+
+    rclcpp::NodeOptions nonfinite_detection_range;
+    nonfinite_detection_range.append_parameter_override(
+        "mapping.det_range", std::numeric_limits<double>::quiet_NaN());
+    EXPECT_THROW(std::make_shared<SPARKFastLIO2>(nonfinite_detection_range), std::invalid_argument);
+}
+
+TEST_F(SPARKFastLIO2Test, LocalMapWindowStaysCenteredForOversizedDetectionRange)
+{
+    auto node = std::make_shared<SPARKFastLIO2>();
+    setLocalMapParameters(*node, 1000.0, 500.0);
+    setLidarPosition(*node, Zero3d);
+    prepareInitialMap(*node);
+    updateLocalMapWindow(*node);
+    const BoxPointType initial_bounds = localMapBounds(*node);
+
+    updateLocalMapWindow(*node);
+
+    const BoxPointType current_bounds = localMapBounds(*node);
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        EXPECT_DOUBLE_EQ(current_bounds.vertex_min[axis], initial_bounds.vertex_min[axis]);
+        EXPECT_DOUBLE_EQ(current_bounds.vertex_max[axis], initial_bounds.vertex_max[axis]);
+    }
+    EXPECT_EQ(localMapRemovalBoxCount(*node), 0U);
+}
+
+TEST_F(SPARKFastLIO2Test, LocalMapWindowRecentersAfterCrossingEdgeMargin)
+{
+    auto node = std::make_shared<SPARKFastLIO2>();
+    setLocalMapParameters(*node, 1000.0, 500.0);
+    setLidarPosition(*node, Zero3d);
+    prepareInitialMap(*node);
+    updateLocalMapWindow(*node);
+
+    setLidarPosition(*node, V3D(251.0, 0.0, 0.0));
+    updateLocalMapWindow(*node);
+
+    const BoxPointType bounds = localMapBounds(*node);
+    EXPECT_DOUBLE_EQ(bounds.vertex_min[0], -249.0);
+    EXPECT_DOUBLE_EQ(bounds.vertex_max[0], 751.0);
+    EXPECT_DOUBLE_EQ(bounds.vertex_min[1], -500.0);
+    EXPECT_DOUBLE_EQ(bounds.vertex_max[1], 500.0);
+    EXPECT_EQ(localMapRemovalBoxCount(*node), 1U);
+}
+
+TEST_F(SPARKFastLIO2Test, LocalMapWindowRecentersAfterPoseLeavesBounds)
+{
+    auto node = std::make_shared<SPARKFastLIO2>();
+    setLocalMapParameters(*node, 1000.0, 500.0);
+    setLidarPosition(*node, Zero3d);
+    prepareInitialMap(*node);
+    updateLocalMapWindow(*node);
+
+    setLidarPosition(*node, V3D(1200.0, 0.0, 0.0));
+    updateLocalMapWindow(*node);
+
+    const BoxPointType bounds = localMapBounds(*node);
+    EXPECT_DOUBLE_EQ(bounds.vertex_min[0], 700.0);
+    EXPECT_DOUBLE_EQ(bounds.vertex_max[0], 1700.0);
+    EXPECT_LE(bounds.vertex_min[0], 1200.0);
+    EXPECT_GE(bounds.vertex_max[0], 1200.0);
+    EXPECT_EQ(localMapRemovalBoxCount(*node), 1U);
 }
 
 TEST_F(SPARKFastLIO2Test, RejectsInvalidImuLidarExtrinsics)

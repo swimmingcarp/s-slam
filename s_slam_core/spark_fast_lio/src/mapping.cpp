@@ -234,42 +234,42 @@ void SPARKFastLIO2::updateLocalMapWindow()
         return;
     }
 
-    float distance_to_map_edge[3][2];
+    const double requested_edge_margin = kMapMoveThreshold * detection_range_;
+    // A stationary LiDAR must retain a central safety region even when a
+    // configuration requests a detection range larger than this local cube.
+    const double edge_margin = std::min(
+        requested_edge_margin, local_map_side_length_ * kMapMaxEdgeMarginRatio);
+
     bool should_move_window = false;
+    BoxPointType new_map_bounds = local_map_bounds_;
     for (int i = 0; i < 3; ++i)
     {
-        distance_to_map_edge[i][0] = fabs(lidar_position(i) - local_map_bounds_.vertex_min[i]);
-        distance_to_map_edge[i][1] = fabs(lidar_position(i) - local_map_bounds_.vertex_max[i]);
-        if (distance_to_map_edge[i][0] <= kMapMoveThreshold * detection_range_ ||
-            distance_to_map_edge[i][1] <= kMapMoveThreshold * detection_range_)
+        const double distance_to_min = lidar_position(i) - local_map_bounds_.vertex_min[i];
+        const double distance_to_max = local_map_bounds_.vertex_max[i] - lidar_position(i);
+        if (distance_to_min < edge_margin || distance_to_max < edge_margin)
         {
             should_move_window = true;
+            new_map_bounds.vertex_min[i] = lidar_position(i) - local_map_side_length_ / 2.0;
+            new_map_bounds.vertex_max[i] = lidar_position(i) + local_map_side_length_ / 2.0;
         }
     }
     if (!should_move_window)
     {
         return;
     }
-    BoxPointType new_map_bounds, removed_bounds;
-    new_map_bounds = local_map_bounds_;
-    const float move_distance =
-        max((local_map_side_length_ - 2.0 * kMapMoveThreshold * detection_range_) * 0.5 * 0.9,
-            static_cast<double>(detection_range_ * (kMapMoveThreshold - 1)));
+
     for (int i = 0; i < 3; ++i)
     {
-        removed_bounds = local_map_bounds_;
-        if (distance_to_map_edge[i][0] <= kMapMoveThreshold * detection_range_)
+        if (new_map_bounds.vertex_min[i] < local_map_bounds_.vertex_min[i])
         {
-            new_map_bounds.vertex_max[i] -= move_distance;
-            new_map_bounds.vertex_min[i] -= move_distance;
-            removed_bounds.vertex_min[i] = local_map_bounds_.vertex_max[i] - move_distance;
+            BoxPointType removed_bounds = local_map_bounds_;
+            removed_bounds.vertex_min[i] = new_map_bounds.vertex_max[i];
             map_boxes_to_remove_.push_back(removed_bounds);
         }
-        else if (distance_to_map_edge[i][1] <= kMapMoveThreshold * detection_range_)
+        else if (new_map_bounds.vertex_max[i] > local_map_bounds_.vertex_max[i])
         {
-            new_map_bounds.vertex_max[i] += move_distance;
-            new_map_bounds.vertex_min[i] += move_distance;
-            removed_bounds.vertex_max[i] = local_map_bounds_.vertex_min[i] + move_distance;
+            BoxPointType removed_bounds = local_map_bounds_;
+            removed_bounds.vertex_max[i] = new_map_bounds.vertex_min[i];
             map_boxes_to_remove_.push_back(removed_bounds);
         }
     }

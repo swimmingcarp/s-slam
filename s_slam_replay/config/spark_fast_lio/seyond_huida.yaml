@@ -28,7 +28,7 @@
       b_acc_cov: 0.003
       b_gyr_cov: 0.001
       fov_degree: 120.0
-      det_range: 500.0
+      det_range: 100.0  # Huida points reach about 90 m; do not use Falcon's advertised maximum range.
       extrinsic_est_enabled: false
       # /tf_static in huida_bag: base_link -> lidar_link. IMU messages use
       # base_link, so this is LiDAR w.r.t. IMU for FAST-LIO.

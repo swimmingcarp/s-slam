@@ -11,6 +11,11 @@ claiming a fix.
   user explicitly asks for them.
 - If a related change seems useful, explain it briefly and wait for explicit
   approval before editing.
+- Do not introduce a new parameter, config key, CLI option, override, or
+  abstraction merely to make an existing relationship adjustable. First verify
+  whether the required behavior can be expressed safely with the existing
+  inputs and contracts; add a new surface only when that distinction genuinely
+  cannot be represented and the user approves it.
 
 ## Code Formatting
 

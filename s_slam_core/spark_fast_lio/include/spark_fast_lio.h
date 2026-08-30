@@ -38,6 +38,7 @@ namespace spark_fast_lio
 inline constexpr double kInitializationTimeSec = 0.1;
 inline constexpr double kLaserPointCovariance  = 0.001;
 inline constexpr double kMapMoveThreshold      = 1.5;
+inline constexpr double kMapMaxEdgeMarginRatio = 0.25;
 
 struct PoseStruct
 {

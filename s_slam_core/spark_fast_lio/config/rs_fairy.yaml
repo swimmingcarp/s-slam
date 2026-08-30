@@ -33,7 +33,7 @@
       b_acc_cov: 0.001
       b_gyr_cov: 0.0001
       fov_degree: 360.0           # Fairy: 360 deg horizontal FOV
-      det_range: 150.0            # Fairy max range. Tune lower if Jetson load or map quality requires it.
+      det_range: 150.0            # Local-map movement scale; use usable scan range, not advertised maximum range.
       extrinsic_est_enabled: false      # Fairy's built-in IMU has a fixed factory extrinsic.
       quality_gate_enabled: true
       # [m/s^2] Frame-mean IMU acceleration after gravity compensation; checked

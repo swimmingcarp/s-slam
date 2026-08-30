@@ -162,6 +162,14 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     }
     local_map_side_length_      = declare_parameter<double>("cube_side_length", 200.0);
     detection_range_             = declare_parameter<double>("mapping.det_range", 300.0);
+    if (!std::isfinite(local_map_side_length_) || local_map_side_length_ <= 0.0)
+    {
+        throw std::invalid_argument("cube_side_length must be positive and finite");
+    }
+    if (!std::isfinite(detection_range_) || detection_range_ <= 0.0)
+    {
+        throw std::invalid_argument("mapping.det_range must be positive and finite");
+    }
     fov_deg_                     = declare_parameter<double>("mapping.fov_degree", 360.0);
     gyroscope_covariance_        = declare_parameter<double>("mapping.gyr_cov", 0.1);
     accelerometer_covariance_    = declare_parameter<double>("mapping.acc_cov", 0.1);
