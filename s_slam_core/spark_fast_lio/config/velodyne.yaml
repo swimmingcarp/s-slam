@@ -10,7 +10,7 @@
       map_frame: "map"
 
     preprocess:
-      lidar_type: 2                # 1 Livox, 2 Velodyne, 3 Ouster, 4 KM-Ouster, 5 RoboSense
+      lidar_type: 2                # 1 Livox, 2 Velodyne, 3 Ouster, 4 KM-Ouster, 5 RoboSense, 6 Seyond
       scan_line: 16
       scan_rate: 10                # only need to be set for velodyne, unit: Hz,
       timestamp_unit: 2            # the unit of time/t field in the PointCloud2 rostopic: 0-second, 1-milisecond, 2-microsecond, 3-nanosecond.

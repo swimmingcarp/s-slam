@@ -6,7 +6,7 @@
 
     preprocess:
       # 2 is better in the Kimera-Multi dataset
-      lidar_type: 2                # 1 Livox, 2 Velodyne, 3 Ouster, 4 KM-Ouster, 5 RoboSense
+      lidar_type: 2                # 1 Livox, 2 Velodyne, 3 Ouster, 4 KM-Ouster, 5 RoboSense, 6 Seyond
       scan_line: 64
       timestamp_unit: 3                 # 0-second, 1-milisecond, 2-microsecond, 3-nanosecond.
       blind: 0.8

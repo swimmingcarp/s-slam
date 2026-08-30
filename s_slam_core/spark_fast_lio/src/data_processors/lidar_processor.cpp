@@ -22,6 +22,7 @@ constexpr double kEdgeDistanceRatio = 2.0;
 constexpr double kEdgeDistanceDifference = 0.1;
 constexpr double kSmallPlaneDistanceRatio = 1.2;
 constexpr double kRoboSenseMaximumScanDurationScale = 1.2;
+constexpr double kSeyondMaximumScanDurationScale = 1.2;
 constexpr double kPi = 3.14159265358979323846;
 constexpr float kPilotZoneHalfWidth = 0.6F;
 constexpr double kPlaneDirectionMinimumNorm = 0.1;
@@ -79,8 +80,10 @@ LidarType LidarProcessor::GetLidarType(const int value)
             return LidarType::kKimeraOuster64;
         case static_cast<int>(LidarType::kRoboSense):
             return LidarType::kRoboSense;
+        case static_cast<int>(LidarType::kSeyond):
+            return LidarType::kSeyond;
         default:
-            throw std::invalid_argument("preprocess.lidar_type must be between 1 and 5");
+            throw std::invalid_argument("preprocess.lidar_type must be between 1 and 6");
     }
 }
 
@@ -165,6 +168,9 @@ bool LidarProcessor::process(
             break;
         case LidarType::kRoboSense:
             handleRoboSensePointCloud(msg, *pcl_out);
+            return hasScanTime() && !pcl_out->empty();
+        case LidarType::kSeyond:
+            handleSeyondPointCloud(msg, *pcl_out);
             return hasScanTime() && !pcl_out->empty();
         default:
             RCLCPP_ERROR(rclcpp::get_logger("LidarProcessor"),
@@ -573,6 +579,32 @@ void LidarProcessor::handleRoboSensePointCloud(
     extractFeaturesFromScanLines(NeighborDistance::kSquared, 2);
 
     output = surface_cloud_;
+}
+
+void LidarProcessor::handleSeyondPointCloud(
+    const sensor_msgs::msg::PointCloud2 &msg,
+    PointCloudXYZI &output)
+{
+    scan_start_time_ = -1.0;
+    scan_end_time_ = -1.0;
+    if (feature_extraction_enabled_)
+    {
+        RCLCPP_ERROR(rclcpp::get_logger("LidarProcessor"),
+                     "Seyond Falcon feature extraction is unsupported because scan_id is not a "
+                     "conventional ring. Disable feature extraction.");
+        output.clear();
+        return;
+    }
+
+    const double maximum_scan_duration =
+        kSeyondMaximumScanDurationScale / static_cast<double>(scan_rate_hz_);
+    seyond_adapter_.convertToFilteredCloud(msg,
+                                            output,
+                                            point_filter_stride_,
+                                            blind_distance_,
+                                            maximum_scan_duration,
+                                            scan_start_time_,
+                                            scan_end_time_);
 }
 
 void LidarProcessor::extractFeaturesFromScanLine(

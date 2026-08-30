@@ -79,20 +79,21 @@ test numbers or a replay look.
 
 ## Replay Regression Rules
 
-- For behavior-affecting code, config, launch, TF, topic, or replay changes,
-  run before/after regression against both project-recorded LiDAR/IMU bags and
-  at least one benchmark bag with ground truth when available. Compare drift
-  proxies on our bags and GT metrics such as APE on benchmark bags.
-- Do not trust a single replay run. Repeat the same bag and compare
-  `odom_sequence_hash`, odom count, final/max displacement, large jumps,
-  endpoint monitor violations, and coverage.
-- A small final displacement is not automatically success. Check
-  `odom_coverage_ratio`; partial coverage, especially after delayed IMU
-  initialization, must be reported as partial coverage.
-- Do not compare a partial-coverage result against an older full-coverage run
-  as if they are equivalent.
-- Keep old ROS publishers isolated. Replay runs must not overlap; stale
-  publishers can cause false `/resume` timeouts or mixed input streams.
+- Before editing, classify the change using Measurement
+  Discipline as a functional/recovery fix, performance optimization, or pure
+  refactor. State the intended acceptance metrics and tolerance; do not apply
+  one generic checklist to every change.
+- Record the baseline commit and worktree state, exact replay command, output
+  directory, `odom_sequence_hash`, odom count, coverage, and applicable
+  trajectory or GT metrics. Retain the baseline report as a reproducible
+  comparison target.
+- After a behavior-affecting code, config, launch, TF, topic, or replay change,
+  run the selected before/after regression against project-recorded LiDAR/IMU
+  bags and at least one ground-truth benchmark when available. Repeat the same
+  command; replay runs must not overlap or retain stale ROS publishers.
+- A small final displacement is not automatically success. Check coverage with
+  every trajectory result; report partial coverage, and never compare it with a
+  full-coverage baseline as if the results were equivalent.
 - If the same bag gives different hashes, treat that as a bug until proven
   otherwise. Check in order: replay isolation, publisher readiness, callback
   timing, auxiliary publishers, Eigen/OpenMP nondeterminism, map insertion
@@ -100,14 +101,17 @@ test numbers or a replay look.
 
 ## Measurement Discipline
 
-- Choose replay acceptance metrics from the purpose of the change. For a
-  frontend correctness or recovery fix, compare trajectory state on recorded
-  bags (final displacement, path, frame step, jumps, frozen/divergent state)
-  and ATE/RTE on ground-truth benchmarks; the intended functional metric must
-  improve, while other correctness metrics must not regress outside a stated
-  tolerance. Do not treat CPU or RSS as an acceptance metric. For a performance
-  optimization, resource metrics must improve and trajectory/functional behavior
-  must remain unchanged.
+- For a frontend correctness or recovery fix, compare trajectory state on
+  recorded bags (final displacement, path, frame step, jumps,
+  frozen/divergent state) and ATE/RTE on ground-truth benchmarks. The intended
+  functional metric must improve, while other correctness metrics must not
+  regress outside a stated tolerance. CPU and RSS are diagnostic only.
+- For a performance optimization, resource metrics must improve and
+  trajectory/functional behavior must remain unchanged.
+- For a pure refactor, naming change, or code cleanup, trajectory behavior must
+  remain unchanged: compare the baseline hash, odom count, coverage, trajectory
+  metrics, and applicable ATE/RTE. Performance is diagnostic only unless the
+  change was intended to optimize it.
 - Keep performance and correctness reports separate. Performance measures CPU,
   RSS, thread count, wall time, callback time, and queue latency. Correctness
   measures recorded odometry state, drift proxies, actual frame steps,
@@ -122,6 +126,23 @@ test numbers or a replay look.
 - A preprocessing worker is not automatically a resource optimization: compare
   it with the direct callback path on the target board. Keep it opt-in until
   target measurements show a real latency or reliability benefit.
+
+## Safety Guardrails
+
+- Before adding a threshold, gate, or rejection rule, establish whether it is
+  a physical invariant, a sensor-format constraint, or a heuristic. Trace its
+  inputs, units, cadence, expected vehicle dynamics, sensor uncertainty, and
+  the downstream recovery path before choosing a value.
+- Do not turn a symptom from one bag into a global limit. Check the proposed
+  rule against every supported sensor rate, irregular timestamps, dropped
+  samples, normal maneuvers, and the target platform's actual operating
+  envelope. A limit must reject its demonstrated fault without rejecting
+  normal operation or trapping the estimator in an unrecoverable state.
+- Do not express a physical speed, acceleration, angular-speed, or angular-
+  acceleration limit as a fixed per-frame change. Derive the allowed change
+  from consecutive message header timestamps and the actual `delta_time`.
+  A fixed per-frame threshold is valid only when the sampling interval is
+  explicitly fixed and enforced.
 
 ## Frontend Determinism Lessons
 

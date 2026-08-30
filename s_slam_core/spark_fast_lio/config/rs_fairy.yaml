@@ -10,7 +10,7 @@
       imu_qos_reliability: reliable
 
     preprocess:
-      lidar_type: 5               # 1 Livox, 2 Velodyne, 3 Ouster, 4 KM-Ouster, 5 RoboSense (Fairy)
+      lidar_type: 5               # 1 Livox, 2 Velodyne, 3 Ouster, 4 KM-Ouster, 5 RoboSense, 6 Seyond
       scan_line: 96               # Fairy has 96/48-beam variants. Use 48 if ring max is 47.
       scan_rate: 10               # Fairy spins at 600 RPM -> 10 Hz frame rate.
       timestamp_unit: 0           # IGNORED for RoboSense (the point cloud handler relativizes the absolute per-point timestamp).

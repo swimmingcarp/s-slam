@@ -12,6 +12,7 @@
 #include "adapters/kimera_ouster_adapter.hpp"
 #include "adapters/ouster_adapter.hpp"
 #include "adapters/robosense_fairy_adapter.hpp"
+#include "adapters/seyond_adapter.hpp"
 #include "adapters/velodyne_adapter.hpp"
 
 #if defined(LIVOX_ROS_DRIVER_FOUND) && LIVOX_ROS_DRIVER_FOUND
@@ -28,6 +29,7 @@ enum class LidarType : int
     kOuster64       = 3,
     kKimeraOuster64 = 4,
     kRoboSense      = 5,
+    kSeyond         = 6,
 };
 
 enum class TimestampUnit : int
@@ -167,6 +169,8 @@ private:
     void handleVelodynePointCloud(const sensor_msgs::msg::PointCloud2 &msg);
     void handleRoboSensePointCloud(const sensor_msgs::msg::PointCloud2 &msg,
                                    PointCloudXYZI &output);
+    void handleSeyondPointCloud(const sensor_msgs::msg::PointCloud2 &msg,
+                                PointCloudXYZI &output);
     void extractFeaturesFromScanLine(PointCloudXYZI &scan_line,
                                      std::vector<PointFeatureInfo> &point_feature_infos);
     PlaneClassification classifyPlaneSegment(
@@ -202,4 +206,5 @@ private:
     sensor_adapter::KimeraOusterAdapter kimera_ouster_adapter_;
     sensor_adapter::VelodyneAdapter velodyne_adapter_;
     sensor_adapter::RoboSenseFairyAdapter robosense_fairy_adapter_;
+    sensor_adapter::SeyondAdapter seyond_adapter_;
 };

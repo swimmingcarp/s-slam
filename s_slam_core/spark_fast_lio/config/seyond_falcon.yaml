@@ -1,0 +1,53 @@
+/**:
+  ros__parameters:
+    common:
+      lidar_qos_reliability: reliable
+      imu_qos_reliability: reliable
+      imu_qos_depth: 1000
+
+    preprocess:
+      # 1 Livox, 2 Velodyne, 3 Ouster, 4 KM-Ouster, 5 RoboSense, 6 Seyond.
+      lidar_type: 6
+      # Seyond Falcon PointCloud2 uses absolute Float64 `timestamp` values.
+      # The adapter does not depend on scan_id, so one logical scan line is used.
+      scan_line: 1
+      scan_rate: 10
+      timestamp_unit: 0
+      blind: 1.5
+      blind_for_human_pilots: 0.0
+
+    mapping:
+      acc_cov: 0.1
+      gyr_cov: 0.1
+      b_acc_cov: 0.003
+      b_gyr_cov: 0.001
+      fov_degree: 120.0
+      det_range: 500.0
+      # Set these LiDAR-w.r.t-IMU values from the vehicle calibration before use.
+      extrinsic_est_enabled: false
+      extrinsic_T: [0.0, 0.0, 0.0]
+      extrinsic_R: [1.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0,
+                    0.0, 0.0, 1.0]
+
+    filter_size_map: 0.3
+
+    publish:
+      path_enabled: true
+      path_history_duration_sec: 600.0
+      scan_publish_enabled: true
+      dense_publish_enabled: true
+      scan_lidar_frame_publish_enabled: true
+      scan_body_frame_publish_enabled: true
+      scan_base_frame_publish_enabled: false
+      imu_predicted_odometry_enabled: true
+
+    pcd_save:
+      pcd_save_enabled: false
+      interval: -1
+
+    verbose: false
+    point_filter_num_for_preprocessing: 1
+    point_filter_num: 4
+    max_iteration: 4
+    cube_side_length: 1000.0

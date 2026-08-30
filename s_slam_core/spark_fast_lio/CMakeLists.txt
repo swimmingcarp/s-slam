@@ -99,6 +99,7 @@ add_library(spark_lio_component SHARED
   src/adapters/kimera_ouster_adapter.cpp
   src/adapters/ouster_adapter.cpp
   src/adapters/robosense_fairy_adapter.cpp
+  src/adapters/seyond_adapter.cpp
   src/adapters/velodyne_adapter.cpp
   src/data_processors/imu_processor.cpp
   src/data_processors/lidar_processor.cpp
@@ -193,6 +194,21 @@ if(BUILD_TESTING)
       ${THIRD_PARTY_DIR}/IKFoM_toolkit)
     target_link_libraries(robosense_fairy_adapter_test spark_lio_component ${PCL_LIBRARIES})
     ament_target_dependencies(robosense_fairy_adapter_test
+      rclcpp
+      sensor_msgs
+      nav_msgs
+      geometry_msgs
+      tf2_ros)
+  endif()
+
+  ament_add_gtest(seyond_adapter_test test/seyond_adapter_test.cpp)
+  if(TARGET seyond_adapter_test)
+    target_include_directories(seyond_adapter_test PRIVATE
+      include
+      ${THIRD_PARTY_DIR}/ikd-Tree
+      ${THIRD_PARTY_DIR}/IKFoM_toolkit)
+    target_link_libraries(seyond_adapter_test spark_lio_component ${PCL_LIBRARIES})
+    ament_target_dependencies(seyond_adapter_test
       rclcpp
       sensor_msgs
       nav_msgs

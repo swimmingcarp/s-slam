@@ -5,7 +5,7 @@
       imu_qos_reliability: reliable
 
     preprocess:
-      lidar_type: 1                # 1 Livox, 2 Velodyne, 3 Ouster, 4 KM-Ouster, 5 RoboSense
+      lidar_type: 1                # 1 Livox, 2 Velodyne, 3 Ouster, 4 KM-Ouster, 5 RoboSense, 6 Seyond
       scan_line:  6
       blind: 4
 
