@@ -320,10 +320,15 @@ PX4 uXRCE-DDS over Ethernet, not MAVLink.
 Before enabling the bridge:
 
 - Build this workspace with the `px4_msgs` branch that matches the PX4 firmware.
+  The current bench PX4 uses `MicroXRCEAgent` v2.4.2 for transport and
+  `px4_msgs` `release/1.17` for message definitions; these are separate
+  versioned components.
 - Configure a fixed IP address for the companion computer and PX4 on the same
   Ethernet subnet. Configure PX4's uXRCE-DDS client for Ethernet, the
-  companion IP, UDP port `8888`, and the same DDS domain as `ROS_DOMAIN_ID`
-  (`0` by default). Configure it to start at PX4 boot.
+  companion IP `192.168.50.3`, UDP port `8890`, and the same DDS domain as
+  `ROS_DOMAIN_ID` (`0` by default). The PX4 Ethernet IP is `192.168.50.2`;
+  configure PX4 to connect to the companion IP, not to its own IP. Configure it
+  to start at PX4 boot.
 - Replace the bench identity `base_link -> rslidar` transform in
   `mapping_rs_fairy.launch.yaml`, and calibrate the two frame rotations in
   `s_slam_core/s_slam_px4_bridge/config/px4_odometry_bridge.yaml`.
@@ -337,16 +342,16 @@ or reconnects:
 ```bash
 # Terminal 1: companion computer XRCE-DDS agent.
 source /opt/ros/humble/setup.bash
-MicroXRCEAgent udp4 -p 8888
+MicroXRCEAgent udp4 -p 8890
 
 # Terminal 2: RoboSense driver must already publish its LiDAR and IMU topics.
 source /opt/ros/humble/setup.bash
-source /home/jaden/workspace/s-slam/install/setup.bash
+source /home/nvidia/workspace/s-slam/install/setup.bash
 ros2 launch spark_fast_lio mapping_rs_fairy.launch.yaml
 
 # Terminal 3: FAST-LIO to PX4 bridge.
 source /opt/ros/humble/setup.bash
-source /home/jaden/workspace/s-slam/install/setup.bash
+source /home/nvidia/workspace/s-slam/install/setup.bash
 ros2 launch s_slam_px4_bridge px4_odometry_bridge.launch.yaml
 ```
 
@@ -362,6 +367,21 @@ The first command must show the PX4 uXRCE-DDS subscription. On the PX4 MAVLink
 console, `uxrce_dds_client status` must report a running client. This verifies
 the data path only; PX4 external-vision fusion and flight arming require their
 own PX4 estimator configuration and validation.
+
+When replaying a recorded LiDAR/IMU bag for PX4 validation, record the PX4
+status outputs at the same time:
+
+```bash
+ros2 bag record \
+  /fmu/out/estimator_status_flags \
+  /fmu/out/timesync_status \
+  /fmu/out/vehicle_odometry
+```
+
+The recorder must subscribe to all three topics, and the resulting bag should
+contain samples on each topic. If `/fmu/out/estimator_status_flags` is
+discovered but records zero samples while FastDDS reports a payload-size error,
+the `px4_msgs` message definitions do not match the PX4 firmware.
 
 ## Simulation Status
 
