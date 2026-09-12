@@ -1,8 +1,10 @@
 #include "s_slam_px4_bridge/odometry_converter.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <stdexcept>
@@ -18,6 +20,7 @@ namespace s_slam_px4_bridge
 namespace
 {
 constexpr std::size_t kSourceOdometryQueueDepth = 10;
+constexpr std::size_t kPendingOdometryQueueDepth = 4;
 
 Eigen::Matrix3d rotationFromParameter(const std::vector<double> &values, const std::string &name)
 {
@@ -77,8 +80,8 @@ public:
         output_publisher_ = create_publisher<px4_msgs::msg::VehicleOdometry>(
             output_topic, rclcpp::QoS(1).best_effort());
         rclcpp::QoS source_qos{rclcpp::KeepLast(kSourceOdometryQueueDepth)};
-        // This is an on-companion state handoff, not the PX4 transport. Keep a
-        // short reliable history so the timestamp selector sees each candidate.
+        // Preserve a short source burst so measurement-time selection sees each
+        // candidate before the wall-clock publisher paces the DDS output.
         source_qos.reliable();
         source_qos.durability_volatile();
         px4_odometry_subscription_ = create_subscription<s_slam_interfaces::msg::Px4Odometry>(
@@ -88,8 +91,12 @@ public:
 
         if (enabled_)
         {
+            publish_timer_ = create_wall_timer(
+                std::chrono::nanoseconds(publish_interval_ns_),
+                std::bind(&Px4OdometryBridge::publishNextOdometry, this));
             RCLCPP_INFO(get_logger(),
-                        "Publishing PX4 visual odometry at up to %.2f Hz from '%s' to '%s'.",
+                        "Publishing PX4 visual odometry at a paced %.2f Hz from '%s' to "
+                        "'%s'.",
                         1.0e9 / static_cast<double>(publish_interval_ns_),
                         source_topic.c_str(),
                         output_topic.c_str());
@@ -131,16 +138,16 @@ private:
                 get_logger(), *get_clock(), 1000, "Dropping invalid FAST-LIO odometry sample.");
             return;
         }
-
         if (message->reset_counter != reset_counter_)
         {
             reset_counter_ = message->reset_counter;
             rate_selector_.reset();
             previous_odometry_.reset();
+            pending_odometry_.clear();
             rate_selector_.select(converted->sample_time_ns, publish_interval_ns_);
             previous_odometry_ = *converted;
             RCLCPP_WARN(get_logger(), "FAST-LIO reset counter advanced to %u.", reset_counter_);
-            publishConvertedOdometry(*converted);
+            enqueueOdometry(*converted);
             return;
         }
 
@@ -148,13 +155,35 @@ private:
             rate_selector_.select(converted->sample_time_ns, publish_interval_ns_);
         if (selection == SampleRateSelector::Selection::kPrevious && previous_odometry_.has_value())
         {
-            publishConvertedOdometry(*previous_odometry_);
+            enqueueOdometry(*previous_odometry_);
         }
         else if (selection == SampleRateSelector::Selection::kCurrent)
         {
-            publishConvertedOdometry(*converted);
+            enqueueOdometry(*converted);
         }
         previous_odometry_ = *converted;
+    }
+
+    void enqueueOdometry(const ConvertedOdometry &odometry)
+    {
+        if (pending_odometry_.size() == kPendingOdometryQueueDepth)
+        {
+            pending_odometry_.pop_front();
+            RCLCPP_WARN_THROTTLE(get_logger(),
+                                 *get_clock(),
+                                 1000,
+                                 "PX4 odometry pacing queue is full; dropping its oldest sample.");
+        }
+        pending_odometry_.push_back(odometry);
+    }
+
+    void publishNextOdometry()
+    {
+        if (!pending_odometry_.empty())
+        {
+            publishConvertedOdometry(pending_odometry_.front());
+            pending_odometry_.pop_front();
+        }
     }
 
     void publishConvertedOdometry(const ConvertedOdometry &converted)
@@ -173,6 +202,8 @@ private:
     OdometryConverter converter_;
     SampleRateSelector rate_selector_;
     std::optional<ConvertedOdometry> previous_odometry_;
+    std::deque<ConvertedOdometry> pending_odometry_;
+    rclcpp::TimerBase::SharedPtr publish_timer_;
     std::uint8_t reset_counter_ = 0;
 
     rclcpp::Publisher<px4_msgs::msg::VehicleOdometry>::SharedPtr output_publisher_;

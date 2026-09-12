@@ -10,7 +10,8 @@ The bridge uses `px4_odometry`, which atomically carries
 the base-frame pose, world-frame linear velocity, their covariance, and reset
 counter. The pose is initialized from each LiDAR-corrected FAST-LIO state and
 then propagated at IMU rate. The bridge selects the source sample nearest each
-30 Hz target time and never repeats an older sample to fill a sensor gap.
+30 Hz measurement time, buffers at most four selected states, and sends one on
+each wall-clock tick. It never repeats an older sample to fill a sensor gap.
 
 PX4 receives position, attitude, linear velocity, position/attitude/velocity
 variance, source timestamp, and reset counter in FRD frames. `angular_velocity`
@@ -55,8 +56,12 @@ when gravity alignment changes its public map frame. This prevents PX4 from
 interpreting either event as a physical measurement jump.
 
 The on-companion `px4_odometry` handoff is reliable with a bounded history of
-ten states. The PX4 output remains best-effort to match the uXRCE-DDS input
-path; there is no application-level retransmission of stale odometry.
+ten states. A four-state output queue smooths one 10 Hz LiDAR processing cycle
+and takes at most roughly 133 ms to drain under regular 30 Hz timer service. If
+the queue fills, the oldest pending state is discarded. A complete source or
+executor stall still appears as an output gap. The PX4 output remains
+best-effort to match the uXRCE-DDS input path; there is no application-level
+retransmission of stale odometry.
 
 After the PX4 uXRCE-DDS client is connected to the companion over Ethernet,
 start the bridge:
