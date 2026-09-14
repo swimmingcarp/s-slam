@@ -19,6 +19,7 @@ struct ConvertedOdometry
     Eigen::Vector3d orientation_variance = Eigen::Vector3d::Zero();
     Eigen::Vector3d linear_velocity = Eigen::Vector3d::Zero();
     Eigen::Vector3d linear_velocity_variance = Eigen::Vector3d::Zero();
+    Eigen::Vector3d angular_velocity = Eigen::Vector3d::Zero();
 };
 
 // Converts the FAST-LIO state into PX4's configured local FRD reference frame.
@@ -38,30 +39,14 @@ private:
     Eigen::Matrix3d source_body_from_px4_body_;
 };
 
+// Advances a state to `interval_ns` after the sample it was measured at, using
+// the state's own linear and angular velocity, and moves its sample time with
+// it. This is what keeps the pose valid at the instant it is published rather
+// than at the instant the source measured it.
+ConvertedOdometry propagateOdometry(const ConvertedOdometry &odometry, std::int64_t interval_ns);
+
 px4_msgs::msg::VehicleOdometry toVehicleOdometry(const ConvertedOdometry &odometry,
                                                  std::uint64_t publication_time_us,
                                                  std::uint8_t reset_counter);
-
-// Chooses the source sample nearest each target period. Holding one source
-// sample avoids a systematic rate loss when the source period does not divide
-// the target period, while remaining driven by measurement timestamps.
-class SampleRateSelector
-{
-public:
-    enum class Selection
-    {
-        kNone,
-        kCurrent,
-        kPrevious,
-    };
-
-    Selection select(std::int64_t sample_time_ns, std::int64_t target_interval_ns);
-    void reset();
-
-private:
-    std::optional<std::int64_t> previous_sample_time_ns_;
-    std::optional<std::int64_t> next_target_time_ns_;
-    std::optional<std::int64_t> last_selected_sample_time_ns_;
-};
 
 }  // namespace s_slam_px4_bridge

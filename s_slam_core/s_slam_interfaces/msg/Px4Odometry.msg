@@ -9,5 +9,9 @@ float64[36] pose_covariance
 geometry_msgs/Vector3 linear_velocity
 float64[9] linear_velocity_covariance
 
+# Bias-corrected body rate of body_frame, expressed in body_frame. The PX4
+# bridge propagates the attitude over its publication interval with it.
+geometry_msgs/Vector3 angular_velocity
+
 # The reset counter applies to this exact state sample.
 uint8 reset_counter

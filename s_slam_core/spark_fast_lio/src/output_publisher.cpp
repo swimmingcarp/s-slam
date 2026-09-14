@@ -146,6 +146,12 @@ void SPARKFastLIO2::publishPx4Odometry(const state_ikfom &state,
     px4_odometry.linear_velocity.x = base_linear_velocity.x();
     px4_odometry.linear_velocity.y = base_linear_velocity.y();
     px4_odometry.linear_velocity.z = base_linear_velocity.z();
+    // The EKF carries the body rate as the bias-corrected gyroscope reading in
+    // the IMU frame; PX4 needs it about the base axes it also receives the pose in.
+    const V3D base_angular_velocity = base_rotation_in_imu.transpose() * angular_velocity;
+    px4_odometry.angular_velocity.x = base_angular_velocity.x();
+    px4_odometry.angular_velocity.y = base_angular_velocity.y();
+    px4_odometry.angular_velocity.z = base_angular_velocity.z();
     for (int row = 0; row < 6; ++row)
     {
         for (int column = 0; column < 6; ++column)

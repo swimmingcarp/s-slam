@@ -1,12 +1,11 @@
 #include "s_slam_px4_bridge/odometry_converter.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <cstdint>
-#include <deque>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -20,7 +19,18 @@ namespace s_slam_px4_bridge
 namespace
 {
 constexpr std::size_t kSourceOdometryQueueDepth = 10;
-constexpr std::size_t kPendingOdometryQueueDepth = 4;
+
+// How far a state may be carried forward on its own velocity and body rate.
+// The limit is an error budget for holding both constant: over 30 ms that
+// costs about 4 mm at the 8 m/s^2 the frontend declares as its acceleration
+// limit, and about a degree of attitude at the angular acceleration a
+// multirotor reaches. A hundred milliseconds would cost 4 cm and several
+// degrees, which is no longer a correction. The source normally runs far
+// inside this: its newest state is a few milliseconds old whenever the
+// frontend keeps up. An older state is still sent, stamped at the last time
+// its propagation is trustworthy, so PX4 fuses it as the delayed measurement
+// it is rather than as an extrapolation nobody can defend.
+constexpr std::int64_t kMaximumPropagationNs = 30000000;
 
 Eigen::Matrix3d rotationFromParameter(const std::vector<double> &values, const std::string &name)
 {
@@ -80,8 +90,9 @@ public:
         output_publisher_ = create_publisher<px4_msgs::msg::VehicleOdometry>(
             output_topic, rclcpp::QoS(1).best_effort());
         rclcpp::QoS source_qos{rclcpp::KeepLast(kSourceOdometryQueueDepth)};
-        // Preserve a short source burst so measurement-time selection sees each
-        // candidate before the wall-clock publisher paces the DDS output.
+        // This is an on-companion state handoff, not the PX4 transport. Keep a
+        // short reliable history so a source burst is not lost before the
+        // publication timer reads the newest state from it.
         source_qos.reliable();
         source_qos.durability_volatile();
         px4_odometry_subscription_ = create_subscription<s_slam_interfaces::msg::Px4Odometry>(
@@ -91,12 +102,13 @@ public:
 
         if (enabled_)
         {
-            publish_timer_ = create_wall_timer(
-                std::chrono::nanoseconds(publish_interval_ns_),
-                std::bind(&Px4OdometryBridge::publishNextOdometry, this));
+            publish_timer_ = rclcpp::create_timer(
+                this,
+                get_clock(),
+                rclcpp::Duration::from_nanoseconds(publish_interval_ns_),
+                std::bind(&Px4OdometryBridge::publishLatestOdometry, this));
             RCLCPP_INFO(get_logger(),
-                        "Publishing PX4 visual odometry at a paced %.2f Hz from '%s' to "
-                        "'%s'.",
+                        "Publishing PX4 visual odometry at %.2f Hz from '%s' to '%s'.",
                         1.0e9 / static_cast<double>(publish_interval_ns_),
                         source_topic.c_str(),
                         output_topic.c_str());
@@ -141,56 +153,76 @@ private:
         if (message->reset_counter != reset_counter_)
         {
             reset_counter_ = message->reset_counter;
-            rate_selector_.reset();
-            previous_odometry_.reset();
-            pending_odometry_.clear();
-            rate_selector_.select(converted->sample_time_ns, publish_interval_ns_);
-            previous_odometry_ = *converted;
+            // A reset is the one place the source time base may step backwards,
+            // so the published state anchors on this sample rather than on the
+            // one before it.
+            last_valid_time_ns_.reset();
             RCLCPP_WARN(get_logger(), "FAST-LIO reset counter advanced to %u.", reset_counter_);
-            enqueueOdometry(*converted);
+        }
+        else if (latest_odometry_.has_value() &&
+                 converted->sample_time_ns <= latest_odometry_->sample_time_ns)
+        {
+            // Keep the published sample time monotonic: a repeated or reordered
+            // source sample carries no state PX4 has not already been given.
             return;
         }
 
-        const SampleRateSelector::Selection selection =
-            rate_selector_.select(converted->sample_time_ns, publish_interval_ns_);
-        if (selection == SampleRateSelector::Selection::kPrevious && previous_odometry_.has_value())
-        {
-            enqueueOdometry(*previous_odometry_);
-        }
-        else if (selection == SampleRateSelector::Selection::kCurrent)
-        {
-            enqueueOdometry(*converted);
-        }
-        previous_odometry_ = *converted;
+        latest_odometry_ = *converted;
     }
 
-    void enqueueOdometry(const ConvertedOdometry &odometry)
+    // PX4 needs a pose for the instant it is sent, not for the instant the
+    // source measured it. Each slot therefore carries the newest state advanced
+    // over its own age, which also puts the published sample time on the
+    // publication cadence instead of on the source's arrival pattern.
+    void publishLatestOdometry()
     {
-        if (pending_odometry_.size() == kPendingOdometryQueueDepth)
+        if (!latest_odometry_.has_value())
         {
-            pending_odometry_.pop_front();
+            return;
+        }
+
+        const std::int64_t publication_time_ns = get_clock()->now().nanoseconds();
+        const std::int64_t state_age_ns = publication_time_ns - latest_odometry_->sample_time_ns;
+        const std::int64_t propagation_ns =
+            std::clamp(state_age_ns, static_cast<std::int64_t>(0), kMaximumPropagationNs);
+        if (state_age_ns > kMaximumPropagationNs)
+        {
             RCLCPP_WARN_THROTTLE(get_logger(),
                                  *get_clock(),
                                  1000,
-                                 "PX4 odometry pacing queue is full; dropping its oldest sample.");
+                                 "Newest FAST-LIO state is %.3f s old, beyond the %.0f ms it can "
+                                 "be propagated; PX4 is receiving a delayed pose. An age of "
+                                 "seconds means the sensor driver and the companion do not share "
+                                 "a time base.",
+                                 static_cast<double>(state_age_ns) * 1.0e-9,
+                                 static_cast<double>(kMaximumPropagationNs) * 1.0e-6);
         }
-        pending_odometry_.push_back(odometry);
-    }
 
-    void publishNextOdometry()
-    {
-        if (!pending_odometry_.empty())
+        const std::int64_t valid_time_ns = latest_odometry_->sample_time_ns + propagation_ns;
+        if (last_valid_time_ns_.has_value() && valid_time_ns <= *last_valid_time_ns_)
         {
-            publishConvertedOdometry(pending_odometry_.front());
-            pending_odometry_.pop_front();
+            // The source has produced nothing since the last slot. Re-sending the
+            // same state would have PX4 fuse one measurement as several, and hide
+            // a stalled source from its own external-vision timeout.
+            RCLCPP_WARN_THROTTLE(get_logger(),
+                                 *get_clock(),
+                                 1000,
+                                 "No FAST-LIO state newer than the last one sent; leaving this "
+                                 "PX4 slot empty.");
+            return;
         }
+        last_valid_time_ns_ = valid_time_ns;
+
+        publishConvertedOdometry(propagateOdometry(*latest_odometry_, propagation_ns),
+                                 publication_time_ns);
     }
 
-    void publishConvertedOdometry(const ConvertedOdometry &converted)
+    void publishConvertedOdometry(const ConvertedOdometry &converted,
+                                  const std::int64_t publication_time_ns)
     {
         const px4_msgs::msg::VehicleOdometry px4_odometry = toVehicleOdometry(
             converted,
-            static_cast<std::uint64_t>(get_clock()->now().nanoseconds() / 1000),
+            static_cast<std::uint64_t>(publication_time_ns / 1000),
             reset_counter_);
         output_publisher_->publish(px4_odometry);
     }
@@ -200,9 +232,8 @@ private:
     std::string source_world_frame_;
     std::string source_child_frame_;
     OdometryConverter converter_;
-    SampleRateSelector rate_selector_;
-    std::optional<ConvertedOdometry> previous_odometry_;
-    std::deque<ConvertedOdometry> pending_odometry_;
+    std::optional<ConvertedOdometry> latest_odometry_;
+    std::optional<std::int64_t> last_valid_time_ns_;
     rclcpp::TimerBase::SharedPtr publish_timer_;
     std::uint8_t reset_counter_ = 0;
 

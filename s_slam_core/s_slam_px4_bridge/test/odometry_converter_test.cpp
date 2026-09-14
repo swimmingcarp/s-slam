@@ -49,6 +49,9 @@ s_slam_interfaces::msg::Px4Odometry validOdometry()
     odometry.linear_velocity_covariance[0] = 16.0;
     odometry.linear_velocity_covariance[4] = 25.0;
     odometry.linear_velocity_covariance[8] = 36.0;
+    odometry.angular_velocity.x = 0.1;
+    odometry.angular_velocity.y = 0.2;
+    odometry.angular_velocity.z = 0.3;
     return odometry;
 }
 }  // namespace
@@ -67,6 +70,7 @@ TEST(OdometryConverter, ConvertsPoseVelocityAndCovarianceIntoConfiguredFrames)
     EXPECT_TRUE(converted->orientation_variance.isApprox(Eigen::Vector3d(0.01, 0.04, 0.09)));
     EXPECT_TRUE(converted->linear_velocity.isApprox(Eigen::Vector3d(2.0, 1.0, -3.0)));
     EXPECT_TRUE(converted->linear_velocity_variance.isApprox(Eigen::Vector3d(25.0, 16.0, 36.0)));
+    EXPECT_TRUE(converted->angular_velocity.isApprox(Eigen::Vector3d(0.1, -0.2, -0.3)));
 }
 
 TEST(OdometryConverter, RejectsInvalidInputAndFrameRotation)
@@ -115,6 +119,7 @@ TEST(VehicleOdometry, CarriesTheConvertedStateAndResetMetadata)
     converted.orientation_variance = Eigen::Vector3d(0.01, 0.02, 0.03);
     converted.linear_velocity = Eigen::Vector3d(4.0, 5.0, 6.0);
     converted.linear_velocity_variance = Eigen::Vector3d(0.4, 0.5, 0.6);
+    converted.angular_velocity = Eigen::Vector3d(0.7, 0.8, 0.9);
 
     const px4_msgs::msg::VehicleOdometry vehicle_odometry =
         toVehicleOdometry(converted, 7654321U, 9U);
@@ -127,46 +132,47 @@ TEST(VehicleOdometry, CarriesTheConvertedStateAndResetMetadata)
     EXPECT_EQ(vehicle_odometry.position[0], 1.0F);
     EXPECT_EQ(vehicle_odometry.velocity[2], 6.0F);
     EXPECT_EQ(vehicle_odometry.velocity_variance[1], 0.5F);
-    EXPECT_TRUE(std::isnan(vehicle_odometry.angular_velocity[0]));
+    EXPECT_FLOAT_EQ(vehicle_odometry.angular_velocity[0], 0.7F);
     EXPECT_EQ(vehicle_odometry.reset_counter, 9U);
     EXPECT_EQ(vehicle_odometry.quality, 0);
 }
 
-TEST(SampleRateSelector, SelectsNearestSamplesAtTheConfiguredRate)
+TEST(PropagateOdometry, AdvancesPoseAndSampleTimeByTheHoldInterval)
 {
-    SampleRateSelector selector;
-    std::vector<std::int64_t> selected;
-    std::int64_t previous_sample_time = 100;
+    ConvertedOdometry odometry;
+    odometry.sample_time_ns = 1000000000LL;
+    odometry.position = Eigen::Vector3d(1.0, 2.0, 3.0);
+    odometry.orientation = Eigen::Quaterniond::Identity();
+    odometry.linear_velocity = Eigen::Vector3d(10.0, 0.0, -4.0);
+    odometry.angular_velocity = Eigen::Vector3d(0.0, 0.0, M_PI);
 
-    for (const std::int64_t sample_time : {100LL, 103LL, 106LL, 109LL, 112LL, 115LL, 118LL,
-                                            121LL, 124LL, 127LL, 130LL})
-    {
-        const SampleRateSelector::Selection selection = selector.select(sample_time, 10);
-        if (selection == SampleRateSelector::Selection::kCurrent)
-        {
-            selected.push_back(sample_time);
-        }
-        else if (selection == SampleRateSelector::Selection::kPrevious)
-        {
-            selected.push_back(previous_sample_time);
-        }
-        previous_sample_time = sample_time;
-    }
+    const ConvertedOdometry propagated = propagateOdometry(odometry, 100000000LL);
 
-    EXPECT_EQ(selected, (std::vector<std::int64_t>{100, 109, 121, 130}));
+    EXPECT_EQ(propagated.sample_time_ns, 1100000000LL);
+    EXPECT_TRUE(propagated.position.isApprox(Eigen::Vector3d(2.0, 2.0, 2.6)));
+    EXPECT_NEAR(propagated.orientation.angularDistance(
+                    Eigen::Quaterniond(Eigen::AngleAxisd(0.1 * M_PI, Eigen::Vector3d::UnitZ()))),
+                0.0,
+                1e-12);
+    EXPECT_NEAR(propagated.orientation.norm(), 1.0, 1e-12);
+    // Everything the source measured directly is carried through unchanged.
+    EXPECT_TRUE(propagated.linear_velocity.isApprox(odometry.linear_velocity));
+    EXPECT_TRUE(propagated.angular_velocity.isApprox(odometry.angular_velocity));
 }
 
-TEST(SampleRateSelector, DropsOutOfOrderSamplesAndDoesNotRepeatAfterAGap)
+TEST(PropagateOdometry, LeavesAStateUntouchedWithoutAHoldInterval)
 {
-    SampleRateSelector selector;
+    ConvertedOdometry odometry;
+    odometry.sample_time_ns = 1000000000LL;
+    odometry.position = Eigen::Vector3d(1.0, 2.0, 3.0);
+    odometry.linear_velocity = Eigen::Vector3d(10.0, 0.0, -4.0);
+    odometry.angular_velocity = Eigen::Vector3d(0.0, 0.0, M_PI);
 
-    EXPECT_EQ(selector.select(100, 10), SampleRateSelector::Selection::kCurrent);
-    EXPECT_EQ(selector.select(110, 10), SampleRateSelector::Selection::kCurrent);
-    EXPECT_EQ(selector.select(105, 10), SampleRateSelector::Selection::kNone);
-    EXPECT_EQ(selector.select(145, 10), SampleRateSelector::Selection::kCurrent);
+    const ConvertedOdometry propagated = propagateOdometry(odometry, 0);
 
-    selector.reset();
-    EXPECT_EQ(selector.select(90, 10), SampleRateSelector::Selection::kCurrent);
+    EXPECT_EQ(propagated.sample_time_ns, odometry.sample_time_ns);
+    EXPECT_TRUE(propagated.position.isApprox(odometry.position));
+    EXPECT_NEAR(propagated.orientation.angularDistance(odometry.orientation), 0.0, 1e-12);
 }
 
 }  // namespace s_slam_px4_bridge

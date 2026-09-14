@@ -86,13 +86,15 @@ std::optional<ConvertedOdometry> OdometryConverter::convert(
         odometry.pose.orientation.z);
     const Eigen::Vector3d source_linear_velocity(
         odometry.linear_velocity.x, odometry.linear_velocity.y, odometry.linear_velocity.z);
+    const Eigen::Vector3d source_angular_velocity(
+        odometry.angular_velocity.x, odometry.angular_velocity.y, odometry.angular_velocity.z);
     const Eigen::Matrix<double, 6, 6> source_covariance = poseCovariance(odometry);
     const Eigen::Matrix3d source_linear_velocity_covariance = linearVelocityCovariance(odometry);
 
     if (!source_position.allFinite() || !source_orientation.coeffs().allFinite() ||
         source_orientation.squaredNorm() <= std::numeric_limits<double>::epsilon() ||
-        !source_linear_velocity.allFinite() || !source_covariance.allFinite() ||
-        !source_linear_velocity_covariance.allFinite())
+        !source_linear_velocity.allFinite() || !source_angular_velocity.allFinite() ||
+        !source_covariance.allFinite() || !source_linear_velocity_covariance.allFinite())
     {
         return std::nullopt;
     }
@@ -131,10 +133,12 @@ std::optional<ConvertedOdometry> OdometryConverter::convert(
          px4_world_from_source_world_.transpose())
             .diagonal()
             .cwiseMax(0.0);
+    converted.angular_velocity = source_body_from_px4_body_.transpose() * source_angular_velocity;
 
     if (!converted.position.allFinite() || !converted.orientation.coeffs().allFinite() ||
         !converted.position_variance.allFinite() || !converted.orientation_variance.allFinite() ||
-        !converted.linear_velocity.allFinite() || !converted.linear_velocity_variance.allFinite())
+        !converted.linear_velocity.allFinite() || !converted.linear_velocity_variance.allFinite() ||
+        !converted.angular_velocity.allFinite())
     {
         return std::nullopt;
     }
@@ -147,6 +151,30 @@ bool OdometryConverter::isProperRotation(const Eigen::Matrix3d &rotation)
            (rotation.transpose() * rotation - Eigen::Matrix3d::Identity()).norm() <=
                kRotationTolerance &&
            std::abs(rotation.determinant() - 1.0) <= kRotationTolerance;
+}
+
+ConvertedOdometry propagateOdometry(const ConvertedOdometry &odometry, const std::int64_t interval_ns)
+{
+    if (interval_ns <= 0)
+    {
+        return odometry;
+    }
+
+    const double interval = static_cast<double>(interval_ns) * 1.0e-9;
+    ConvertedOdometry propagated = odometry;
+    propagated.sample_time_ns += interval_ns;
+    propagated.position += odometry.linear_velocity * interval;
+
+    const Eigen::Vector3d rotation_vector = odometry.angular_velocity * interval;
+    const double rotation_angle = rotation_vector.norm();
+    if (rotation_angle > 0.0)
+    {
+        propagated.orientation =
+            odometry.orientation *
+            Eigen::Quaterniond(Eigen::AngleAxisd(rotation_angle, rotation_vector / rotation_angle));
+        propagated.orientation.normalize();
+    }
+    return propagated;
 }
 
 px4_msgs::msg::VehicleOdometry toVehicleOdometry(const ConvertedOdometry &odometry,
@@ -178,78 +206,12 @@ px4_msgs::msg::VehicleOdometry toVehicleOdometry(const ConvertedOdometry &odomet
         static_cast<float>(odometry.linear_velocity_variance.x()),
         static_cast<float>(odometry.linear_velocity_variance.y()),
         static_cast<float>(odometry.linear_velocity_variance.z())};
-    px4_odometry.angular_velocity.fill(std::numeric_limits<float>::quiet_NaN());
+    px4_odometry.angular_velocity = {static_cast<float>(odometry.angular_velocity.x()),
+                                     static_cast<float>(odometry.angular_velocity.y()),
+                                     static_cast<float>(odometry.angular_velocity.z())};
     px4_odometry.reset_counter = reset_counter;
     px4_odometry.quality = 0;
     return px4_odometry;
-}
-
-SampleRateSelector::Selection SampleRateSelector::select(std::int64_t sample_time_ns,
-                                                          std::int64_t target_interval_ns)
-{
-    if (sample_time_ns <= 0 || target_interval_ns <= 0)
-    {
-        return Selection::kNone;
-    }
-    if (!previous_sample_time_ns_.has_value())
-    {
-        previous_sample_time_ns_ = sample_time_ns;
-        next_target_time_ns_ = sample_time_ns + target_interval_ns;
-        last_selected_sample_time_ns_ = sample_time_ns;
-        return Selection::kCurrent;
-    }
-    if (sample_time_ns <= *previous_sample_time_ns_)
-    {
-        return Selection::kNone;
-    }
-
-    const std::int64_t previous_sample_time_ns = *previous_sample_time_ns_;
-    previous_sample_time_ns_ = sample_time_ns;
-    if (sample_time_ns < *next_target_time_ns_)
-    {
-        return Selection::kNone;
-    }
-    if (sample_time_ns - *next_target_time_ns_ >= target_interval_ns)
-    {
-        *next_target_time_ns_ = sample_time_ns + target_interval_ns;
-        if (last_selected_sample_time_ns_.has_value() &&
-            sample_time_ns <= *last_selected_sample_time_ns_)
-        {
-            return Selection::kNone;
-        }
-        last_selected_sample_time_ns_ = sample_time_ns;
-        return Selection::kCurrent;
-    }
-
-    const std::int64_t previous_distance = *next_target_time_ns_ - previous_sample_time_ns;
-    const std::int64_t current_distance = sample_time_ns - *next_target_time_ns_;
-    const Selection selection = previous_distance < current_distance ? Selection::kPrevious
-                                                                       : Selection::kCurrent;
-    const std::int64_t selected_sample_time_ns =
-        selection == Selection::kPrevious ? previous_sample_time_ns : sample_time_ns;
-
-    // A gap may cross several target periods. Publish the newest candidate once
-    // and resume from the next target after that source measurement.
-    *next_target_time_ns_ += target_interval_ns;
-    if (*next_target_time_ns_ <= sample_time_ns)
-    {
-        *next_target_time_ns_ = sample_time_ns + target_interval_ns;
-    }
-
-    if (last_selected_sample_time_ns_.has_value() &&
-        selected_sample_time_ns <= *last_selected_sample_time_ns_)
-    {
-        return Selection::kNone;
-    }
-    last_selected_sample_time_ns_ = selected_sample_time_ns;
-    return selection;
-}
-
-void SampleRateSelector::reset()
-{
-    previous_sample_time_ns_.reset();
-    next_target_time_ns_.reset();
-    last_selected_sample_time_ns_.reset();
 }
 
 }  // namespace s_slam_px4_bridge

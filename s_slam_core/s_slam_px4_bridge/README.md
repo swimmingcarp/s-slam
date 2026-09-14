@@ -6,17 +6,35 @@ ROS 2/uXRCE-DDS bridge, not a MAVLink bridge: the hand-written UDP handshake
 and `TIMESYNC` logic in `debug_logs/phase3_pipeline.py` are intentionally not
 used.
 
-The bridge uses `px4_odometry`, which atomically carries
-the base-frame pose, world-frame linear velocity, their covariance, and reset
-counter. The pose is initialized from each LiDAR-corrected FAST-LIO state and
-then propagated at IMU rate. The bridge selects the source sample nearest each
-30 Hz measurement time, buffers at most four selected states, and sends one on
-each wall-clock tick. It never repeats an older sample to fill a sensor gap.
+The bridge uses `px4_odometry`, which atomically carries the base-frame pose,
+world-frame linear velocity, body rate, their covariance, and reset counter.
+The pose is initialized from each LiDAR-corrected FAST-LIO state and then
+propagated at IMU rate.
 
-PX4 receives position, attitude, linear velocity, position/attitude/velocity
-variance, source timestamp, and reset counter in FRD frames. `angular_velocity`
-is `NaN` because FAST-LIO does not estimate it as an independent state, and
-`quality` is zero because PX4 marks it unused.
+The bridge publishes on its own 30 Hz timer. Each slot carries the newest
+source state advanced to the moment it is sent, using that state's own linear
+velocity and body rate, with `timestamp_sample` moved by the same interval. PX4
+therefore receives a pose that is valid when it arrives instead of one that is
+as old as the handoff happened to be.
+
+Propagation is capped at 30 ms, which is an error budget for holding velocity
+and body rate constant: about 4 mm at the 8 m/s² the front end declares as its
+acceleration limit, and about a degree of attitude at the angular acceleration
+a multirotor reaches. Whenever the front end keeps up its newest state is a few
+milliseconds old and the cap never applies. An older state is still sent, but
+stamped at the last time its propagation is trustworthy, so PX4 fuses it as the
+delayed measurement it is. A slot whose newest state has already been sent is
+left empty instead: re-sending it would have PX4 fuse one measurement as
+several and would hide a stalled source from its own external-vision timeout.
+
+The reported variances are the source state's own. The message carries no
+position/velocity cross-covariance, so the growth over the propagation interval
+cannot be computed from it; over the capped interval the omitted term is at
+most the velocity variance times 0.9 ms².
+
+PX4 receives position, attitude, linear velocity, body rate,
+position/attitude/velocity variance, sample timestamp, and reset counter in FRD
+frames. `quality` is zero because PX4 marks it unused.
 
 ## Prerequisites
 
@@ -56,12 +74,11 @@ when gravity alignment changes its public map frame. This prevents PX4 from
 interpreting either event as a physical measurement jump.
 
 The on-companion `px4_odometry` handoff is reliable with a bounded history of
-ten states. A four-state output queue smooths one 10 Hz LiDAR processing cycle
-and takes at most roughly 133 ms to drain under regular 30 Hz timer service. If
-the queue fills, the oldest pending state is discarded. A complete source or
-executor stall still appears as an output gap. The PX4 output remains
-best-effort to match the uXRCE-DDS input path; there is no application-level
-retransmission of stale odometry.
+ten states, of which the bridge keeps only the newest. There is no output
+queue, so the delay PX4 sees is the age of the newest state rather than a
+backlog that never drains. A complete source or executor stall appears as an
+output gap. The PX4 output remains best-effort to match the uXRCE-DDS input
+path; there is no application-level retransmission of stale odometry.
 
 After the PX4 uXRCE-DDS client is connected to the companion over Ethernet,
 start the bridge:
@@ -71,6 +88,11 @@ ros2 launch s_slam_px4_bridge px4_odometry_bridge.launch.yaml
 ```
 
 PX4 owns uXRCE time synchronization. The bridge sets the publication
-`timestamp` from the companion ROS clock and forwards the FAST-LIO header time
-as `timestamp_sample`; therefore the sensor driver and companion must share a
-valid time base before external-vision fusion is enabled.
+`timestamp` from the companion ROS clock and derives `timestamp_sample` from
+the FAST-LIO header time advanced by the interval the state was held. That
+interval is measured on the companion clock alone, so pacing and propagation
+are correct whatever offset the sensor clock carries. `timestamp_sample` itself
+only means anything to PX4 once the sensor driver and the companion share a
+time base: a RoboSense driver running `use_lidar_clock` publishes the LiDAR's
+own free-running counter, which is not the companion epoch. Establish that time
+base before enabling external-vision fusion.
