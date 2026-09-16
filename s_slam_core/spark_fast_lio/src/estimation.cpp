@@ -96,7 +96,7 @@ void SPARKFastLIO2::restorePropagatedFrame(const PropagationCheckpoint &checkpoi
         latest_state_.rot = gravity_alignment_rotation_ * latest_state_.rot;
     }
     kf_for_preintegration_ = kf_;
-    if (process_on_callback_ && checkpoint.propagated_imu_snapshot.last_imu)
+    if (checkpoint.propagated_imu_snapshot.last_imu)
     {
         resetImuPrediction(*checkpoint.propagated_imu_snapshot.last_imu,
                            checkpoint.propagated_imu_snapshot.last_lidar_end_time);
@@ -121,7 +121,7 @@ void SPARKFastLIO2::restorePrePropagationFrame(const PropagationCheckpoint &chec
         latest_state_.rot = gravity_alignment_rotation_ * latest_state_.rot;
     }
     kf_for_preintegration_ = kf_;
-    if (process_on_callback_ && checkpoint.imu_snapshot_before_propagation.last_imu)
+    if (checkpoint.imu_snapshot_before_propagation.last_imu)
     {
         resetImuPrediction(*checkpoint.imu_snapshot_before_propagation.last_imu,
                            checkpoint.imu_snapshot_before_propagation.last_lidar_end_time);
@@ -611,7 +611,12 @@ void SPARKFastLIO2::commitOdometryUpdate(const MeasureGroup &measures,
     updateLocalMapWindow();
     consecutive_gate_reject_count_ = 0;
     kf_for_preintegration_                = kf_;
-    if (process_on_callback_ && !measures.imu.empty())
+    // The prediction filter is rewound to the LiDAR end time, so its integration
+    // cursor has to move with it. Leaving the cursor on the newest IMU already
+    // consumed silently drops the interval between them from every subsequent
+    // prediction, which reaches the flight controller as a pose older than the
+    // timestamp it carries.
+    if (!measures.imu.empty())
     {
         resetImuPrediction(*measures.imu.back(), measures.lidar_end_time);
     }
