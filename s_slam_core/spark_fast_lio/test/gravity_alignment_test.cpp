@@ -229,6 +229,35 @@ protected:
         return node.frameSpeedExceedsLimit(quality);
     }
 
+    static M3D gravityAlignmentRotation(const SPARKFastLIO2 &node)
+    {
+        return node.gravity_alignment_rotation_;
+    }
+
+    // Aligns with the sensor mounted at `lidar_rotation_in_base` on a level
+    // vehicle, so gravity sits off-axis in the world frame the EKF works in.
+    static void completeGravityAlignmentWithMount(SPARKFastLIO2 &node,
+                                                  const M3D &lidar_rotation_in_base,
+                                                  const V3D &gravity_in_world)
+    {
+        node.enable_gravity_alignment_      = true;
+        node.is_gravity_aligned_            = false;
+        node.base_frame_                    = "base_link";
+        node.base_gravity_                  = V3D(0.0, 0.0, -1.0);
+        node.lidar_rotation_in_base_        = lidar_rotation_in_base;
+        node.moving_frame_threshold_        = 0;
+        node.gravity_measurement_threshold_ = 1;
+        node.num_consecutive_moving_frames_ = 1;
+        node.global_gravity_directions_.assign(1, lidar_rotation_in_base * gravity_in_world);
+
+        state_ikfom state   = node.kf_.get_x();
+        state.offset_R_L_I  = SO3(Eye3d);
+        state.grav          = S2(gravity_in_world);
+        node.kf_.change_x(state);
+        node.latest_state_ = state;
+        node.updateGravityAlignmentAfterLio();
+    }
+
     static void completeGravityAlignment(SPARKFastLIO2 &node)
     {
         node.enable_gravity_alignment_      = true;
@@ -1252,6 +1281,34 @@ TEST_F(SPARKFastLIO2Test, GravityAlignmentAdvancesOdometryResetCounter)
 
     EXPECT_TRUE(isGravityAligned(*node));
     EXPECT_EQ(odometryResetCounter(*node), 1U);
+}
+
+TEST_F(SPARKFastLIO2Test, GravityAlignmentLevelsTheMapUnderATiltedMount)
+{
+    auto node = std::make_shared<SPARKFastLIO2>();
+
+    // A 90 degree rolled sensor mount, the case the Fairy launch still has as a
+    // TODO. The identity mount used everywhere else cannot tell the two frames
+    // the alignment rotation could be built in apart.
+    const M3D lidar_rotation_in_base = Eigen::AngleAxisd(M_PI_2, V3D::UnitX()).toRotationMatrix();
+    // The Fairy IMU sits in the LiDAR, so with an identity LiDAR-IMU extrinsic the
+    // mount rotation is also the IMU rotation in base. A level vehicle then leaves
+    // gravity off-axis in the world frame, which is the initial IMU frame.
+    const V3D gravity_in_world = lidar_rotation_in_base.transpose() * V3D(0.0, 0.0, -G_m_s2);
+
+    completeGravityAlignmentWithMount(*node, lidar_rotation_in_base, gravity_in_world);
+
+    ASSERT_TRUE(isGravityAligned(*node));
+    const M3D gravity_alignment_rotation = gravityAlignmentRotation(*node);
+
+    // The published map must have gravity pointing down its own z axis.
+    const V3D gravity_in_map = gravity_alignment_rotation * gravity_in_world;
+    EXPECT_NEAR(gravity_in_map.normalized().dot(V3D(0.0, 0.0, -1.0)), 1.0, 1e-9);
+
+    // ... and a level vehicle must publish a level attitude.
+    const M3D base_rotation_in_map =
+        gravity_alignment_rotation * lidar_rotation_in_base.transpose();
+    EXPECT_NEAR(base_rotation_in_map(2, 2), 1.0, 1e-9);
 }
 
 }  // namespace

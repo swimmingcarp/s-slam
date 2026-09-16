@@ -317,7 +317,12 @@ void SPARKFastLIO2::updateGravityAlignmentAfterLio()
         average_global_gravity += gravity;
     }
     average_global_gravity /= global_gravity_directions_.size();
-    gravity_alignment_rotation_ = computeRelativeRotation(average_global_gravity, base_gravity_);
+    // The averaged samples were pushed through offset_R_I_B, so the relative
+    // rotation maps the initial base axes onto the levelled map. Every consumer
+    // instead applies this to world-frame quantities, so compose the extrinsic
+    // back in; without it any mount tilt leaks straight into the map's z axis.
+    gravity_alignment_rotation_ =
+        computeRelativeRotation(average_global_gravity, base_gravity_) * offset_R_I_B;
 
     std::stringstream ss;
     ss << "Gravity alignment complete! `R_gravity_aligned`: " << gravity_alignment_rotation_;
