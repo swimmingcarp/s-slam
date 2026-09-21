@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -31,6 +32,16 @@ constexpr std::size_t kSourceOdometryQueueDepth = 10;
 // its propagation is trustworthy, so PX4 fuses it as the delayed measurement
 // it is rather than as an extrapolation nobody can defend.
 constexpr std::int64_t kMaximumPropagationNs = 30000000;
+
+// A sample stamped in the companion time base arrives within the frontend's own
+// pipeline latency, which is milliseconds. A whole second can only be a
+// different time base, so this reports that rather than gating on it: the
+// offset is a deployment fault for a human to fix, not a sample to drop.
+constexpr std::int64_t kMaximumTimeBaseOffsetNs = 1000000000;
+
+// VehicleOdometry carries microseconds, so keeping the published sample time
+// increasing means clearing a whole microsecond, not a nanosecond.
+constexpr std::int64_t kPublishedTimeResolutionNs = 1000;
 
 Eigen::Matrix3d rotationFromParameter(const std::vector<double> &values, const std::string &name)
 {
@@ -157,6 +168,7 @@ private:
             // so the published state anchors on this sample rather than on the
             // one before it.
             last_valid_time_ns_.reset();
+            last_published_sample_time_ns_.reset();
             RCLCPP_WARN(get_logger(), "FAST-LIO reset counter advanced to %u.", reset_counter_);
         }
         else if (latest_odometry_.has_value() &&
@@ -168,6 +180,36 @@ private:
         }
 
         latest_odometry_ = *converted;
+        // The hold interval is measured between this arrival and the slot that
+        // sends the state, both read from the companion clock. Subtracting the
+        // source stamp instead would measure the offset between the sensor and
+        // companion time bases, which is not an age and does not shrink when
+        // the frontend keeps up.
+        latest_arrival_time_ns_ = get_clock()->now().nanoseconds();
+        warnOnUnsharedTimeBase(*latest_arrival_time_ns_, converted->sample_time_ns);
+    }
+
+    // The published sample time is only meaningful to PX4 once the sensor driver
+    // and the companion share a time base. Nothing downstream can detect that
+    // from the state itself, and the hold interval no longer reveals it, so
+    // check it here against the arrival the state was actually seen at.
+    void warnOnUnsharedTimeBase(const std::int64_t arrival_time_ns,
+                                const std::int64_t sample_time_ns)
+    {
+        const std::int64_t offset_ns = arrival_time_ns - sample_time_ns;
+        if (std::abs(offset_ns) <= kMaximumTimeBaseOffsetNs)
+        {
+            return;
+        }
+        RCLCPP_WARN_THROTTLE(get_logger(),
+                             *get_clock(),
+                             5000,
+                             "FAST-LIO sample time is %.3f s from the companion clock it arrived "
+                             "on. PX4 reads `timestamp_sample` in the companion time base, so it "
+                             "cannot place this measurement. A RoboSense driver running "
+                             "`use_lidar_clock` publishes the LiDAR's own free-running counter; "
+                             "establish a shared time base before enabling external-vision fusion.",
+                             static_cast<double>(offset_ns) * 1.0e-9);
     }
 
     // PX4 needs a pose for the instant it is sent, not for the instant the
@@ -176,13 +218,13 @@ private:
     // publication cadence instead of on the source's arrival pattern.
     void publishLatestOdometry()
     {
-        if (!latest_odometry_.has_value())
+        if (!latest_odometry_.has_value() || !latest_arrival_time_ns_.has_value())
         {
             return;
         }
 
         const std::int64_t publication_time_ns = get_clock()->now().nanoseconds();
-        const std::int64_t state_age_ns = publication_time_ns - latest_odometry_->sample_time_ns;
+        const std::int64_t state_age_ns = publication_time_ns - *latest_arrival_time_ns_;
         const std::int64_t propagation_ns =
             std::clamp(state_age_ns, static_cast<std::int64_t>(0), kMaximumPropagationNs);
         if (state_age_ns > kMaximumPropagationNs)
@@ -190,20 +232,21 @@ private:
             RCLCPP_WARN_THROTTLE(get_logger(),
                                  *get_clock(),
                                  1000,
-                                 "Newest FAST-LIO state is %.3f s old, beyond the %.0f ms it can "
-                                 "be propagated; PX4 is receiving a delayed pose. An age of "
-                                 "seconds means the sensor driver and the companion do not share "
-                                 "a time base.",
+                                 "Newest FAST-LIO state has been held %.3f s, beyond the %.0f ms "
+                                 "it can be propagated; PX4 is receiving a delayed pose. The "
+                                 "frontend is not keeping up with the publication rate.",
                                  static_cast<double>(state_age_ns) * 1.0e-9,
                                  static_cast<double>(kMaximumPropagationNs) * 1.0e-6);
         }
 
-        const std::int64_t valid_time_ns = latest_odometry_->sample_time_ns + propagation_ns;
-        if (last_valid_time_ns_.has_value() && valid_time_ns <= *last_valid_time_ns_)
+        // Whether the source has moved on is a property of the source alone. The
+        // hold interval grows while the frontend is stalled, so a sum that
+        // includes it keeps advancing over one unchanged state and would send
+        // that state again; PX4 would fuse one measurement as several and its
+        // own external-vision timeout would never see the stall.
+        if (last_published_sample_time_ns_.has_value() &&
+            latest_odometry_->sample_time_ns <= *last_published_sample_time_ns_)
         {
-            // The source has produced nothing since the last slot. Re-sending the
-            // same state would have PX4 fuse one measurement as several, and hide
-            // a stalled source from its own external-vision timeout.
             RCLCPP_WARN_THROTTLE(get_logger(),
                                  *get_clock(),
                                  1000,
@@ -211,9 +254,32 @@ private:
                                  "PX4 slot empty.");
             return;
         }
-        last_valid_time_ns_ = valid_time_ns;
 
-        publishConvertedOdometry(propagateOdometry(*latest_odometry_, propagation_ns),
+        // A newer state can still carry a smaller published sample time than the
+        // last slot, because the hold interval it is stamped with may be shorter.
+        // PX4 places this in a delayed-measurement buffer, so carry it forward far
+        // enough to keep the published time increasing.
+        const std::int64_t minimum_propagation_ns =
+            last_valid_time_ns_.has_value()
+                ? std::max<std::int64_t>(
+                      0,
+                      *last_valid_time_ns_ + kPublishedTimeResolutionNs -
+                          latest_odometry_->sample_time_ns)
+                : 0;
+        const std::int64_t published_propagation_ns =
+            std::max(propagation_ns, minimum_propagation_ns);
+        if (published_propagation_ns > kMaximumPropagationNs)
+        {
+            // Keeping the published time increasing would carry this state further
+            // than the error budget allows. Leave the slot empty rather than claim
+            // an extrapolation nobody can defend.
+            return;
+        }
+
+        last_valid_time_ns_ = latest_odometry_->sample_time_ns + published_propagation_ns;
+        last_published_sample_time_ns_ = latest_odometry_->sample_time_ns;
+
+        publishConvertedOdometry(propagateOdometry(*latest_odometry_, published_propagation_ns),
                                  publication_time_ns);
     }
 
@@ -233,7 +299,9 @@ private:
     std::string source_child_frame_;
     OdometryConverter converter_;
     std::optional<ConvertedOdometry> latest_odometry_;
+    std::optional<std::int64_t> latest_arrival_time_ns_;
     std::optional<std::int64_t> last_valid_time_ns_;
+    std::optional<std::int64_t> last_published_sample_time_ns_;
     rclcpp::TimerBase::SharedPtr publish_timer_;
     std::uint8_t reset_counter_ = 0;
 
