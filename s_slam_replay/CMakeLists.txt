@@ -11,6 +11,7 @@ install(DIRECTORY config launch
 install(PROGRAMS
   run.py
   scripts/publish_save_dir.py
+  scripts/record_px4_streams.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

@@ -1,0 +1,65 @@
+---
+# Replays a recorded LiDAR/IMU bag through the frontend, the PX4 bridge, and a
+# recorder for both ends of the handoff, so the state PX4 would receive can be
+# checked offline. Accepts the argument set `run.py --frontend-launch` passes.
+#
+# Processing runs off the main loop timer, as it does on the vehicle, rather
+# than the callback-driven path the plain replay launch uses. That is the code
+# path that reaches the flight controller, so it is the one this checks; it also
+# means the processed frame set follows host scheduling, and the run is not a
+# deterministic `odom_sequence_hash` comparison.
+launch:
+  - arg: {name: config_path, default: $(find-pkg-share spark_fast_lio)/config/rs_fairy.yaml}
+  - arg: {name: lidar_topic, default: /rslidar_points}
+  - arg: {name: imu_topic, default: /rslidar_imu_data}
+
+  - arg: {name: map_frame, default: odom}
+  - arg: {name: base_frame, default: base_link}
+  - arg: {name: lidar_frame, default: rslidar}
+  - arg: {name: imu_frame, default: rslidar_imu}
+  - arg: {name: visualization_frame, default: base}
+
+  - arg: {name: px4_bridge_config, default: $(find-pkg-share s_slam_px4_bridge)/config/px4_odometry_bridge.yaml}
+  - arg: {name: px4_output_dir, default: /tmp/s_slam_replay_px4, description: "Directory for px4_source.csv and px4_bridge_output.csv"}
+
+  - include:
+      file: $(find-pkg-share s_slam_replay)/launch/spark_fast_lio_replay.launch.yaml
+      arg:
+        - {name: config_path, value: $(var config_path)}
+        - {name: lidar_topic, value: $(var lidar_topic)}
+        - {name: imu_topic, value: $(var imu_topic)}
+        - {name: map_frame, value: $(var map_frame)}
+        - {name: base_frame, value: $(var base_frame)}
+        - {name: lidar_frame, value: $(var lidar_frame)}
+        - {name: imu_frame, value: $(var imu_frame)}
+        - {name: visualization_frame, value: $(var visualization_frame)}
+        - {name: imu_predicted_odometry_enabled, value: "true"}
+        - {name: process_on_callback, value: "false"}
+
+  - node:
+      pkg: s_slam_px4_bridge
+      exec: px4_odometry_bridge
+      name: px4_odometry_bridge
+      output: screen
+      param:
+        - from: $(var px4_bridge_config)
+        # The bridge stamps its publications and measures its propagation
+        # interval from the node clock. Replay drives that clock from the bag,
+        # so without this the interval is the offset between bag and wall time.
+        - name: use_sim_time
+          value: true
+        - name: source_world_frame
+          value: "$(var map_frame)"
+        - name: source_child_frame
+          value: "$(var base_frame)"
+
+  - node:
+      pkg: s_slam_replay
+      exec: record_px4_streams.py
+      name: record_px4_streams
+      output: screen
+      param:
+        - name: use_sim_time
+          value: true
+        - name: output_dir
+          value: "$(var px4_output_dir)"

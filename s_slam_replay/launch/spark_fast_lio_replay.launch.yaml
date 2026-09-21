@@ -10,6 +10,10 @@ launch:
   - arg: {name: imu_frame, default: rslidar_imu}
   - arg: {name: visualization_frame, default: base}
   - arg: {name: imu_predicted_odometry_enabled, default: "false"}
+  # The shipped vehicle launch processes off the main loop timer. Replay keeps
+  # callback-driven processing so bag timing controls the processed frame set;
+  # the PX4 stream check overrides it to exercise the flight code path.
+  - arg: {name: process_on_callback, default: "true"}
 
   - node:
       pkg: spark_fast_lio
@@ -38,7 +42,7 @@ launch:
         - name: "gravity_alignment.enable_gravity_alignment"
           value: false
         - name: "common.process_on_callback"
-          value: true
+          value: "$(var process_on_callback)"
         - name: "publish.imu_predicted_odometry_enabled"
           value: "$(var imu_predicted_odometry_enabled)"
         # Lossless replay transport: buffer entire bag backlogs so the processed
