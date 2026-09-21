@@ -75,13 +75,20 @@ class Px4StreamRecorder(Node):
                 "velocity_x",
                 "velocity_y",
                 "velocity_z",
+                "angular_velocity_x",
+                "angular_velocity_y",
+                "angular_velocity_z",
                 "position_variance_x",
                 "position_variance_y",
                 "position_variance_z",
+                "orientation_variance_x",
+                "orientation_variance_y",
+                "orientation_variance_z",
                 "velocity_variance_x",
                 "velocity_variance_y",
                 "velocity_variance_z",
                 "reset_counter",
+                "quality",
                 "finite",
             ]
         )
@@ -142,8 +149,17 @@ class Px4StreamRecorder(Node):
         self.source_count += 1
 
     def handleBridgeOutput(self, message):
-        values = [*message.position, *message.q, *message.velocity]
-        variances = [*message.position_variance, *message.velocity_variance]
+        values = [
+            *message.position,
+            *message.q,
+            *message.velocity,
+            *message.angular_velocity,
+        ]
+        variances = [
+            *message.position_variance,
+            *message.orientation_variance,
+            *message.velocity_variance,
+        ]
         self.output_writer.writerow(
             [
                 message.timestamp,
@@ -153,6 +169,7 @@ class Px4StreamRecorder(Node):
                 *values,
                 *variances,
                 message.reset_counter,
+                message.quality,
                 int(all(math.isfinite(value) for value in values + variances)),
             ]
         )
