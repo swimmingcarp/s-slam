@@ -62,6 +62,12 @@ Eigen::Matrix3d rotationFromParameter(const std::vector<double> &values, const s
     return rotation;
 }
 
+bool isIdentityRotation(const std::vector<double> &values)
+{
+    static const std::vector<double> identity{1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
+    return values == identity;
+}
+
 std::int64_t rateIntervalNs(double publish_rate_hz)
 {
     if (!std::isfinite(publish_rate_hz) || publish_rate_hz <= 0.0 || publish_rate_hz > 200.0)
@@ -113,6 +119,21 @@ public:
 
         if (enabled_)
         {
+            // An identity rotation asserts the source already uses PX4's axes.
+            // FAST-LIO publishes a REP-103 FLU pose in a z-up map, so identity
+            // inverts height and mirrors one horizontal axis while the stream
+            // stays well formed: PX4 corrects the wrong way on the first move.
+            for (const char *name : {"px4_world_from_source_world", "source_body_from_px4_body"})
+            {
+                if (isIdentityRotation(get_parameter(name).as_double_array()))
+                {
+                    RCLCPP_WARN(get_logger(),
+                                "%s is identity. That claims the FAST-LIO frame is already PX4 "
+                                "FRD; for a FLU base in a z-up map it sends a climb to PX4 as a "
+                                "descent. Calibrate it before flight.",
+                                name);
+                }
+            }
             publish_timer_ = rclcpp::create_timer(
                 this,
                 get_clock(),

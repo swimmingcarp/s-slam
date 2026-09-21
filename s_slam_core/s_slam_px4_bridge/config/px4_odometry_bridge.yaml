@@ -9,11 +9,16 @@
     output_topic: /fmu/in/vehicle_visual_odometry
     publish_rate_hz: 30.0
 
-    # Row-major proper rotations. They map a FAST-LIO map/base pose into PX4's
-    # local FRD pose frame. Identity is only correct after frame calibration.
-    px4_world_from_source_world: [1.0, 0.0, 0.0,
-                                  0.0, 1.0, 0.0,
-                                  0.0, 0.0, 1.0]
-    source_body_from_px4_body: [1.0, 0.0, 0.0,
-                                 0.0, 1.0, 0.0,
-                                 0.0, 0.0, 1.0]
+    # Row-major proper rotations mapping the FAST-LIO pose into PX4's local FRD
+    # frame. Both are the same y/z flip because both frame pairs differ the same
+    # way: FAST-LIO publishes a REP-103 FLU base pose in a z-up map, PX4 wants a
+    # FRD body pose in a z-down world. Keeping x fixed puts PX4's local x on the
+    # heading the vehicle started at, so a level vehicle reads level at zero yaw.
+    # Identity is NOT a safe placeholder here: it asserts the map is already
+    # z-down, so a climb would reach PX4 as a descent.
+    px4_world_from_source_world: [1.0,  0.0,  0.0,
+                                  0.0, -1.0,  0.0,
+                                  0.0,  0.0, -1.0]
+    source_body_from_px4_body: [1.0,  0.0,  0.0,
+                                0.0, -1.0,  0.0,
+                                0.0,  0.0, -1.0]

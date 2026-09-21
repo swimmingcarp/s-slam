@@ -54,20 +54,32 @@ colcon test --packages-select s_slam_px4_bridge --event-handlers console_direct+
 
 ## Flight Configuration
 
-The supplied configuration enables the bridge. Calibrate both row-major
-rotations in
-`config/px4_odometry_bridge.yaml`:
+The supplied configuration enables the bridge. Both row-major rotations in
+`config/px4_odometry_bridge.yaml` ship as the same y/z flip:
 
 - `px4_world_from_source_world` maps the FAST-LIO map frame into PX4's local
   FRD frame.
 - `source_body_from_px4_body` maps PX4's body FRD axes into the FAST-LIO odom
   child-frame axes.
 
-The two origins must also be established during the same stationary startup.
-Do not treat the identity matrices as a generic ENU/FLU-to-PX4 conversion.
-`source_world_frame` and `source_child_frame` are checked for every input;
-the child frame must be the calibrated PX4 vehicle-reference origin. Do not
-silently substitute a LiDAR or IMU frame with an unmodelled lever arm.
+FAST-LIO publishes a REP-103 FLU base pose in a z-up map and PX4 wants an FRD
+body pose in a z-down world, so both pairs differ by the same flip of y and z.
+Keeping x fixed puts PX4's local x on the heading the vehicle started at, which
+makes a level vehicle read level at zero yaw; because the message declares FRD,
+PX4 estimates any remaining heading offset itself, so only the z direction and
+the handedness have to be right. Identity is not a safe placeholder: it asserts
+the map is already z-down, so a climb reaches PX4 as a descent while every
+field stays well formed. The bridge warns at startup if either rotation is
+still identity.
+
+What remains per-vehicle is the mounting and the origin, not the axis
+convention: replace the placeholder `base_link -> rslidar` transform with the
+measured mount, establish both origins during the same stationary startup, and
+note that an unlevelled map frame leaves a tilt that no rotation here can
+remove - gravity alignment is what levels it. `source_world_frame` and
+`source_child_frame` are checked for every input; the child frame must be the
+PX4 vehicle-reference origin. Do not silently substitute a LiDAR or IMU frame
+with an unmodelled lever arm.
 
 FAST-LIO increments the embedded reset counter both for estimator recovery and
 when gravity alignment changes its public map frame. This prevents PX4 from
