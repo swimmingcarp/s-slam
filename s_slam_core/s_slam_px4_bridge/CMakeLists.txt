@@ -30,10 +30,16 @@ install(DIRECTORY config launch
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(yaml-cpp REQUIRED)
   ament_add_gtest(odometry_converter_test test/odometry_converter_test.cpp)
   if(TARGET odometry_converter_test)
     target_link_libraries(odometry_converter_test odometry_converter)
     ament_target_dependencies(odometry_converter_test s_slam_interfaces)
+    target_link_libraries(odometry_converter_test yaml-cpp)
+    # The shipped rotations only matter as the value a flight controller gets,
+    # so the test reads the installed configuration instead of a copy of it.
+    target_compile_definitions(odometry_converter_test PRIVATE
+      SHIPPED_BRIDGE_CONFIG="${CMAKE_CURRENT_SOURCE_DIR}/config/px4_odometry_bridge.yaml")
   endif()
 endif()
 

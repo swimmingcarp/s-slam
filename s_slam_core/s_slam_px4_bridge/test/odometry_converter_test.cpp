@@ -5,6 +5,7 @@
 #include <vector>
 
 #include <gtest/gtest.h>
+#include <yaml-cpp/yaml.h>
 
 namespace s_slam_px4_bridge
 {
@@ -21,6 +22,16 @@ Eigen::Matrix3d enuToNed()
 
 Eigen::Matrix3d fluFromFrd()
 {
+    Eigen::Matrix3d rotation;
+    rotation << 1.0, 0.0, 0.0,
+                0.0, -1.0, 0.0,
+                0.0, 0.0, -1.0;
+    return rotation;
+}
+
+Eigen::Matrix3d shippedFlipYZ()
+{
+    // Must stay equal to both rotations in config/px4_odometry_bridge.yaml.
     Eigen::Matrix3d rotation;
     rotation << 1.0, 0.0, 0.0,
                 0.0, -1.0, 0.0,
@@ -173,6 +184,97 @@ TEST(PropagateOdometry, LeavesAStateUntouchedWithoutAHoldInterval)
     EXPECT_EQ(propagated.sample_time_ns, odometry.sample_time_ns);
     EXPECT_TRUE(propagated.position.isApprox(odometry.position));
     EXPECT_NEAR(propagated.orientation.angularDistance(odometry.orientation), 0.0, 1e-12);
+}
+
+// The shipped configuration is the only rotation pair that reaches a flight
+// controller, and nothing else in this suite loads it. Identity there keeps
+// every field well formed while inverting height, so pin the shipped values
+// and the sign map they produce.
+TEST(ShippedFrameRotations, SendAClimbToPX4AsAClimb)
+{
+    const OdometryConverter converter(shippedFlipYZ(), shippedFlipYZ());
+
+    s_slam_interfaces::msg::Px4Odometry odometry = validOdometry();
+    // A FAST-LIO base pose in a z-up map: rising, drifting left, yawing left.
+    odometry.pose.position.x = 2.0;
+    odometry.pose.position.y = 3.0;
+    odometry.pose.position.z = 5.0;
+    odometry.linear_velocity.x = 0.5;
+    odometry.linear_velocity.y = 0.25;
+    odometry.linear_velocity.z = 1.5;
+    odometry.angular_velocity.x = 0.1;
+    odometry.angular_velocity.y = 0.2;
+    odometry.angular_velocity.z = 0.3;
+
+    const std::optional<ConvertedOdometry> converted = converter.convert(odometry);
+    ASSERT_TRUE(converted.has_value());
+
+    // Forward is shared; left becomes right and up becomes down.
+    EXPECT_DOUBLE_EQ(converted->position.x(), 2.0);
+    EXPECT_DOUBLE_EQ(converted->position.y(), -3.0);
+    EXPECT_DOUBLE_EQ(converted->position.z(), -5.0);
+    EXPECT_DOUBLE_EQ(converted->linear_velocity.x(), 0.5);
+    EXPECT_DOUBLE_EQ(converted->linear_velocity.y(), -0.25);
+    EXPECT_DOUBLE_EQ(converted->linear_velocity.z(), -1.5);
+    EXPECT_DOUBLE_EQ(converted->angular_velocity.x(), 0.1);
+    EXPECT_DOUBLE_EQ(converted->angular_velocity.y(), -0.2);
+    EXPECT_DOUBLE_EQ(converted->angular_velocity.z(), -0.3);
+
+    // A sign flip is a diagonal similarity, so the reported variances stay on
+    // their own axis and keep their value.
+    EXPECT_DOUBLE_EQ(converted->position_variance.x(), 1.0);
+    EXPECT_DOUBLE_EQ(converted->position_variance.y(), 4.0);
+    EXPECT_DOUBLE_EQ(converted->position_variance.z(), 9.0);
+    EXPECT_DOUBLE_EQ(converted->linear_velocity_variance.x(), 16.0);
+    EXPECT_DOUBLE_EQ(converted->linear_velocity_variance.y(), 25.0);
+    EXPECT_DOUBLE_EQ(converted->linear_velocity_variance.z(), 36.0);
+}
+
+TEST(ShippedFrameRotations, SeparateAClimbFromTheIdentityPlaceholder)
+{
+    const OdometryConverter shipped(shippedFlipYZ(), shippedFlipYZ());
+    const OdometryConverter identity(Eigen::Matrix3d::Identity(), Eigen::Matrix3d::Identity());
+
+    s_slam_interfaces::msg::Px4Odometry climbing = validOdometry();
+    climbing.pose.position.z = 1.29;
+
+    const std::optional<ConvertedOdometry> shipped_climb = shipped.convert(climbing);
+    const std::optional<ConvertedOdometry> identity_climb = identity.convert(climbing);
+    ASSERT_TRUE(shipped_climb.has_value());
+    ASSERT_TRUE(identity_climb.has_value());
+
+    // PX4 reads +z as down, so only the shipped pair reports the climb as one.
+    EXPECT_LT(shipped_climb->position.z(), 0.0);
+    EXPECT_GT(identity_climb->position.z(), 0.0);
+}
+
+TEST(ShippedFrameRotations, AreProperRotations)
+{
+    EXPECT_TRUE(OdometryConverter::isProperRotation(shippedFlipYZ()));
+}
+
+// Everything above pins the conversion. This pins the value the vehicle is
+// actually shipped, so editing the configuration back towards identity fails
+// here rather than in flight.
+TEST(ShippedFrameRotations, MatchTheCheckedInConfiguration)
+{
+    const YAML::Node parameters = YAML::LoadFile(SHIPPED_BRIDGE_CONFIG)["/**"]["ros__parameters"];
+    ASSERT_TRUE(parameters) << "cannot read " << SHIPPED_BRIDGE_CONFIG;
+
+    const Eigen::Matrix3d expected = shippedFlipYZ();
+    for (const char *name : {"px4_world_from_source_world", "source_body_from_px4_body"})
+    {
+        const std::vector<double> values = parameters[name].as<std::vector<double>>();
+        ASSERT_EQ(values.size(), 9U) << name;
+        for (int row = 0; row < 3; ++row)
+        {
+            for (int column = 0; column < 3; ++column)
+            {
+                EXPECT_DOUBLE_EQ(values[row * 3 + column], expected(row, column))
+                    << name << " element [" << row << "][" << column << "]";
+            }
+        }
+    }
 }
 
 }  // namespace s_slam_px4_bridge
