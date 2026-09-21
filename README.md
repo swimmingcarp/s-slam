@@ -210,6 +210,30 @@ The selected FAST-LIO YAML remains the single source of algorithm and sensor
 tuning. If the YAML defines the same node parameter as a frame override, ROS
 parameter-file order may still make the YAML the final source of truth.
 
+### PX4 Odometry Replay
+
+Run the same bag through the PX4 path to record the state a flight controller
+would receive. No flight controller, DDS agent, or Ethernet link is required.
+
+```bash
+source ~/workspace/px4_msgs_ws/install/setup.bash
+
+./s_slam_replay/run.py \
+  --input <rosbag_dir> \
+  --output <output_dir> \
+  --config s_slam_core/spark_fast_lio/config/rs_fairy.yaml \
+  --frontend-launch "s_slam_replay px4_odometry_replay.launch.yaml px4_output_dir:=<output_dir>/px4"
+```
+
+The input is a recorded LiDAR/IMU bag. The output is the usual replay report,
+plus two CSV files under `<output_dir>/px4`:
+
+- `px4_source.csv` — the 200 Hz `px4_odometry` the front end hands to the bridge.
+- `px4_bridge_output.csv` — the 30 Hz `VehicleOdometry` PX4 receives.
+
+This run processes off the main loop timer, as the vehicle does, so it is not a
+deterministic `odom_sequence_hash` comparison.
+
 ## RViz Workflow
 
 Start RViz in a separate terminal:
