@@ -217,6 +217,21 @@ void SPARKFastLIO2::integrateIMU(esekfom::esekf<state_ikfom, 12, input_ikfom> &s
     {
         publishOdometry(integrated_state, pose_covariance, stamp, pub_imu_predicted_odom_, false);
     }
+    // The flight controller is held to the same rule as `/odometry`: until the
+    // configured alignment produces its rotation the map is the raw initial IMU
+    // frame, so every pose carries the vehicle's startup tilt. Alignment needs
+    // sustained motion and so can complete after takeoff, which would put the
+    // whole arming and climb on a tilted map and then rotate it mid-flight.
+    // Sending nothing keeps PX4 out of its vision modes instead.
+    if (isAwaitingGravityAlignment())
+    {
+        RCLCPP_WARN_THROTTLE(this->get_logger(),
+                             *this->get_clock(),
+                             2000,
+                             "Withholding PX4 odometry until gravity alignment completes; the map "
+                             "is still the raw initial IMU frame. Move the vehicle to complete it.");
+        return;
+    }
     publishPx4Odometry(
         integrated_state, state_covariance, angular_velocity, world_rotation, stamp);
 }

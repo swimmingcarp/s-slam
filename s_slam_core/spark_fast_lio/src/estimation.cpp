@@ -467,6 +467,11 @@ bool SPARKFastLIO2::frameSpeedExceedsLimit(const MotionQualityReport &quality) c
     return quality.delta_time > 0.0 && quality.position_speed > max_linear_speed_;
 }
 
+bool SPARKFastLIO2::isAwaitingGravityAlignment() const
+{
+    return enable_gravity_alignment_ && !is_gravity_aligned_ && !base_frame_.empty();
+}
+
 void SPARKFastLIO2::rejectMotionFrame(const MeasureGroup &measures,
                                       const PropagationCheckpoint &checkpoint,
                                       const MotionQualityReport &quality)
@@ -631,7 +636,7 @@ void SPARKFastLIO2::commitOdometryUpdate(const MeasureGroup &measures,
     last_accepted_lio_position_ = latest_state_.pos;
     last_accepted_lio_time_     = quality.lidar_time;
 
-    if (enable_gravity_alignment_ && !is_gravity_aligned_ && !base_frame_.empty())
+    if (isAwaitingGravityAlignment())
     {
         // Do not return before adding this raw scan: the local window may have evicted
         // old points, and skipping an accepted scan would leave the matching map stale.

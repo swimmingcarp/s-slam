@@ -240,6 +240,10 @@ private:
     void updateFilterWithLidar();
     void updateGravityAlignmentAfterLio();
     bool frameSpeedExceedsLimit(const MotionQualityReport &quality) const;
+
+    // True while a configured gravity alignment has not produced its rotation
+    // yet, so the map is still the raw initial IMU frame.
+    bool isAwaitingGravityAlignment() const;
     MotionQualityReport evaluateMotionQuality(MeasureGroup &measures,
                                               const state_ikfom &propagated_state);
     void rejectMotionFrame(const MeasureGroup &measures,
