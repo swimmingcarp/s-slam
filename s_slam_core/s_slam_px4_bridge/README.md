@@ -76,12 +76,12 @@ What remains per-vehicle is the mounting and the origin, not the axis
 convention: replace the placeholder `base_link -> rslidar` transform with the
 measured mount, establish both origins during the same stationary startup, and
 note that an unlevelled map frame leaves a tilt that no rotation here can
-remove. Gravity alignment is what levels it, but it does not close that hole
-for this stream: `/odometry` is withheld until alignment completes while
-`px4_odometry` is published from the first sample, so PX4 receives the raw
-initial-IMU frame until alignment latches and then sees the map rotate under it
-with the reset counter bumped. Alignment needs sustained motion, so that window
-covers arming and takeoff. `source_world_frame` and
+remove. Gravity alignment is what levels it, and both `/odometry` and
+`px4_odometry` are withheld until it completes, so PX4 is never given the raw
+unlevelled initial-IMU frame. Alignment needs sustained motion and the front end
+warns while it withholds. Note that every launch in this workspace disables
+gravity alignment, so today the map is not levelled at all and this gate never
+closes; enabling it is a bring-up decision, not a default. `source_world_frame` and
 `source_child_frame` are checked for every input; the child frame must be the
 PX4 vehicle-reference origin. Do not silently substitute a LiDAR or IMU frame
 with an unmodelled lever arm.
