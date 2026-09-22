@@ -12,6 +12,7 @@ with, so an empty publication slot is recorded exactly as PX4 would see it.
 import csv
 import math
 import os
+import time
 
 import rclpy
 from px4_msgs.msg import VehicleOdometry
@@ -20,6 +21,7 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from s_slam_interfaces.msg import Px4Odometry
 
 SOURCE_QUEUE_DEPTH = 20000
+OUTPUT_QUEUE_DEPTH = 2000
 
 
 class Px4StreamRecorder(Node):
@@ -37,6 +39,7 @@ class Px4StreamRecorder(Node):
         self.source_writer.writerow(
             [
                 "stamp_s",
+                "arrival_s",
                 "position_x",
                 "position_y",
                 "position_z",
@@ -63,6 +66,7 @@ class Px4StreamRecorder(Node):
             [
                 "timestamp_us",
                 "timestamp_sample_us",
+                "arrival_s",
                 "pose_frame",
                 "velocity_frame",
                 "position_x",
@@ -99,11 +103,14 @@ class Px4StreamRecorder(Node):
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
         )
-        # PX4 subscribes best-effort with a single-sample history; match it so a
-        # slot the bridge deliberately leaves empty is recorded as PX4 sees it.
+        # Best-effort like PX4, so a slot the bridge deliberately leaves empty is
+        # recorded as an absence rather than filled in by a retransmission. The
+        # depth is this recorder's own backlog, not part of that contract: at
+        # depth one a publication is overwritten whenever the 200 Hz source
+        # callback is mid-write, and the recorded gap is the instrument.
         output_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
-            depth=1,
+            depth=OUTPUT_QUEUE_DEPTH,
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
         )
@@ -140,6 +147,7 @@ class Px4StreamRecorder(Node):
         self.source_writer.writerow(
             [
                 f"{message.header.stamp.sec + message.header.stamp.nanosec * 1e-9:.6f}",
+                f"{time.time():.6f}",
                 *values,
                 *variances,
                 message.reset_counter,
@@ -164,6 +172,7 @@ class Px4StreamRecorder(Node):
             [
                 message.timestamp,
                 message.timestamp_sample,
+                f"{time.time():.6f}",
                 message.pose_frame,
                 message.velocity_frame,
                 *values,
