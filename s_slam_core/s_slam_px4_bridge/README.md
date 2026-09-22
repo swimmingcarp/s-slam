@@ -65,9 +65,9 @@ The supplied configuration enables the bridge. Both row-major rotations in
 FAST-LIO publishes a REP-103 FLU base pose in a z-up map and PX4 wants an FRD
 body pose in a z-down world, so both pairs differ by the same flip of y and z.
 Keeping x fixed puts PX4's local x on the heading the vehicle started at, which
-makes a level vehicle read level at zero yaw; because the message declares FRD,
-PX4 estimates any remaining heading offset itself, so only the z direction and
-the handedness have to be right. Identity is not a safe placeholder: it asserts
+makes a level vehicle read level at zero yaw; `POSE_FRAME_FRD` is defined as a
+constant arbitrary heading offset from true north, so only the z direction and
+the handedness have to be right here. Identity is not a safe placeholder: it asserts
 the map is already z-down, so a climb reaches PX4 as a descent while every
 field stays well formed. The bridge warns at startup if either rotation is
 still identity.
@@ -76,7 +76,12 @@ What remains per-vehicle is the mounting and the origin, not the axis
 convention: replace the placeholder `base_link -> rslidar` transform with the
 measured mount, establish both origins during the same stationary startup, and
 note that an unlevelled map frame leaves a tilt that no rotation here can
-remove - gravity alignment is what levels it. `source_world_frame` and
+remove. Gravity alignment is what levels it, but it does not close that hole
+for this stream: `/odometry` is withheld until alignment completes while
+`px4_odometry` is published from the first sample, so PX4 receives the raw
+initial-IMU frame until alignment latches and then sees the map rotate under it
+with the reset counter bumped. Alignment needs sustained motion, so that window
+covers arming and takeoff. `source_world_frame` and
 `source_child_frame` are checked for every input; the child frame must be the
 PX4 vehicle-reference origin. Do not silently substitute a LiDAR or IMU frame
 with an unmodelled lever arm.

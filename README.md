@@ -354,10 +354,13 @@ Before enabling the bridge:
   configure PX4 to connect to the companion IP, not to its own IP. Configure it
   to start at PX4 boot.
 - Replace the bench identity `base_link -> rslidar` transform in
-  `mapping_rs_fairy.launch.yaml`, and calibrate the two frame rotations in
-  `s_slam_core/s_slam_px4_bridge/config/px4_odometry_bridge.yaml`.
-- The checked-in bridge configuration has `enabled: true`. Calibrate the
-  frames before connecting it to a flight controller.
+  `mapping_rs_fairy.launch.yaml` with the measured mount. The two frame
+  rotations in `s_slam_core/s_slam_px4_bridge/config/px4_odometry_bridge.yaml`
+  already ship as the FLU-to-FRD flip and need changing only for a mount that
+  is not level-and-forward.
+- The checked-in bridge configuration has `enabled: true`, and the LiDAR clock
+  is not the companion clock, so `timestamp_sample` is not yet a time PX4 can
+  place. Establish a shared time base before enabling external-vision fusion.
 
 Start the three companion-side processes. They can already be running before
 the Ethernet cable is connected; PX4 connects when its uXRCE-DDS client starts
