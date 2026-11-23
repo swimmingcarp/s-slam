@@ -1,0 +1,143 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Enabled: true
+      Name: Ground grid
+      Plane: XY
+      Plane Cell Count: 60
+      Cell Size: 1
+      Line Style:
+        Value: Lines
+        Line Width: 0.02
+      Color: 90; 100; 115
+    - Alpha: 0.7
+      Autocompute Intensity Bounds: true
+      Autocompute Value Bounds:
+        Max Value: 10
+        Min Value: -10
+        Value: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 195; 225; 255
+      Color Transformer: FlatColor
+      Decay Time: 180
+      Enabled: true
+      Name: Accumulated outline
+      Position Transformer: XYZ
+      Size (Pixels): 1
+      Size (m): 0.015
+      Style: Points
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /cloud_registered
+      Use Fixed Frame: true
+      Use rainbow: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Autocompute Value Bounds:
+        Max Value: 10
+        Min Value: -10
+        Value: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 255; 140; 0
+      Color Transformer: FlatColor
+      Decay Time: 0
+      Enabled: true
+      Name: Current scan
+      Position Transformer: XYZ
+      Size (Pixels): 3
+      Size (m): 0.06
+      Style: Points
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /cloud_registered
+      Use Fixed Frame: true
+      Use rainbow: false
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz_default_plugins/Path
+      Color: 255; 0; 255
+      Enabled: true
+      Line Style: Billboards
+      Line Width: 0.2
+      Name: Walk trajectory
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /path
+    - Angle Tolerance: 0.1
+      Class: rviz_default_plugins/Odometry
+      Color: 255; 170; 0
+      Enabled: true
+      Keep: 1
+      Name: Current pose
+      Position Tolerance: 0.1
+      Shape:
+        Alpha: 1
+        Axes Length: 1
+        Axes Radius: 0.1
+        Color: 255; 80; 0
+        Head Length: 0.35
+        Head Radius: 0.12
+        Shaft Length: 0.9
+        Shaft Radius: 0.06
+        Value: Arrow
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /odometry
+    - Class: rviz_default_plugins/TF
+      Enabled: false
+      Frame Timeout: 15
+      Marker Scale: 1
+      Name: TF
+      Show Arrows: true
+      Show Axes: true
+      Show Names: false
+  Global Options:
+    Background Color: 22; 27; 34
+    Fixed Frame: odom
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+      Hide Inactive Objects: true
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+      Line color: 128; 128; 0
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 32
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Pitch: 0.785
+      Yaw: 0.785
+Window Geometry:
+  Height: 900
+  Width: 1440
+  X: 120
+  Y: 80
